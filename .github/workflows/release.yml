@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      frontend_ref:
+        description: '前端仓库的分支或 tag'
+        required: false
+        default: 'main'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 构建并发布单文件产物
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取后端仓库
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # 前端是独立仓库，产物在编译前注入 internal/web/dist，
+      # 由 go:embed 打进二进制，最终交付单个可执行文件。
+      - name: 拉取前端仓库
+        uses: actions/checkout@v6
+        with:
+          repository: SakuraOpenSource/levis-frontend
+          ref: ${{ github.event.inputs.frontend_ref || 'main' }}
+          path: .frontend
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: .frontend/pnpm-lock.yaml
+
+      - name: 构建前端
+        run: |
+          pnpm --dir .frontend install --frozen-lockfile
+          pnpm --dir .frontend build
+
+      - name: 注入前端产物
+        run: |
+          rm -rf internal/web/dist
+          mkdir -p internal/web/dist
+          cp -R .frontend/dist/. internal/web/dist/
+          test -f internal/web/dist/index.html
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 交叉编译
+        env:
+          # 纯 Go SQLite 驱动 + CGO_ENABLED=0，因此无需任何 C 工具链即可交叉编译。
+          CGO_ENABLED: '0'
+        run: |
+          version="${GITHUB_REF_NAME}"
+          mkdir -p bin/release
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 linux/arm windows/amd64 windows/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            out="bin/release/levis-${os}-${arch}"
+            [ "$os" = "windows" ] && out="${out}.exe"
+            echo "构建 ${os}/${arch}"
+            GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=${version}" \
+              -o "$out" ./cmd/levis
+          done
+          ls -lh bin/release
+
+      - name: 生成校验和
+        working-directory: bin/release
+        run: sha256sum levis-* > checksums.txt
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v5
+        with:
+          name: levis-binaries
+          path: bin/release/*
+
+      - name: 创建 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bin/release/*
+          generate_release_notes: true

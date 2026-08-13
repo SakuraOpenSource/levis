@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: 后端检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # 真实前端产物由 release 流程注入；仓库里只有 .gitkeep 占位，
+      # go:embed all:dist 靠它就能编译通过（此时首页提示前端未构建）。
+      - name: 确认 embed 目录存在
+        run: test -f internal/web/dist/.gitkeep
+
+      - name: gofmt 检查
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未格式化，请运行 make fmt："
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: CGO_ENABLED=0 go vet ./...
+
+      - name: go test
+        run: CGO_ENABLED=0 go test -race ./...
+
+  frontend:
+    name: 前端检查
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取前端仓库
+        uses: actions/checkout@v6
+        with:
+          repository: SakuraOpenSource/levis-frontend
+          ref: main
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # build 脚本本身是 vue-tsc -b && vite build，类型检查已包含在内。
+      - run: pnpm build
