@@ -30,3 +30,11 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Levis 运行时数据（含 config.json 与 SQLite 库，切勿提交）
+/data/
+/bin/
+
+# 前端构建产物由构建流程注入，不入库
+internal/web/dist/*
+!internal/web/dist/.gitkeep
