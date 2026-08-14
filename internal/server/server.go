@@ -43,6 +43,10 @@ func New(rt *runtime.Runtime, debug bool) *gin.Engine {
 	// 其余接口一律要求已安装。
 	guarded := api.Group("", middleware.RequireInstalled(rt))
 
+	// 验证码是公开接口：登录、注册页在尚无登录态时就要取图。
+	// 但它要读站点配置，所以必须在 guarded 之下（未安装时无库可读）。
+	guarded.GET("/captcha", h.Captcha)
+
 	authGroup := guarded.Group("/auth")
 	authGroup.POST("/register", h.Register)
 	authGroup.POST("/login", h.Login)
@@ -105,6 +109,8 @@ func New(rt *runtime.Runtime, debug bool) *gin.Engine {
 	admin.GET("/users/:id/services", h.AdminUserServices)
 	admin.PATCH("/services/:id", h.AdminUpdateService)
 	admin.DELETE("/services/:id", h.AdminDeleteService)
+	admin.GET("/settings/captcha", h.AdminCaptchaSettings)
+	admin.PUT("/settings/captcha", h.AdminUpdateCaptchaSettings)
 
 	// 未匹配的 API 路径返回 JSON 404；其余交给前端。
 	frontend := gin.WrapF(web.Handler())

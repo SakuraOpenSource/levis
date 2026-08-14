@@ -59,15 +59,35 @@ func (h *Handler) Install(c *gin.Context) {
 	OK(c, gin.H{"ok": true, "user": user})
 }
 
+// CaptchaFields 是带验证码的表单公共入参。
+//
+// 单独拎出来而不是塞进 service 层的请求结构体：验证码是接口层的准入检查，
+// 与「注册一个用户」这件事本身无关，service 不该知道它的存在。
+type CaptchaFields struct {
+	CaptchaID   string `json:"captcha_id"`
+	CaptchaCode string `json:"captcha_code"`
+}
+
+// RegisterRequest 是注册入参。
+type RegisterRequest struct {
+	service.RegisterRequest
+	CaptchaFields
+}
+
 // Register 注册普通用户。
 func (h *Handler) Register(c *gin.Context) {
 	// 用独立的请求结构体接收，绝不直接绑定到 model.User，
 	// 否则客户端可传 role=admin 自我提权。
-	var req service.RegisterRequest
+	var req RegisterRequest
 	if !bindJSON(c, &req) {
 		return
 	}
-	user, err := h.users().Register(req)
+	// 验证码必须先于建号校验，否则脚本可以完全无视验证码批量刷号。
+	if err := h.captcha().Verify(service.CaptchaSceneRegister, req.CaptchaID, req.CaptchaCode); err != nil {
+		respond(c, nil, err)
+		return
+	}
+	user, err := h.users().Register(req.RegisterRequest)
 	if err != nil {
 		respond(c, nil, err)
 		return
@@ -83,12 +103,18 @@ func (h *Handler) Register(c *gin.Context) {
 type LoginRequest struct {
 	Identifier string `json:"identifier"`
 	Password   string `json:"password"`
+	CaptchaFields
 }
 
 // Login 登录。管理员与普通用户共用此入口，前端按返回的 role 决定落地页。
 func (h *Handler) Login(c *gin.Context) {
 	var req LoginRequest
 	if !bindJSON(c, &req) {
+		return
+	}
+	// 先验验证码再验密码，否则接口仍可被直接拿来撞库。
+	if err := h.captcha().Verify(service.CaptchaSceneLogin, req.CaptchaID, req.CaptchaCode); err != nil {
+		respond(c, nil, err)
 		return
 	}
 	user, err := h.users().Login(req.Identifier, req.Password)

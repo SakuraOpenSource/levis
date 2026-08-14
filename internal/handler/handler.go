@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/SakuraOpenSource/levis/internal/captcha"
 	"github.com/SakuraOpenSource/levis/internal/runtime"
 	"github.com/SakuraOpenSource/levis/internal/service"
 )
@@ -15,17 +16,32 @@ import (
 type Handler struct {
 	rt      *runtime.Runtime
 	install *service.InstallService
+	// captchaStore 是唯一的例外：它持有已签发但未校验的验证码，必须在整个
+	// 进程内共用一份，按请求新建会让上一次发出去的验证码立刻查无此码。
+	captchaStore *captcha.Store
 }
 
 // New 构造 Handler。
 func New(rt *runtime.Runtime) *Handler {
-	return &Handler{rt: rt, install: service.NewInstallService(rt)}
+	return &Handler{
+		rt:           rt,
+		install:      service.NewInstallService(rt),
+		captchaStore: captcha.NewStore(),
+	}
 }
 
 func (h *Handler) db() *gorm.DB                   { return h.rt.DB() }
 func (h *Handler) users() *service.UserService    { return service.NewUserService(h.db()) }
 func (h *Handler) cart() *service.CartService     { return service.NewCartService(h.db()) }
 func (h *Handler) wallet() *service.WalletService { return service.NewWalletService(h.db()) }
+
+func (h *Handler) settings() *service.SettingService {
+	return service.NewSettingService(h.db())
+}
+
+func (h *Handler) captcha() *service.CaptchaService {
+	return service.NewCaptchaService(h.db(), h.captchaStore)
+}
 
 func (h *Handler) catalog() *service.CatalogService {
 	return service.NewCatalogService(h.db())

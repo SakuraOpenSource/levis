@@ -79,9 +79,17 @@ type Setting struct {
 }
 
 // 站点设置的键名。
+//
+// 验证码相关的键在安装时并不写入：读取端遇到缺失的键一律回落到默认值，
+// 老库升级上来无需迁移，也不会因为漏写某个键就把功能配成半开状态。
 const (
 	SettingSiteName        = "site_name"
 	SettingSiteDescription = "site_description"
+
+	SettingCaptchaLogin    = "captcha_login"
+	SettingCaptchaRegister = "captcha_register"
+	SettingCaptchaCharset  = "captcha_charset"
+	SettingCaptchaLength   = "captcha_length"
 )
 
 // User 是系统用户。普通用户与管理员共用此表，由 Role 区分。

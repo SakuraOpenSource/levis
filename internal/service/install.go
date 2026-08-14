@@ -164,11 +164,22 @@ func (s *InstallService) normalizeDatabase(db *config.Database) {
 	}
 }
 
+// CaptchaScenes 告诉前端哪些表单要展示验证码。
+//
+// 这里只暴露开关与字符集：字符集是为了让输入框在手机上唤起合适的键盘
+// （纯数字时给数字键盘），泄露它不会削弱验证码 —— 答案始终只在服务端。
+type CaptchaScenes struct {
+	Login    bool   `json:"login"`
+	Register bool   `json:"register"`
+	Charset  string `json:"charset"`
+}
+
 // Bootstrap 是前端启动时获取的站点基础信息。
 type Bootstrap struct {
-	Installed       bool   `json:"installed"`
-	SiteName        string `json:"site_name"`
-	SiteDescription string `json:"site_description"`
+	Installed       bool          `json:"installed"`
+	SiteName        string        `json:"site_name"`
+	SiteDescription string        `json:"site_description"`
+	Captcha         CaptchaScenes `json:"captcha"`
 }
 
 // Bootstrap 返回安装状态与站点信息，供前端路由守卫使用。
@@ -176,6 +187,12 @@ func (s *InstallService) Bootstrap() Bootstrap {
 	out := Bootstrap{Installed: s.rt.Installed()}
 	if !out.Installed {
 		return out
+	}
+	captchaCfg := NewSettingService(s.rt.DB()).Captcha()
+	out.Captcha = CaptchaScenes{
+		Login:    captchaCfg.LoginEnabled,
+		Register: captchaCfg.RegisterEnabled,
+		Charset:  captchaCfg.Charset,
 	}
 	var settings []model.Setting
 	if err := s.rt.DB().Find(&settings).Error; err != nil {
