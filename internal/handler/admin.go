@@ -160,3 +160,49 @@ func (h *Handler) AdminDeleteProduct(c *gin.Context) {
 	}
 	noContent(c)
 }
+
+// ---------- 服务管理 ----------
+
+// AdminUserServices 分页返回某用户的已购服务。
+func (h *Handler) AdminUserServices(c *gin.Context) {
+	userID, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	page, pageSize, offset := Pagination(c)
+	items, total, err := h.admin().UserServices(userID, offset, pageSize)
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	OK(c, Page{Items: items, Total: total, Page: page, PageSize: pageSize})
+}
+
+// AdminUpdateService 修改服务状态（停用 / 恢复）。
+func (h *Handler) AdminUpdateService(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		Status string `json:"status"`
+	}
+	if !bindJSON(c, &req) {
+		return
+	}
+	item, err := h.admin().SetServiceStatus(id, req.Status)
+	respond(c, item, err)
+}
+
+// AdminDeleteService 删除用户的服务。
+func (h *Handler) AdminDeleteService(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.admin().DeleteService(id); err != nil {
+		respond(c, nil, err)
+		return
+	}
+	noContent(c)
+}

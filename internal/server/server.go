@@ -76,6 +76,7 @@ func New(rt *runtime.Runtime, debug bool) *gin.Engine {
 	services := authed.Group("/services")
 	services.GET("", h.Services)
 	services.GET("/:id", h.Service)
+	services.POST("/:id/renew", h.RenewService)
 
 	wallet := authed.Group("/wallet")
 	wallet.GET("", h.Wallet)
@@ -101,6 +102,9 @@ func New(rt *runtime.Runtime, debug bool) *gin.Engine {
 	admin.POST("/products", h.AdminCreateProduct)
 	admin.PATCH("/products/:id", h.AdminUpdateProduct)
 	admin.DELETE("/products/:id", h.AdminDeleteProduct)
+	admin.GET("/users/:id/services", h.AdminUserServices)
+	admin.PATCH("/services/:id", h.AdminUpdateService)
+	admin.DELETE("/services/:id", h.AdminDeleteService)
 
 	// 未匹配的 API 路径返回 JSON 404；其余交给前端。
 	frontend := gin.WrapF(web.Handler())

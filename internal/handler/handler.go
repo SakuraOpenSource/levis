@@ -32,7 +32,7 @@ func (h *Handler) catalog() *service.CatalogService {
 }
 
 func (h *Handler) billing() *service.BillingService {
-	return service.NewBillingService(h.db())
+	return service.NewBillingService(h.db(), h.wallet())
 }
 
 func (h *Handler) orders() *service.OrderService {

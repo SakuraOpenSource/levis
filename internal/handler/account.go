@@ -59,6 +59,16 @@ func (h *Handler) Service(c *gin.Context) {
 	respond(c, item, err)
 }
 
+// RenewService 为已购服务续费一个周期。
+func (h *Handler) RenewService(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	result, err := h.billing().Renew(httpx.CurrentUserID(c), id)
+	respond(c, result, err)
+}
+
 // Invoices 分页返回账单。
 func (h *Handler) Invoices(c *gin.Context) {
 	page, pageSize, offset := Pagination(c)

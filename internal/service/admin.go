@@ -669,6 +669,68 @@ func normalizeSpecs(specs *model.SpecList) error {
 	return nil
 }
 
+// ---------- 服务管理 ----------
+
+// UserServices 分页返回某用户的已购服务。
+func (s *AdminService) UserServices(userID uint, offset, limit int) ([]model.Service, int64, error) {
+	var (
+		items []model.Service
+		total int64
+	)
+	if err := s.db.Model(&model.Service{}).Where("user_id = ?", userID).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	err := s.db.Where("user_id = ?", userID).
+		Order("id DESC").Offset(offset).Limit(limit).Find(&items).Error
+	if err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+// SetServiceStatus 修改服务状态。仅允许「使用中」与「暂停」之间切换，
+// 已终止的服务不在这里复活。
+func (s *AdminService) SetServiceStatus(serviceID uint, status string) (*model.Service, error) {
+	if status != model.ServiceActive && status != model.ServiceSuspended {
+		return nil, ErrBadRequest("无效的服务状态")
+	}
+	var item model.Service
+	if err := s.db.First(&item, serviceID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("服务不存在")
+		}
+		return nil, err
+	}
+	if item.Status == status {
+		return &item, nil
+	}
+	if err := s.db.Model(&item).Update("status", status).Error; err != nil {
+		return nil, err
+	}
+	item.Status = status
+	return &item, nil
+}
+
+// DeleteService 删除用户的服务。账单明细仍要保留历史金额，因此先把它们对
+// 本服务的引用置空，再删除服务本身，避免留下悬空的 service_id。
+func (s *AdminService) DeleteService(serviceID uint) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.InvoiceItem{}).
+			Where("service_id = ?", serviceID).
+			Update("service_id", nil).Error; err != nil {
+			return err
+		}
+		result := tx.Delete(&model.Service{}, serviceID)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound("服务不存在")
+		}
+		return nil
+	})
+}
+
 // ---------- 概览 ----------
 
 // Stats 是管理后台的概览数据。
