@@ -171,6 +171,8 @@ GET      /admin/stats
 
 `POST /wallet/recharge` 与 `POST /orders/:id/pay` 目前都是模拟实现（直接改余额），接口形状保持不变，后续接真实支付渠道只需替换实现。
 
+商品的 `specs` 是展示用的规格列表（`[{"label":"CPU","value":"4 核"}]`），以 JSON 文本存在单列里，三种数据库共用一份定义。写入时空白行会被丢弃，只填一半的行返 400，单条上限 32/64 字符、总数上限 20 条。加字段前的历史行读出来是空列表。
+
 ## 技术约束
 
 **SQLite 必须用纯 Go 驱动。** 项目用 `github.com/glebarez/sqlite`（底层 `modernc.org/sqlite`），不能换成官方 `gorm.io/driver/sqlite` —— 后者依赖 cgo 的 `mattn/go-sqlite3`，`CGO_ENABLED=0` 直接编译失败，交叉编译还要配 C 工具链，单文件交付就没了。
@@ -183,7 +185,7 @@ GET      /admin/stats
 make test
 ```
 
-单测覆盖两处最容易出错的地方：资金事务（余额不足必须整体回滚，`balance_after_cents` 必须与最终余额一致）与权限（注册不得提权、未安装态返 503、二次安装返 409）。
+单测覆盖三处最容易出错的地方：资金事务（余额不足必须整体回滚，`balance_after_cents` 必须与最终余额一致）、权限（注册不得提权、未安装态返 503、二次安装返 409）与规格列的 JSON 往返。
 
 ## License
 
