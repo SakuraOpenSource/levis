@@ -1,14 +1,27 @@
 name: Release
 
+# 两种触发方式：
+#   - 手动：在 Actions 页面填 Release 标签与名称，构建完自动建 tag 与 Release
+#   - 推 tag：`git tag v0.1.0 && git push --tags`，名称取 tag 本身
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
+      tag:
+        description: 'Release 标签，如 v0.1.0（不存在时会在当前提交上创建）'
+        required: true
+      name:
+        description: 'Release 名称，留空则与标签相同'
+        required: false
+      prerelease:
+        description: '标记为预发布版本'
+        type: boolean
+        default: false
       frontend_ref:
         description: '前端仓库的分支或 tag'
         required: false
         default: 'main'
+  push:
+    tags: ['v*']
 
 permissions:
   contents: write
@@ -23,13 +36,38 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 标签与名称两种触发方式来源不同，先归一化，后面的步骤只认这里的输出。
+      # 输入值经 env 传入而不是直接插进脚本，避免带引号的输入把命令拼坏。
+      - name: 解析发布信息
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_NAME: ${{ inputs.name }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+
+          # 产物名与 Release 都带上它，先挡住手滑输入。
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "标签需形如 v0.1.0，当前为：$tag"; exit 1 ;;
+          esac
+
+          name="${INPUT_NAME:-$tag}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "将发布 $tag（名称：$name）"
+
       # 前端是独立仓库，产物在编译前注入 internal/web/dist，
       # 由 go:embed 打进二进制，最终交付单个可执行文件。
       - name: 拉取前端仓库
         uses: actions/checkout@v6
         with:
           repository: SakuraOpenSource/levis-frontend
-          ref: ${{ github.event.inputs.frontend_ref || 'main' }}
+          ref: ${{ inputs.frontend_ref || 'main' }}
           path: .frontend
 
       - uses: pnpm/action-setup@v4
@@ -63,8 +101,8 @@ jobs:
         env:
           # 纯 Go SQLite 驱动 + CGO_ENABLED=0，因此无需任何 C 工具链即可交叉编译。
           CGO_ENABLED: '0'
+          VERSION: ${{ steps.meta.outputs.tag }}
         run: |
-          version="${GITHUB_REF_NAME}"
           mkdir -p bin/release
           for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 linux/arm windows/amd64 windows/arm64; do
             os="${target%/*}"; arch="${target#*/}"
@@ -72,7 +110,7 @@ jobs:
             [ "$os" = "windows" ] && out="${out}.exe"
             echo "构建 ${os}/${arch}"
             GOOS="$os" GOARCH="$arch" go build -trimpath \
-              -ldflags "-s -w -X main.version=${version}" \
+              -ldflags "-s -w -X main.version=${VERSION}" \
               -o "$out" ./cmd/levis
           done
           ls -lh bin/release
@@ -87,9 +125,14 @@ jobs:
           name: levis-binaries
           path: bin/release/*
 
+      # tag 不存在时由这一步在 target_commitish 上创建，因此手动触发无需先打 tag。
+      # 说明由 GitHub 自动生成（对比上一个 Release 的提交与 PR）。
       - name: 创建 Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: bin/release/*
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ inputs.prerelease || false }}
           generate_release_notes: true
+          files: bin/release/*
