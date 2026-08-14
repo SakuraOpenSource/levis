@@ -4,7 +4,13 @@
 // _cents 后缀。绝不使用浮点类型存储金额。
 package model
 
-import "time"
+import (
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+)
 
 // Base 是所有模型共用的主键与时间戳。
 type Base struct {
@@ -112,14 +118,72 @@ const (
 	ProductHidden = "hidden"
 )
 
+// Spec 是商品的一条规格，如 {Label: "CPU", Value: "4 核"}。
+//
+// 刻意不做成 CPU、内存这类固定字段：不同商品要展示的维度差别很大
+// （云服务器看 CPU/内存，虚拟主机看空间/数据库数），键值对最灵活。
+type Spec struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+// SpecList 是规格列表，以 JSON 文本存入单列。
+//
+// 这样三种数据库共用一份定义，不依赖 MySQL/PG 的 JSON 类型，
+// 也不必为规格另开一张表 —— 规格只随商品整体读写，没有独立查询需求。
+type SpecList []Spec
+
+// Value 实现 driver.Valuer，写库时序列化为 JSON 文本。
+func (s SpecList) Value() (driver.Value, error) {
+	if len(s) == 0 {
+		return "[]", nil
+	}
+	raw, err := json.Marshal([]Spec(s))
+	if err != nil {
+		return nil, err
+	}
+	return string(raw), nil
+}
+
+// Scan 实现 sql.Scanner，读库时从 JSON 文本还原。
+//
+// 兼容 NULL 与空串：历史行在加上本字段前没有值，迁移后读出来是空的。
+func (s *SpecList) Scan(src any) error {
+	if src == nil {
+		*s = nil
+		return nil
+	}
+	var raw []byte
+	switch v := src.(type) {
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		return fmt.Errorf("model: 无法把 %T 解析为 SpecList", src)
+	}
+	if len(raw) == 0 {
+		*s = nil
+		return nil
+	}
+	var out []Spec
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return errors.New("model: 规格字段不是合法的 JSON 数组")
+	}
+	*s = out
+	return nil
+}
+
 // Product 是可购买的商品。
 type Product struct {
 	Base
 	CategoryID  uint   `gorm:"index;not null" json:"category_id"`
 	Name        string `gorm:"size:128;not null" json:"name"`
 	Description string `json:"description"`
-	PriceCents  int64  `gorm:"not null;default:0" json:"price_cents"`
-	BillingCyc  string `gorm:"column:billing_cycle;size:16;not null;default:monthly" json:"billing_cycle"`
+	// Specs 是展示用的规格行（CPU、内存、带宽…），存为 JSON 文本。
+	Specs      SpecList `gorm:"type:text" json:"specs"`
+	PriceCents int64    `gorm:"not null;default:0" json:"price_cents"`
+	BillingCyc string   `gorm:"column:billing_cycle;size:16;not null;default:monthly" json:"billing_cycle"`
 	// Stock 为负数表示库存不限。
 	Stock  int    `gorm:"not null;default:-1" json:"stock"`
 	Status string `gorm:"size:16;not null;default:active" json:"status"`

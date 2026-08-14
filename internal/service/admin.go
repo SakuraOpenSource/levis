@@ -522,6 +522,7 @@ func (s *AdminService) CreateProduct(in ProductInput) (*model.Product, error) {
 		CategoryID:  in.CategoryID,
 		Name:        in.Name,
 		Description: strings.TrimSpace(in.Description),
+		Specs:       in.Specs,
 		PriceCents:  in.PriceCents,
 		BillingCyc:  in.BillingCyc,
 		Stock:       in.Stock,
@@ -550,6 +551,7 @@ func (s *AdminService) UpdateProduct(id uint, in ProductInput) (*model.Product, 
 		"category_id":   in.CategoryID,
 		"name":          in.Name,
 		"description":   strings.TrimSpace(in.Description),
+		"specs":         in.Specs,
 		"price_cents":   in.PriceCents,
 		"billing_cycle": in.BillingCyc,
 		"stock":         in.Stock,
@@ -592,6 +594,9 @@ func (s *AdminService) DeleteProduct(id uint) error {
 	})
 }
 
+// maxSpecs 限制单个商品的规格行数，避免前端表单被滥用撑爆卡片。
+const maxSpecs = 20
+
 // validateProduct 校验并补齐商品入参。
 func (s *AdminService) validateProduct(in *ProductInput) error {
 	in.Name = strings.TrimSpace(in.Name)
@@ -600,6 +605,9 @@ func (s *AdminService) validateProduct(in *ProductInput) error {
 	}
 	if in.PriceCents < 0 {
 		return ErrBadRequest("价格不能为负")
+	}
+	if err := normalizeSpecs(&in.Specs); err != nil {
+		return err
 	}
 	if in.BillingCyc == "" {
 		in.BillingCyc = model.CycleMonthly
@@ -624,6 +632,40 @@ func (s *AdminService) validateProduct(in *ProductInput) error {
 		}
 		return err
 	}
+	return nil
+}
+
+// normalizeSpecs 清理规格列表：去空白、丢弃空行、限制条数。
+//
+// 前端的规格表单常留下空白行，直接入库会在卡片上渲染出空规格，
+// 因此在这里统一丢掉，而不是要求前端保证干净。
+func normalizeSpecs(specs *model.SpecList) error {
+	if len(*specs) == 0 {
+		*specs = nil
+		return nil
+	}
+	out := make(model.SpecList, 0, len(*specs))
+	for _, spec := range *specs {
+		label := strings.TrimSpace(spec.Label)
+		value := strings.TrimSpace(spec.Value)
+		if label == "" && value == "" {
+			continue
+		}
+		if label == "" || value == "" {
+			return ErrBadRequest("规格的名称与内容都不能为空")
+		}
+		if len([]rune(label)) > 32 || len([]rune(value)) > 64 {
+			return ErrBadRequest("规格内容过长")
+		}
+		out = append(out, model.Spec{Label: label, Value: value})
+	}
+	if len(out) > maxSpecs {
+		return ErrBadRequest("规格最多 %d 条", maxSpecs)
+	}
+	if len(out) == 0 {
+		out = nil
+	}
+	*specs = out
 	return nil
 }
 

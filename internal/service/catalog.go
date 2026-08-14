@@ -101,14 +101,15 @@ type CategoryInput struct {
 
 // ProductInput 是商品的创建/更新入参。
 type ProductInput struct {
-	CategoryID  uint   `json:"category_id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	PriceCents  int64  `json:"price_cents"`
-	BillingCyc  string `json:"billing_cycle"`
-	Stock       int    `json:"stock"`
-	Status      string `json:"status"`
-	Sort        int    `json:"sort"`
+	CategoryID  uint           `json:"category_id"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Specs       model.SpecList `json:"specs"`
+	PriceCents  int64          `json:"price_cents"`
+	BillingCyc  string         `json:"billing_cycle"`
+	Stock       int            `json:"stock"`
+	Status      string         `json:"status"`
+	Sort        int            `json:"sort"`
 }
 
 // slugPattern 之外的字符会被替换成短横线。
