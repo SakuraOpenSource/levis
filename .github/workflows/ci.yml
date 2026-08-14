@@ -37,8 +37,14 @@ jobs:
       - name: go vet
         run: CGO_ENABLED=0 go vet ./...
 
+      # 交付形态是 CGO_ENABLED=0 的单文件二进制，所以先按发布口径跑一遍。
       - name: go test
-        run: CGO_ENABLED=0 go test -race ./...
+        run: CGO_ENABLED=0 go test ./...
+
+      # 竞态检测器依赖 cgo，必须开着 CGO_ENABLED 才能跑（关掉直接报错退出）。
+      # SQLite 用的是纯 Go 驱动，开 cgo 不会换实现，只是多了 race 运行时。
+      - name: go test -race
+        run: CGO_ENABLED=1 go test -race ./...
 
   frontend:
     name: 前端检查
