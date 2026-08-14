@@ -38,6 +38,3 @@ go.work.sum
 # 前端构建产物由构建流程注入，不入库
 internal/web/dist/*
 !internal/web/dist/.gitkeep
-
-# 测试文件
-*_test.go
