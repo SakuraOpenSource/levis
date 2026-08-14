@@ -2,6 +2,8 @@ package service
 
 import (
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -590,5 +592,121 @@ func TestPasswordChangeRequiresOldPassword(t *testing.T) {
 	}
 	if _, err := users.Login("peggy", "newpassword123"); err != nil {
 		t.Errorf("改密后应能用新密码登录: %v", err)
+	}
+}
+
+// TestProductSpecsRoundTrip 确认规格列表能原样存取。
+//
+// 规格以 JSON 文本存在单列里（driver.Valuer / sql.Scanner），顺序与内容都必须
+// 保持不变 —— 卡片上的展示顺序由管理员填写顺序决定。
+func TestProductSpecsRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	adminSvc := NewAdminService(db, NewWalletService(db))
+	category, err := adminSvc.CreateCategory(CategoryInput{Name: "美国"})
+	if err != nil {
+		t.Fatalf("创建分组失败: %v", err)
+	}
+
+	specs := model.SpecList{
+		{Label: "CPU", Value: "双 E5-2680v2"},
+		{Label: "内存", Value: "16 GB DDR3"},
+		{Label: "硬盘", Value: "500 GB SSD"},
+	}
+	created, err := adminSvc.CreateProduct(ProductInput{
+		CategoryID: category.ID,
+		Name:       "美国二区·高配",
+		Specs:      specs,
+		PriceCents: 2000,
+	})
+	if err != nil {
+		t.Fatalf("创建商品失败: %v", err)
+	}
+
+	// 重新读库，确认走的是 Scan 而不是内存里的原对象。
+	var loaded model.Product
+	if err := db.First(&loaded, created.ID).Error; err != nil {
+		t.Fatalf("读取商品失败: %v", err)
+	}
+	if len(loaded.Specs) != len(specs) {
+		t.Fatalf("规格条数应为 %d，实际 %d", len(specs), len(loaded.Specs))
+	}
+	for i, spec := range specs {
+		if loaded.Specs[i] != spec {
+			t.Errorf("第 %d 条规格应为 %+v，实际 %+v", i, spec, loaded.Specs[i])
+		}
+	}
+
+	// 更新为空列表后必须真的清空，不能残留旧值。
+	if _, err := adminSvc.UpdateProduct(created.ID, ProductInput{
+		CategoryID: category.ID,
+		Name:       "美国二区·高配",
+		PriceCents: 2000,
+	}); err != nil {
+		t.Fatalf("更新商品失败: %v", err)
+	}
+	if err := db.First(&loaded, created.ID).Error; err != nil {
+		t.Fatalf("重新读取商品失败: %v", err)
+	}
+	if len(loaded.Specs) != 0 {
+		t.Errorf("清空规格后应为空，实际 %+v", loaded.Specs)
+	}
+}
+
+// TestProductSpecsNormalized 确认规格入库前被清理与限制。
+func TestProductSpecsNormalized(t *testing.T) {
+	db := newTestDB(t)
+	adminSvc := NewAdminService(db, NewWalletService(db))
+	category, err := adminSvc.CreateCategory(CategoryInput{Name: "香港"})
+	if err != nil {
+		t.Fatalf("创建分组失败: %v", err)
+	}
+	newInput := func(specs model.SpecList) ProductInput {
+		return ProductInput{
+			CategoryID: category.ID,
+			Name:       "HK1",
+			Specs:      specs,
+			PriceCents: 1000,
+		}
+	}
+
+	// 前端表单常留空白行，应被丢弃而不是报错；两端空白也要去掉。
+	product, err := adminSvc.CreateProduct(newInput(model.SpecList{
+		{Label: "  CPU  ", Value: "  4 核  "},
+		{Label: "", Value: ""},
+	}))
+	if err != nil {
+		t.Fatalf("创建商品失败: %v", err)
+	}
+	if len(product.Specs) != 1 {
+		t.Fatalf("空白行应被丢弃，实际 %d 条", len(product.Specs))
+	}
+	if product.Specs[0] != (model.Spec{Label: "CPU", Value: "4 核"}) {
+		t.Errorf("规格应被去空白，实际 %+v", product.Specs[0])
+	}
+
+	// 只填一半属于输入错误，必须明确拒绝。
+	if _, err := adminSvc.CreateProduct(newInput(model.SpecList{
+		{Label: "CPU", Value: ""},
+	})); err == nil {
+		t.Error("规格只填名称时应拒绝")
+	}
+	if _, err := adminSvc.CreateProduct(newInput(model.SpecList{
+		{Label: "", Value: "4 核"},
+	})); err == nil {
+		t.Error("规格只填内容时应拒绝")
+	}
+
+	// 过长内容与超量条数都会撑爆卡片布局。
+	if _, err := adminSvc.CreateProduct(newInput(model.SpecList{
+		{Label: strings.Repeat("长", 33), Value: "4 核"},
+	})); err == nil {
+		t.Error("规格名称过长时应拒绝")
+	}
+	tooMany := make(model.SpecList, 0, maxSpecs+1)
+	for i := 0; i <= maxSpecs; i++ {
+		tooMany = append(tooMany, model.Spec{Label: "K" + strconv.Itoa(i), Value: "V"})
+	}
+	if _, err := adminSvc.CreateProduct(newInput(tooMany)); err == nil {
+		t.Errorf("规格超过 %d 条时应拒绝", maxSpecs)
 	}
 }
