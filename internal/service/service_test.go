@@ -91,6 +91,45 @@ func balanceOf(t *testing.T, db *gorm.DB, userID uint) int64 {
 	return user.BalanceCents
 }
 
+// seedService 直接建一个在用中的月付服务，省去完整下单流程。
+func seedService(t *testing.T, db *gorm.DB, userID uint, name string, price int64) *model.Service {
+	t.Helper()
+	svc := model.Service{
+		UserID:     userID,
+		Name:       name,
+		Status:     model.ServiceActive,
+		BillingCyc: model.CycleMonthly,
+		PriceCents: price,
+	}
+	if err := db.Create(&svc).Error; err != nil {
+		t.Fatalf("创建测试服务失败: %v", err)
+	}
+	return &svc
+}
+
+// buyService 走完整下单-支付流程给 user 买一份 product，返回开通的服务。
+func buyService(t *testing.T, db *gorm.DB, user *model.User, product *model.Product) *model.Service {
+	t.Helper()
+	cart := NewCartService(db)
+	wallet := NewWalletService(db)
+	orders := NewOrderService(db, cart, wallet)
+	if err := cart.Add(user.ID, AddRequest{ProductID: product.ID, Quantity: 1}); err != nil {
+		t.Fatalf("加入购物车失败: %v", err)
+	}
+	order, err := orders.CreateFromCart(user.ID)
+	if err != nil {
+		t.Fatalf("创建订单失败: %v", err)
+	}
+	result, err := orders.Pay(user.ID, order.ID)
+	if err != nil {
+		t.Fatalf("支付失败: %v", err)
+	}
+	if len(result.Services) != 1 {
+		t.Fatalf("应开通 1 个服务，实际 %d 个", len(result.Services))
+	}
+	return &result.Services[0]
+}
+
 // TestRegisterCannotEscalateRole 确认注册接口无法用于自我提权。
 //
 // RegisterRequest 里没有 Role 字段，因此即使请求体带了 role=admin 也无处落地；
@@ -708,5 +747,178 @@ func TestProductSpecsNormalized(t *testing.T) {
 	}
 	if _, err := adminSvc.CreateProduct(newInput(tooMany)); err == nil {
 		t.Errorf("规格超过 %d 条时应拒绝", maxSpecs)
+	}
+}
+
+// TestRenewExtendsServiceAndKeepsLedger 确认续费扣款、顺延到期并留下账单流水。
+func TestRenewExtendsServiceAndKeepsLedger(t *testing.T) {
+	db := newTestDB(t)
+	user := seedUser(t, db, "renew", 5000)
+	product := seedProduct(t, db, "HK-renew", 1200)
+	svc := buyService(t, db, user, product) // 余额 5000 → 3800
+	oldExpires := *svc.ExpiresAt
+
+	billing := NewBillingService(db, NewWalletService(db))
+	result, err := billing.Renew(user.ID, svc.ID)
+	if err != nil {
+		t.Fatalf("续费失败: %v", err)
+	}
+
+	// 再扣一份的钱。
+	if got := balanceOf(t, db, user.ID); got != 2600 {
+		t.Errorf("续费后余额应为 2600，实际 %d", got)
+	}
+	// 到期时间应在原到期日上顺延一个月，而不是从现在起加一个月。
+	want := oldExpires.AddDate(0, 1, 0)
+	if result.Service.ExpiresAt == nil || !result.Service.ExpiresAt.Equal(want) {
+		t.Errorf("续费后到期时间应为 %v，实际 %v", want, result.Service.ExpiresAt)
+	}
+	if result.Invoice.Status != model.InvoicePaid || result.Invoice.TotalCents != 1200 {
+		t.Errorf("续费账单应为已付 1200，实际 %+v", result.Invoice)
+	}
+	// 购买 + 续费 = 两笔 payment 流水。
+	var count int64
+	if err := db.Model(&model.Transaction{}).
+		Where("user_id = ? AND type = ?", user.ID, model.TxPayment).Count(&count).Error; err != nil {
+		t.Fatalf("统计流水失败: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("应有 2 笔支付流水，实际 %d", count)
+	}
+}
+
+// TestRenewInsufficientBalanceRollsBack 确认余额不足时续费整体回滚。
+func TestRenewInsufficientBalanceRollsBack(t *testing.T) {
+	db := newTestDB(t)
+	user := seedUser(t, db, "renew-poor", 1200)
+	product := seedProduct(t, db, "HK-renew-poor", 1200)
+	svc := buyService(t, db, user, product) // 余额 → 0
+	oldExpires := *svc.ExpiresAt
+
+	billing := NewBillingService(db, NewWalletService(db))
+	if _, err := billing.Renew(user.ID, svc.ID); err == nil {
+		t.Fatal("余额不足时续费应失败")
+	}
+
+	if got := balanceOf(t, db, user.ID); got != 0 {
+		t.Errorf("续费失败后余额应仍为 0，实际 %d", got)
+	}
+	var reloaded model.Service
+	if err := db.First(&reloaded, svc.ID).Error; err != nil {
+		t.Fatalf("读取服务失败: %v", err)
+	}
+	if reloaded.ExpiresAt == nil || !reloaded.ExpiresAt.Equal(oldExpires) {
+		t.Error("续费失败后到期时间不应变化")
+	}
+	// 账单数仍为购买时的那一张，续费不应新增。
+	var count int64
+	if err := db.Model(&model.Invoice{}).Where("user_id = ?", user.ID).Count(&count).Error; err != nil {
+		t.Fatalf("统计账单失败: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("续费失败后账单数应仍为 1，实际 %d", count)
+	}
+}
+
+// TestRenewRejectsOnetimeAndNonActive 确认一次性与已暂停的服务不能续费。
+func TestRenewRejectsOnetimeAndNonActive(t *testing.T) {
+	db := newTestDB(t)
+	user := seedUser(t, db, "renew-x", 5000)
+	billing := NewBillingService(db, NewWalletService(db))
+
+	onetime := model.Service{
+		UserID: user.ID, Name: "OT", Status: model.ServiceActive,
+		BillingCyc: model.CycleOneTime, PriceCents: 100,
+	}
+	if err := db.Create(&onetime).Error; err != nil {
+		t.Fatalf("创建一次性服务失败: %v", err)
+	}
+	if _, err := billing.Renew(user.ID, onetime.ID); err == nil {
+		t.Error("一次性服务续费应被拒绝")
+	}
+
+	suspended := seedService(t, db, user.ID, "SUS", 100)
+	if err := db.Model(suspended).Update("status", model.ServiceSuspended).Error; err != nil {
+		t.Fatalf("暂停服务失败: %v", err)
+	}
+	if _, err := billing.Renew(user.ID, suspended.ID); err == nil {
+		t.Error("已暂停的服务续费应被拒绝")
+	}
+
+	if got := balanceOf(t, db, user.ID); got != 5000 {
+		t.Errorf("拒绝续费后余额应仍为 5000，实际 %d", got)
+	}
+}
+
+// TestAdminSetServiceStatus 确认停用与恢复只在合法状态间切换。
+func TestAdminSetServiceStatus(t *testing.T) {
+	db := newTestDB(t)
+	adminSvc := NewAdminService(db, NewWalletService(db))
+	user := seedUser(t, db, "svc-owner", 0)
+	svc := seedService(t, db, user.ID, "HK-ops", 1000)
+
+	suspended, err := adminSvc.SetServiceStatus(svc.ID, model.ServiceSuspended)
+	if err != nil {
+		t.Fatalf("停用服务失败: %v", err)
+	}
+	if suspended.Status != model.ServiceSuspended {
+		t.Errorf("停用后状态应为 %q，实际 %q", model.ServiceSuspended, suspended.Status)
+	}
+
+	active, err := adminSvc.SetServiceStatus(svc.ID, model.ServiceActive)
+	if err != nil {
+		t.Fatalf("恢复服务失败: %v", err)
+	}
+	if active.Status != model.ServiceActive {
+		t.Errorf("恢复后状态应为 %q，实际 %q", model.ServiceActive, active.Status)
+	}
+
+	if _, err := adminSvc.SetServiceStatus(svc.ID, "bogus"); err == nil {
+		t.Error("非法状态应被拒绝")
+	}
+}
+
+// TestAdminDeleteServiceDetachesInvoice 确认删除服务时保留账单明细但解绑引用。
+func TestAdminDeleteServiceDetachesInvoice(t *testing.T) {
+	db := newTestDB(t)
+	adminSvc := NewAdminService(db, NewWalletService(db))
+	user := seedUser(t, db, "svc-del", 0)
+	svc := seedService(t, db, user.ID, "HK-del", 1000)
+
+	invoice := model.Invoice{
+		InvoiceNo: "INV-TEST", UserID: user.ID,
+		Status: model.InvoicePaid, TotalCents: 1000,
+	}
+	if err := db.Create(&invoice).Error; err != nil {
+		t.Fatalf("创建账单失败: %v", err)
+	}
+	item := model.InvoiceItem{
+		InvoiceID: invoice.ID, ServiceID: &svc.ID,
+		Description: "续费 HK-del", AmountCents: 1000,
+	}
+	if err := db.Create(&item).Error; err != nil {
+		t.Fatalf("创建账单明细失败: %v", err)
+	}
+
+	if err := adminSvc.DeleteService(svc.ID); err != nil {
+		t.Fatalf("删除服务失败: %v", err)
+	}
+	var count int64
+	if err := db.Model(&model.Service{}).Where("id = ?", svc.ID).Count(&count).Error; err != nil {
+		t.Fatalf("统计服务失败: %v", err)
+	}
+	if count != 0 {
+		t.Error("服务应已删除")
+	}
+	// 账单明细仍在，但对服务的引用已置空。
+	var reloaded model.InvoiceItem
+	if err := db.First(&reloaded, item.ID).Error; err != nil {
+		t.Fatalf("读取账单明细失败: %v", err)
+	}
+	if reloaded.ServiceID != nil {
+		t.Error("删除服务后账单明细的 service_id 应置空")
+	}
+	if err := adminSvc.DeleteService(svc.ID); err == nil {
+		t.Error("重复删除应失败")
 	}
 }
