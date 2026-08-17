@@ -61,6 +61,114 @@ jobs:
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "将发布 $tag（名称：$name）"
 
+      # 按 Conventional Commits 的前缀把提交分节，生成发布说明。
+      # 放在构建之前：提交历史有问题应该立刻失败，而不是等编译完十几分钟才发现。
+      - name: 生成发布说明
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          # 上一个版本：按版本号倒序取第一个不是本次发布、且确实是当前提交祖先的
+          # tag。手动触发时 TAG 可能还不存在，所以不能用 git describe "$TAG^"；
+          # 祖先判断则是为了避开其他分支上的 tag。
+          prev=''
+          for candidate in $(git tag --sort=-v:refname); do
+            [ "$candidate" = "$TAG" ] && continue
+            if git merge-base --is-ancestor "$candidate" HEAD 2>/dev/null; then
+              prev="$candidate"
+              break
+            fi
+          done
+
+          # tformat 而非 format：后者不给最后一条记录补换行，read 会因读到 EOF
+          # 而丢掉整个循环体，首次发布时表现为根提交凭空消失。
+          log_args=(--no-merges --pretty=tformat:'%h%x09%s')
+          if [ -n "$prev" ]; then
+            log_args+=("$prev..HEAD")
+            echo "对比区间：$prev..HEAD"
+          else
+            echo "未找到上一个 tag，取全部历史"
+          fi
+
+          work="$(mktemp -d)"
+
+          # 逐条解析主题行，按类型写进对应的临时文件。
+          # 分隔符用制表符 —— 提交主题里不会出现它。
+          while IFS="$(printf '\t')" read -r hash subject; do
+            [ -n "${hash:-}" ] || continue
+
+            kind='other'; scope=''; bang=''; summary="$subject"
+            if [[ "$subject" =~ ^([a-zA-Z]+)(\(([^\)]*)\))?(!)?:[[:space:]]*(.*)$ ]]; then
+              kind="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
+              scope="${BASH_REMATCH[3]:-}"
+              bang="${BASH_REMATCH[4]:-}"
+              summary="${BASH_REMATCH[5]:-}"
+            fi
+
+            line='- '
+            [ -n "$scope" ] && line="$line**$scope**: "
+            line="$line$summary ([\`$hash\`](https://github.com/$REPO/commit/$hash))"
+            printf '%s\n' "$line" >> "$work/$kind"
+
+            # 重大变更认两种写法：主题行的 ! 与正文里的 BREAKING CHANGE 脚注。
+            # 用 bash 自带的匹配而不是 sed | head：后者在脚注多于一条时会让 sed
+            # 吃到 SIGPIPE，配合 Actions 默认开启的 pipefail 直接把这步判成失败。
+            # 开头补一个换行，让首行也能命中「行首」。
+            body="$(git log -1 --pretty=%b "$hash")"
+            note=''
+            if [[ $'\n'"$body" =~ $'\n'[[:space:]]*BREAKING[\ -]CHANGE[[:space:]]*:[[:space:]]*([^$'\n']*) ]]; then
+              note="${BASH_REMATCH[1]}"
+            fi
+            if [ -n "$bang" ] || [ -n "$note" ]; then
+              printf '%s\n' "$line" >> "$work/breaking"
+              [ -n "$note" ] && printf '  %s\n' "$note" >> "$work/breaking"
+            fi
+          done < <(git log "${log_args[@]}")
+
+          : > release-notes.md
+
+          # 重大变更提到最前面，同时保留在原本的分节里：既要一眼看到不兼容改动，
+          # 也不能让「新功能」列表缺项。
+          if [ -s "$work/breaking" ]; then
+            printf '## ⚠️ 重大变更\n\n' >> release-notes.md
+            cat "$work/breaking" >> release-notes.md
+            printf '\n' >> release-notes.md
+          fi
+
+          # 面向使用者的改动排在前面，文档与工程杂项往后放。
+          emit() {
+            [ -s "$work/$1" ] || return 0
+            printf '## %s\n\n' "$2" >> release-notes.md
+            cat "$work/$1" >> release-notes.md
+            printf '\n' >> release-notes.md
+          }
+          emit feat     '新功能'
+          emit fix      '问题修复'
+          emit perf     '性能优化'
+          emit refactor '重构'
+          emit revert   '回滚'
+          emit docs     '文档'
+          emit test     '测试'
+          emit build    '构建'
+          emit ci       '持续集成'
+          emit style    '代码风格'
+          # 不合前缀约定的提交归到「其他变更」而不是丢掉 —— 静默漏掉变更
+          # 比多列一条难查得多。
+          emit chore    '杂项'
+          emit other    '其他变更'
+
+          # 正文空着会让人误以为是生成失败，明说一句。
+          if [ ! -s release-notes.md ]; then
+            printf '本次发布没有代码变更。\n' >> release-notes.md
+          fi
+
+          if [ -n "$prev" ]; then
+            printf '**完整变更**：https://github.com/%s/compare/%s...%s\n' \
+              "$REPO" "$prev" "$TAG" >> release-notes.md
+          fi
+
+          cat release-notes.md
+
       # 前端是独立仓库，产物在编译前注入 internal/web/dist，
       # 由 go:embed 打进二进制，最终交付单个可执行文件。
       - name: 拉取前端仓库
@@ -126,7 +234,7 @@ jobs:
           path: bin/release/*
 
       # tag 不存在时由这一步在 target_commitish 上创建，因此手动触发无需先打 tag。
-      # 说明由 GitHub 自动生成（对比上一个 Release 的提交与 PR）。
+      # 说明取自上一步按提交前缀生成的 release-notes.md。
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
@@ -134,5 +242,5 @@ jobs:
           name: ${{ steps.meta.outputs.name }}
           target_commitish: ${{ github.sha }}
           prerelease: ${{ inputs.prerelease || false }}
-          generate_release_notes: true
+          body_path: release-notes.md
           files: bin/release/*
