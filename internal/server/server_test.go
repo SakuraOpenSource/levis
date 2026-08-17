@@ -9,10 +9,27 @@ import (
 	"path/filepath"
 	"testing"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/SakuraOpenSource/levis/internal/auth"
 	"github.com/SakuraOpenSource/levis/internal/config"
 	"github.com/SakuraOpenSource/levis/internal/runtime"
 )
+
+// TestMain 把 bcrypt 强度降到下限后再跑整包测试。
+//
+// 本包的用例几乎每个都要装站、注册、登录，每一步都过一次 bcrypt。按生产
+// 强度（cost 12）算，一次哈希约几十毫秒，而 -race 会把它放大约一个数量级：
+// 单次装站要 6 秒以上，整包累积起来直接撞上 go test 默认的 10 分钟超时。
+//
+// 强度只影响哈希的计算成本，不影响正确性 —— 校验走的是哈希串里自带的
+// cost，生成与比对仍是同一套代码路径。
+func TestMain(m *testing.M) {
+	restore := auth.SetPasswordCost(bcrypt.MinCost)
+	code := m.Run()
+	restore()
+	os.Exit(code)
+}
 
 // newTestServer 起一个未安装态的服务，数据目录指向临时路径。
 func newTestServer(t *testing.T) (*runtime.Runtime, http.Handler) {

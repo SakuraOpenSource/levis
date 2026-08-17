@@ -35,10 +35,34 @@ type Claims struct {
 	Role   string `json:"role"`
 }
 
+// DefaultPasswordCost 是生产环境的 bcrypt 计算强度。
+//
+// 12 比 bcrypt 默认的 10 更耐暴破，单次约几十毫秒，登录场景可接受。
+const DefaultPasswordCost = 12
+
+// passwordCost 是当前生效的 bcrypt 强度，只由 SetPasswordCost 改动。
+//
+// 做成变量而非常量是为了让测试降下来：cost 每加 1 耗时翻倍，而 race
+// 检测器又会把开销再放大约一个数量级，按生产强度跑整套接口测试会撞上
+// go test 的默认超时。
+var passwordCost = DefaultPasswordCost
+
+// SetPasswordCost 覆盖 bcrypt 强度并返回一个还原函数。
+//
+// 仅供测试在 TestMain 里调用，生产代码不应触碰它 —— 调低强度等于削弱
+// 全站密码存储。低于 bcrypt 允许的下限时按下限处理。
+func SetPasswordCost(cost int) (restore func()) {
+	if cost < bcrypt.MinCost {
+		cost = bcrypt.MinCost
+	}
+	previous := passwordCost
+	passwordCost = cost
+	return func() { passwordCost = previous }
+}
+
 // HashPassword 用 bcrypt 计算密码哈希。
 func HashPassword(password string) (string, error) {
-	// cost 12 比默认的 10 更耐暴破，单次约几十毫秒，登录场景可接受。
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), passwordCost)
 	if err != nil {
 		return "", fmt.Errorf("密码加密失败: %w", err)
 	}

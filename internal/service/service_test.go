@@ -5,12 +5,14 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/glebarez/sqlite"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
@@ -18,6 +20,15 @@ import (
 	"github.com/SakuraOpenSource/levis/internal/model"
 	"github.com/SakuraOpenSource/levis/internal/storage"
 )
+
+// TestMain 把 bcrypt 强度降到下限后再跑整包测试。原因同 server 包：
+// 建号与改密都要过 bcrypt，生产强度叠加 -race 的开销后测试时长不可接受。
+func TestMain(m *testing.M) {
+	restore := auth.SetPasswordCost(bcrypt.MinCost)
+	code := m.Run()
+	restore()
+	os.Exit(code)
+}
 
 // newTestDB 建立一个内存 SQLite 库并完成迁移。
 //
