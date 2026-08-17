@@ -31,8 +31,8 @@ Levis 是一个轻量、简洁的业务管理系统。
 从 [Releases](https://github.com/SakuraOpenSource/levis/releases) 下载对应平台的产物，然后：
 
 ```bash
-chmod +x levis-linux-amd64
-./levis-linux-amd64
+chmod +x levis-os-arch
+./levis-os-arch
 ```
 
 浏览器打开 <http://localhost:8080> 即可进行安装。
