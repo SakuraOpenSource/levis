@@ -13,8 +13,28 @@ import (
 	"github.com/SakuraOpenSource/levis/internal/web"
 )
 
-// maxBodyBytes 限制请求体大小，避免超大 JSON 打满内存。
-const maxBodyBytes = 1 << 20 // 1 MiB
+// 请求体大小上限，避免超大请求打满内存。
+const (
+	maxBodyBytes = 1 << 20 // 1 MiB，绝大多数接口收发的都是小 JSON
+	// maxUploadBytes 给上传接口留出 20 MiB 附件 + 1 MiB multipart 信封。
+	maxUploadBytes = 21 << 20
+)
+
+// maxMultipartMemory 是 multipart 表单驻留内存的上限，超出部分落临时文件。
+//
+// gin 默认 32 MiB 全留在内存，几个并发上传就能把内存打满。
+const maxMultipartMemory = 8 << 20
+
+// uploadRoutes 是允许大请求体的路由，键为 gin 的路由模板。
+//
+// gin 在执行中间件链之前已完成路由匹配，因此全局中间件里 c.FullPath() 可用。
+// 在同一处按路由抬高上限，两个上限值就不会散落两地。
+var uploadRoutes = map[string]bool{
+	"/api/tickets":                   true,
+	"/api/tickets/:id/replies":       true,
+	"/api/admin/tickets/:id/replies": true,
+	"/api/kyc":                       true,
+}
 
 // New 构造 gin 引擎，挂载 API 与前端静态资源。
 func New(rt *runtime.Runtime, debug bool) *gin.Engine {
@@ -26,6 +46,7 @@ func New(rt *runtime.Runtime, debug bool) *gin.Engine {
 	engine.Use(gin.Logger(), gin.Recovery(), limitBody(), securityHeaders())
 	// 前端为 SPA，所有未命中的路径都交给它做客户端路由。
 	engine.RedirectTrailingSlash = false
+	engine.MaxMultipartMemory = maxMultipartMemory
 
 	h := handler.New(rt)
 
@@ -91,6 +112,24 @@ func New(rt *runtime.Runtime, debug bool) *gin.Engine {
 	invoices.GET("", h.Invoices)
 	invoices.GET("/:id", h.Invoice)
 
+	tickets := authed.Group("/tickets")
+	tickets.GET("", h.Tickets)
+	tickets.POST("", h.CreateTicket)
+	tickets.GET("/:id", h.Ticket)
+	tickets.POST("/:id/replies", h.ReplyTicket)
+	tickets.POST("/:id/close", h.CloseTicket)
+	tickets.GET("/:id/attachments/:aid", h.TicketAttachment)
+
+	kyc := authed.Group("/kyc")
+	kyc.GET("", h.Verification)
+	kyc.POST("", h.SubmitVerification)
+	kyc.GET("/photo/:side", h.VerificationPhoto)
+
+	apiKeys := authed.Group("/api-keys")
+	apiKeys.GET("", h.APIKeys)
+	apiKeys.POST("", h.CreateAPIKey)
+	apiKeys.DELETE("/:id", h.RevokeAPIKey)
+
 	// 以下均需管理员权限。
 	admin := authed.Group("/admin", middleware.RequireAdmin())
 	admin.GET("/stats", h.AdminStats)
@@ -111,6 +150,21 @@ func New(rt *runtime.Runtime, debug bool) *gin.Engine {
 	admin.DELETE("/services/:id", h.AdminDeleteService)
 	admin.GET("/settings/captcha", h.AdminCaptchaSettings)
 	admin.PUT("/settings/captcha", h.AdminUpdateCaptchaSettings)
+	admin.GET("/tickets", h.AdminTickets)
+	admin.GET("/tickets/:id", h.AdminTicket)
+	admin.POST("/tickets/:id/replies", h.AdminReplyTicket)
+	admin.POST("/tickets/:id/close", h.AdminCloseTicket)
+	admin.POST("/tickets/:id/reopen", h.AdminReopenTicket)
+	admin.GET("/tickets/:id/attachments/:aid", h.AdminTicketAttachment)
+	admin.GET("/verifications", h.AdminVerifications)
+	admin.GET("/verifications/:id", h.AdminVerification)
+	admin.GET("/verifications/:id/photo/:side", h.AdminVerificationPhoto)
+	admin.POST("/verifications/:id/approve", h.AdminApproveVerification)
+	admin.POST("/verifications/:id/reject", h.AdminRejectVerification)
+
+	// 对外 API 挂在 engine 而不是 api 组下：api 组带着 CSRF 中间件，而 Key
+	// 认证不存在浏览器隐式凭证，双提交令牌在这里既无从获取也无意义。
+	mountOpenAPI(engine, rt, h)
 
 	// 未匹配的 API 路径返回 JSON 404；其余交给前端。
 	frontend := gin.WrapF(web.Handler())
@@ -125,10 +179,14 @@ func New(rt *runtime.Runtime, debug bool) *gin.Engine {
 	return engine
 }
 
-// limitBody 限制请求体大小。
+// limitBody 限制请求体大小，上传接口按 uploadRoutes 放宽。
 func limitBody() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBodyBytes)
+		limit := int64(maxBodyBytes)
+		if uploadRoutes[c.FullPath()] {
+			limit = maxUploadBytes
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 		c.Next()
 	}
 }

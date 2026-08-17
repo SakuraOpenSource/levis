@@ -7,6 +7,7 @@ import (
 	"github.com/SakuraOpenSource/levis/internal/captcha"
 	"github.com/SakuraOpenSource/levis/internal/runtime"
 	"github.com/SakuraOpenSource/levis/internal/service"
+	"github.com/SakuraOpenSource/levis/internal/storage"
 )
 
 // Handler 聚合各业务 service，并通过 Runtime 获取数据库句柄。
@@ -19,6 +20,9 @@ type Handler struct {
 	// captchaStore 是唯一的例外：它持有已签发但未校验的验证码，必须在整个
 	// 进程内共用一份，按请求新建会让上一次发出去的验证码立刻查无此码。
 	captchaStore *captcha.Store
+	// storage 只依赖数据目录，该值在进程生命周期内不变，因此可以在启动时
+	// 就建好，不必像其它 service 那样等数据库。
+	storage *storage.Store
 }
 
 // New 构造 Handler。
@@ -27,6 +31,7 @@ func New(rt *runtime.Runtime) *Handler {
 		rt:           rt,
 		install:      service.NewInstallService(rt),
 		captchaStore: captcha.NewStore(),
+		storage:      storage.New(rt.DataDir()),
 	}
 }
 
@@ -55,8 +60,20 @@ func (h *Handler) orders() *service.OrderService {
 	return service.NewOrderService(h.db(), h.cart(), h.wallet())
 }
 
+func (h *Handler) tickets() *service.TicketService {
+	return service.NewTicketService(h.db(), h.storage)
+}
+
+func (h *Handler) kyc() *service.KYCService {
+	return service.NewKYCService(h.db(), h.storage)
+}
+
+func (h *Handler) apiKeys() *service.APIKeyService {
+	return service.NewAPIKeyService(h.db())
+}
+
 func (h *Handler) admin() *service.AdminService {
-	return service.NewAdminService(h.db(), h.wallet())
+	return service.NewAdminService(h.db(), h.wallet(), h.storage)
 }
 
 // respond 把 service 层错误映射为 HTTP 响应；err 为 nil 时返回 data。

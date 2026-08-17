@@ -1,7 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"errors"
+	"io"
+	"io/fs"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,6 +16,7 @@ import (
 
 	"github.com/SakuraOpenSource/levis/internal/auth"
 	"github.com/SakuraOpenSource/levis/internal/model"
+	"github.com/SakuraOpenSource/levis/internal/storage"
 )
 
 // newTestDB 建立一个内存 SQLite 库并完成迁移。
@@ -37,6 +42,66 @@ func newTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("迁移测试数据库失败: %v", err)
 	}
 	return db
+}
+
+// newTestStore 建一个以临时目录为根的文件存储。
+//
+// t.TempDir 会在测试结束时整个删掉，落盘的测试文件不会留在仓库里。
+func newTestStore(t *testing.T) *storage.Store {
+	t.Helper()
+	return storage.New(t.TempDir())
+}
+
+// fakeUpload 造一个 size 字节、能被嗅探为 image/png 的上传文件。
+//
+// Upload.Open 是个工厂，每次调用都给出一个新的 Reader —— 服务层可能为了嗅探
+// MIME 再打开一次，共用一个已读完的 Reader 会拿到空内容。
+func fakeUpload(name string, size int) Upload {
+	magic := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	if size < len(magic) {
+		size = len(magic)
+	}
+	data := make([]byte, size)
+	copy(data, magic)
+	for i := len(magic); i < size; i++ {
+		data[i] = byte(i % 251)
+	}
+	return Upload{
+		FileName: name,
+		Size:     int64(len(data)),
+		Open: func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(data)), nil
+		},
+	}
+}
+
+// storedFiles 列出存储根目录下的全部文件。
+//
+// 「删号后文件真的没了」这类断言只能靠遍历磁盘来验：数据库里的行删干净了，
+// 盘上仍可能留着无人引用的证件照。
+func storedFiles(t *testing.T, store *storage.Store) []string {
+	t.Helper()
+	var out []string
+	err := filepath.WalkDir(store.Root(), func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			// 目录还没建起来等同于「没有文件」。
+			return nil
+		}
+		if !entry.IsDir() {
+			out = append(out, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("遍历存储目录失败: %v", err)
+	}
+	return out
+}
+
+// newTestAdminService 构造带临时存储的 AdminService。
+func newTestAdminService(t *testing.T, db *gorm.DB) *AdminService {
+	t.Helper()
+	return NewAdminService(db, NewWalletService(db), newTestStore(t))
 }
 
 // seedUser 建一个余额为 balance 的普通用户。
@@ -426,7 +491,7 @@ func TestAdminBalanceAdjustmentLeavesAuditTrail(t *testing.T) {
 	}
 	target := seedUser(t, db, "kevin", 1000)
 
-	adminSvc := NewAdminService(db, NewWalletService(db))
+	adminSvc := newTestAdminService(t, db)
 	newBalance := int64(2500)
 	updated, err := adminSvc.UpdateUser(admin.ID, target.ID, UpdateUserRequest{
 		BalanceCents: &newBalance,
@@ -459,7 +524,7 @@ func TestAdminCannotDemoteSelf(t *testing.T) {
 	if err := db.Model(admin).Update("role", model.RoleAdmin).Error; err != nil {
 		t.Fatalf("提升管理员失败: %v", err)
 	}
-	adminSvc := NewAdminService(db, NewWalletService(db))
+	adminSvc := newTestAdminService(t, db)
 
 	role := model.RoleUser
 	if _, err := adminSvc.UpdateUser(admin.ID, admin.ID, UpdateUserRequest{Role: &role}); err == nil {
@@ -484,7 +549,7 @@ func TestAdminCannotRemoveLastAdmin(t *testing.T) {
 			t.Fatalf("提升管理员失败: %v", err)
 		}
 	}
-	adminSvc := NewAdminService(db, NewWalletService(db))
+	adminSvc := newTestAdminService(t, db)
 
 	// 两名管理员时，降权其中一个是允许的。
 	role := model.RoleUser
@@ -529,7 +594,7 @@ func TestLoginWithWrongPassword(t *testing.T) {
 // TestCategoryDepthLimited 确认分组层级被限制在两级。
 func TestCategoryDepthLimited(t *testing.T) {
 	db := newTestDB(t)
-	adminSvc := NewAdminService(db, NewWalletService(db))
+	adminSvc := newTestAdminService(t, db)
 
 	root, err := adminSvc.CreateCategory(CategoryInput{Name: "香港"})
 	if err != nil {
@@ -556,7 +621,7 @@ func TestCategoryDepthLimited(t *testing.T) {
 // TestDeleteCategoryWithProductsRejected 确认有商品的分组不能直接删除。
 func TestDeleteCategoryWithProductsRejected(t *testing.T) {
 	db := newTestDB(t)
-	adminSvc := NewAdminService(db, NewWalletService(db))
+	adminSvc := newTestAdminService(t, db)
 	product := seedProduct(t, db, "HK6", 1000)
 
 	if err := adminSvc.DeleteCategory(product.CategoryID); err == nil {
@@ -640,7 +705,7 @@ func TestPasswordChangeRequiresOldPassword(t *testing.T) {
 // 保持不变 —— 卡片上的展示顺序由管理员填写顺序决定。
 func TestProductSpecsRoundTrip(t *testing.T) {
 	db := newTestDB(t)
-	adminSvc := NewAdminService(db, NewWalletService(db))
+	adminSvc := newTestAdminService(t, db)
 	category, err := adminSvc.CreateCategory(CategoryInput{Name: "美国"})
 	if err != nil {
 		t.Fatalf("创建分组失败: %v", err)
@@ -694,7 +759,7 @@ func TestProductSpecsRoundTrip(t *testing.T) {
 // TestProductSpecsNormalized 确认规格入库前被清理与限制。
 func TestProductSpecsNormalized(t *testing.T) {
 	db := newTestDB(t)
-	adminSvc := NewAdminService(db, NewWalletService(db))
+	adminSvc := newTestAdminService(t, db)
 	category, err := adminSvc.CreateCategory(CategoryInput{Name: "香港"})
 	if err != nil {
 		t.Fatalf("创建分组失败: %v", err)
@@ -853,7 +918,7 @@ func TestRenewRejectsOnetimeAndNonActive(t *testing.T) {
 // TestAdminSetServiceStatus 确认停用与恢复只在合法状态间切换。
 func TestAdminSetServiceStatus(t *testing.T) {
 	db := newTestDB(t)
-	adminSvc := NewAdminService(db, NewWalletService(db))
+	adminSvc := newTestAdminService(t, db)
 	user := seedUser(t, db, "svc-owner", 0)
 	svc := seedService(t, db, user.ID, "HK-ops", 1000)
 
@@ -881,7 +946,7 @@ func TestAdminSetServiceStatus(t *testing.T) {
 // TestAdminDeleteServiceDetachesInvoice 确认删除服务时保留账单明细但解绑引用。
 func TestAdminDeleteServiceDetachesInvoice(t *testing.T) {
 	db := newTestDB(t)
-	adminSvc := NewAdminService(db, NewWalletService(db))
+	adminSvc := newTestAdminService(t, db)
 	user := seedUser(t, db, "svc-del", 0)
 	svc := seedService(t, db, user.ID, "HK-del", 1000)
 
@@ -920,5 +985,143 @@ func TestAdminDeleteServiceDetachesInvoice(t *testing.T) {
 	}
 	if err := adminSvc.DeleteService(svc.ID); err == nil {
 		t.Error("重复删除应失败")
+	}
+}
+
+// TestCartOrderUnaffectedByDirectPath 锁定 buildOrderItems 抽取后购物车下单的行为。
+//
+// 定价逻辑被抽出去给开放接口共用了，这个测试盯住两件事：购物车路径仍然自己
+// 读购物车、下完单清空购物车；两条路径对同一份明细算出完全一样的金额与快照。
+// 任何一条走偏都说明抽取时把某条路径的语义带歪了。
+func TestCartOrderUnaffectedByDirectPath(t *testing.T) {
+	db := newTestDB(t)
+	user := seedUser(t, db, "cart-eq", 100000)
+	product := seedProduct(t, db, "HK-eq", 1300)
+
+	cart := NewCartService(db)
+	wallet := NewWalletService(db)
+	orders := NewOrderService(db, cart, wallet)
+
+	if err := cart.Add(user.ID, AddRequest{ProductID: product.ID, Quantity: 3}); err != nil {
+		t.Fatalf("加入购物车失败: %v", err)
+	}
+	fromCart, err := orders.CreateFromCart(user.ID)
+	if err != nil {
+		t.Fatalf("购物车下单失败: %v", err)
+	}
+
+	// 购物车下单后必须清空 —— 这是购物车路径独有的副作用。
+	view, err := cart.List(user.ID)
+	if err != nil {
+		t.Fatalf("读取购物车失败: %v", err)
+	}
+	if len(view.Items) != 0 {
+		t.Errorf("下单后购物车应清空，实际剩 %d 条", len(view.Items))
+	}
+
+	// 同样一份明细走直接下单，金额与快照必须逐字段一致。
+	direct, err := orders.CreateDirect(user.ID, []OrderLine{
+		{ProductID: product.ID, Quantity: 3},
+	})
+	if err != nil {
+		t.Fatalf("直接下单失败: %v", err)
+	}
+	if fromCart.TotalCents != direct.TotalCents {
+		t.Errorf("两条路径总额不一致: 购物车 %d，直接 %d",
+			fromCart.TotalCents, direct.TotalCents)
+	}
+	if fromCart.TotalCents != 3900 {
+		t.Errorf("总额应为 3×1300=3900，实际 %d", fromCart.TotalCents)
+	}
+	if len(fromCart.Items) != 1 || len(direct.Items) != 1 {
+		t.Fatalf("两条路径都应只有 1 条明细，实际 %d 与 %d",
+			len(fromCart.Items), len(direct.Items))
+	}
+	a, b := fromCart.Items[0], direct.Items[0]
+	if a.ProductID != b.ProductID || a.ProductName != b.ProductName ||
+		a.PriceCents != b.PriceCents || a.Quantity != b.Quantity ||
+		a.BillingCyc != b.BillingCyc {
+		t.Errorf("两条路径的明细快照不一致:\n购物车 %+v\n直接   %+v", a, b)
+	}
+
+	// 直接下单不该反过来动购物车：此刻购物车已空，再加一件确认它没被顺手清掉。
+	if err := cart.Add(user.ID, AddRequest{ProductID: product.ID, Quantity: 1}); err != nil {
+		t.Fatalf("再次加入购物车失败: %v", err)
+	}
+	if _, err := orders.CreateDirect(user.ID, []OrderLine{
+		{ProductID: product.ID, Quantity: 1},
+	}); err != nil {
+		t.Fatalf("直接下单失败: %v", err)
+	}
+	view, err = cart.List(user.ID)
+	if err != nil {
+		t.Fatalf("读取购物车失败: %v", err)
+	}
+	if len(view.Items) != 1 || view.Items[0].Quantity != 1 {
+		t.Errorf("直接下单动了购物车: %+v", view.Items)
+	}
+}
+
+// TestDeleteUserRemovesUploadedFiles 确认删号后附件与证件照真的从磁盘上消失。
+//
+// 只查数据库不够：行删了而文件留着，就是在盘上无限堆积无人引用的证件照。
+func TestDeleteUserRemovesUploadedFiles(t *testing.T) {
+	db := newTestDB(t)
+	store := newTestStore(t)
+	admin := seedUser(t, db, "root-del", 0)
+	if err := db.Model(admin).Update("role", model.RoleAdmin).Error; err != nil {
+		t.Fatalf("提权失败: %v", err)
+	}
+	user := seedUser(t, db, "victim", 0)
+
+	tickets := NewTicketService(db, store)
+	if _, err := tickets.Create(user, TicketCreateRequest{
+		Subject: "带附件的工单",
+		Body:    "正文",
+		Files:   []Upload{fakeUpload("a.png", 512)},
+	}); err != nil {
+		t.Fatalf("建单失败: %v", err)
+	}
+
+	kyc := NewKYCService(db, store)
+	if _, err := kyc.Submit(user.ID, SubmitRequest{
+		RealName: "张三",
+		IDNumber: "110101199003077838",
+		Front:    fakeUpload("front.png", 600),
+		Back:     fakeUpload("back.png", 700),
+	}); err != nil {
+		t.Fatalf("提交实名失败: %v", err)
+	}
+
+	before := storedFiles(t, store)
+	if len(before) != 3 {
+		t.Fatalf("应落盘 3 个文件（1 附件 + 2 证件照），实际 %d 个: %v", len(before), before)
+	}
+
+	adminSvc := NewAdminService(db, NewWalletService(db), store)
+	if err := adminSvc.DeleteUser(admin.ID, user.ID); err != nil {
+		t.Fatalf("删除用户失败: %v", err)
+	}
+
+	if after := storedFiles(t, store); len(after) != 0 {
+		t.Errorf("删号后磁盘上不该留下文件，实际 %d 个: %v", len(after), after)
+	}
+	// 数据库侧也不该留下孤儿行。
+	for _, check := range []struct {
+		name  string
+		model any
+	}{
+		{"工单", &model.Ticket{}},
+		{"回复", &model.TicketReply{}},
+		{"附件", &model.TicketAttachment{}},
+		{"实名记录", &model.Verification{}},
+	} {
+		var count int64
+		if err := db.Model(check.model).Count(&count).Error; err != nil {
+			t.Fatalf("统计%s失败: %v", check.name, err)
+		}
+		if count != 0 {
+			t.Errorf("删号后不该留下%s，实际 %d 条", check.name, count)
+		}
 	}
 }

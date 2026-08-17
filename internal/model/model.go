@@ -324,5 +324,10 @@ func AllModels() []any {
 		&Invoice{},
 		&InvoiceItem{},
 		&Transaction{},
+		&Ticket{},
+		&TicketReply{},
+		&TicketAttachment{},
+		&Verification{},
+		&APIKey{},
 	}
 }

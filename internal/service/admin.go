@@ -11,17 +11,20 @@ import (
 
 	"github.com/SakuraOpenSource/levis/internal/auth"
 	"github.com/SakuraOpenSource/levis/internal/model"
+	"github.com/SakuraOpenSource/levis/internal/storage"
 )
 
 // AdminService 提供管理后台的用户、分组与商品管理。
 type AdminService struct {
 	db     *gorm.DB
 	wallet *WalletService
+	// store 用于删除用户时清理其上传的附件与证件照。
+	store *storage.Store
 }
 
 // NewAdminService 构造 AdminService。
-func NewAdminService(db *gorm.DB, wallet *WalletService) *AdminService {
-	return &AdminService{db: db, wallet: wallet}
+func NewAdminService(db *gorm.DB, wallet *WalletService, store *storage.Store) *AdminService {
+	return &AdminService{db: db, wallet: wallet, store: store}
 }
 
 // ---------- 用户管理 ----------
@@ -272,8 +275,31 @@ func (s *AdminService) DeleteUser(operatorID, userID uint) error {
 		}
 	}
 
-	// 用户的订单、账单、服务与流水一并清理，避免留下孤儿数据。
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	// 用户的订单、账单、服务、流水、工单与实名材料一并清理，避免留下孤儿数据。
+	//
+	// 磁盘文件不能在事务里删：事务回滚而文件已 unlink，就成了「行还在、文件
+	// 没了」，那是用户能看见的错误。所以事务内只收集路径，提交成功后再删。
+	// 反向的残留（事务失败留下无人引用的文件）无害。
+	var filePaths []string
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		tickets := NewTicketService(tx, s.store)
+		attachmentPaths, err := tickets.UserAttachmentPaths(tx, userID)
+		if err != nil {
+			return err
+		}
+		photoPaths, err := NewKYCService(tx, s.store).UserPhotoPaths(tx, userID)
+		if err != nil {
+			return err
+		}
+		filePaths = append(append(filePaths, attachmentPaths...), photoPaths...)
+
+		if err := tickets.DeleteUserTickets(tx, userID); err != nil {
+			return err
+		}
+		if err := NewAPIKeyService(tx).DeleteUserKeys(tx, userID); err != nil {
+			return err
+		}
+
 		var orderIDs []uint
 		if err := tx.Model(&model.Order{}).Where("user_id = ?", userID).
 			Pluck("id", &orderIDs).Error; err != nil {
@@ -296,7 +322,7 @@ func (s *AdminService) DeleteUser(operatorID, userID uint) error {
 		}
 		for _, target := range []any{
 			&model.CartItem{}, &model.Order{}, &model.Invoice{},
-			&model.Service{}, &model.Transaction{},
+			&model.Service{}, &model.Transaction{}, &model.Verification{},
 		} {
 			if err := tx.Where("user_id = ?", userID).Delete(target).Error; err != nil {
 				return err
@@ -304,6 +330,12 @@ func (s *AdminService) DeleteUser(operatorID, userID uint) error {
 		}
 		return tx.Delete(&model.User{}, userID).Error
 	})
+	if err != nil {
+		return err
+	}
+	// 文件删不掉只是留了垃圾，不该让「用户已删除」这个结果失败。
+	s.store.RemoveAll(filePaths)
+	return nil
 }
 
 // ensureAnotherAdmin 确认除 excludeID 外还存在其他启用中的管理员。

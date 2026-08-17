@@ -37,70 +37,151 @@ func serialNo(prefix string) (string, error) {
 	), nil
 }
 
+// OrderLine 是一条待下单明细：买哪个商品、几份、按哪个周期计费。
+//
+// 购物车下单与开放接口直接下单都归约成一组 OrderLine，再交给
+// buildOrderItems 统一校验与定价 —— 定价逻辑只有一份。
+type OrderLine struct {
+	ProductID  uint   `json:"product_id"`
+	Quantity   int    `json:"quantity"`
+	BillingCyc string `json:"billing_cycle"`
+}
+
+// MaxOrderLines 是单笔订单的明细条数上限。
+const MaxOrderLines = 20
+
+// buildOrderItems 校验明细并生成订单条目与总额。
+//
+// 价格与商品名一律从数据库实时读取后快照进条目，绝不采用调用方传入的金额 ——
+// 这是全系统唯一的定价入口，购物车与开放接口共用。
+func buildOrderItems(tx *gorm.DB, lines []OrderLine) ([]model.OrderItem, int64, error) {
+	items := make([]model.OrderItem, 0, len(lines))
+	var total int64
+	for _, line := range lines {
+		if line.Quantity <= 0 {
+			return nil, 0, ErrBadRequest("商品数量必须大于零")
+		}
+		if line.Quantity > MaxCartQuantity {
+			return nil, 0, ErrBadRequest("单个商品数量不能超过 %d", MaxCartQuantity)
+		}
+
+		var product model.Product
+		err := tx.First(&product, "id = ? AND status = ?", line.ProductID, model.ProductActive).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, 0, ErrBadRequest("商品不存在或已下架")
+			}
+			return nil, 0, err
+		}
+		if product.Stock >= 0 && product.Stock < line.Quantity {
+			return nil, 0, ErrBadRequest("商品「%s」库存不足", product.Name)
+		}
+
+		cycle := line.BillingCyc
+		if cycle == "" {
+			cycle = product.BillingCyc
+		}
+		if !model.ValidCycle(cycle) {
+			return nil, 0, ErrBadRequest("无效的计费周期")
+		}
+
+		total += product.PriceCents * int64(line.Quantity)
+		items = append(items, model.OrderItem{
+			// 冗余快照：商品日后改价或改名，历史订单仍显示成交时的值。
+			ProductID:   product.ID,
+			ProductName: product.Name,
+			PriceCents:  product.PriceCents,
+			Quantity:    line.Quantity,
+			BillingCyc:  cycle,
+		})
+	}
+	return items, total, nil
+}
+
 // CreateFromCart 用当前购物车创建待支付订单。
 //
-// 全程在一个事务内完成：读购物车 → 建订单与明细 → 清空购物车。价格从数据库
-// 实时读取，绝不采用客户端传入的金额。
+// 全程在一个事务内完成：读购物车 → 建订单与明细 → 清空购物车。
 func (s *OrderService) CreateFromCart(userID uint) (*model.Order, error) {
 	var order model.Order
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var items []model.CartItem
-		if err := tx.Preload("Product").Where("user_id = ?", userID).
-			Order("id ASC").Find(&items).Error; err != nil {
+		if err := tx.Where("user_id = ?", userID).Order("id ASC").Find(&items).Error; err != nil {
 			return err
 		}
-
-		orderItems := make([]model.OrderItem, 0, len(items))
-		var total int64
-		for _, item := range items {
-			if item.Product == nil || item.Product.Status != model.ProductActive {
-				return ErrBadRequest("购物车中存在已下架的商品，请移除后重试")
-			}
-			if item.Product.Stock >= 0 && item.Product.Stock < item.Quantity {
-				return ErrBadRequest("商品「%s」库存不足", item.Product.Name)
-			}
-			amount := item.Product.PriceCents * int64(item.Quantity)
-			total += amount
-			orderItems = append(orderItems, model.OrderItem{
-				// 冗余快照：商品日后改价或改名，历史订单仍显示成交时的值。
-				ProductID:   item.ProductID,
-				ProductName: item.Product.Name,
-				PriceCents:  item.Product.PriceCents,
-				Quantity:    item.Quantity,
-				BillingCyc:  item.BillingCyc,
-			})
-		}
-		if len(orderItems) == 0 {
+		if len(items) == 0 {
 			return ErrBadRequest("购物车为空")
 		}
 
-		no, err := serialNo("ORD")
-		if err != nil {
+		lines := make([]OrderLine, 0, len(items))
+		for _, item := range items {
+			lines = append(lines, OrderLine{
+				ProductID:  item.ProductID,
+				Quantity:   item.Quantity,
+				BillingCyc: item.BillingCyc,
+			})
+		}
+		if err := s.create(tx, userID, lines, &order); err != nil {
 			return err
 		}
-		order = model.Order{
-			OrderNo:    no,
-			UserID:     userID,
-			Status:     model.OrderPending,
-			TotalCents: total,
-		}
-		if err := tx.Create(&order).Error; err != nil {
-			return err
-		}
-		for i := range orderItems {
-			orderItems[i].OrderID = order.ID
-		}
-		if err := tx.Create(&orderItems).Error; err != nil {
-			return err
-		}
-		order.Items = orderItems
-
 		return s.cart.Clear(tx, userID)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &order, nil
+}
+
+// CreateDirect 按给定明细直接创建订单，不经过购物车。
+//
+// 开放接口用它下单：机器调用与用户浏览器里的购物车是两回事，共用一个购物车
+// 会让 API 下单把用户正在挑的东西一并结掉。
+func (s *OrderService) CreateDirect(userID uint, lines []OrderLine) (*model.Order, error) {
+	if len(lines) == 0 {
+		return nil, ErrBadRequest("请至少提供一条商品明细")
+	}
+	if len(lines) > MaxOrderLines {
+		return nil, ErrBadRequest("单笔订单最多 %d 条明细", MaxOrderLines)
+	}
+
+	var order model.Order
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		return s.create(tx, userID, lines, &order)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &order, nil
+}
+
+// create 在事务内写入订单与明细。
+func (s *OrderService) create(tx *gorm.DB, userID uint, lines []OrderLine, out *model.Order) error {
+	orderItems, total, err := buildOrderItems(tx, lines)
+	if err != nil {
+		return err
+	}
+
+	no, err := serialNo("ORD")
+	if err != nil {
+		return err
+	}
+	order := model.Order{
+		OrderNo:    no,
+		UserID:     userID,
+		Status:     model.OrderPending,
+		TotalCents: total,
+	}
+	if err := tx.Create(&order).Error; err != nil {
+		return err
+	}
+	for i := range orderItems {
+		orderItems[i].OrderID = order.ID
+	}
+	if err := tx.Create(&orderItems).Error; err != nil {
+		return err
+	}
+	order.Items = orderItems
+	*out = order
+	return nil
 }
 
 // PayResult 是支付结果。
