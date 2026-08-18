@@ -1,0 +1,14 @@
+# 代码生成配置。仅在改动 plugin.proto 后需要执行，见仓库根目录 `make proto`。
+#
+# 生成物（*.pb.go）一律入库：protoc 与 buf 都不是构建的前提，`make build`
+# 与 CI 都不需要它们 —— 插件作者只要有 Go 工具链就能编译插件。
+version: v2
+plugins:
+  # paths=source_relative 让生成物落在 .proto 旁边，而不是按 go_package
+  # 再套一层 internal/plugin/proto 目录。
+  - local: protoc-gen-go
+    out: .
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: .
+    opt: paths=source_relative

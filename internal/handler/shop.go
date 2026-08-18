@@ -125,8 +125,15 @@ func (h *Handler) PayOrder(c *gin.Context) {
 	if !ok {
 		return
 	}
-	result, err := h.orders().Pay(httpx.CurrentUserID(c), id)
-	respond(c, result, err)
+	userID := httpx.CurrentUserID(c)
+	result, err := h.orders().Pay(userID, id)
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	// 支付与开通都已提交，此刻才发凭据通知；发不出去不影响这笔已经完成的支付。
+	h.notify.OrderPaid(userID, result.Order.OrderNo, result.Order.TotalCents)
+	OK(c, result)
 }
 
 // CancelOrder 取消待支付订单。

@@ -88,12 +88,7 @@ func (h *Handler) AdminVerificationPhoto(c *gin.Context) {
 
 // AdminApproveVerification 通过实名认证。
 func (h *Handler) AdminApproveVerification(c *gin.Context) {
-	id, ok := IDParam(c, "id")
-	if !ok {
-		return
-	}
-	record, err := h.kyc().Review(id, httpx.CurrentUserID(c), true, "")
-	respond(c, record, err)
+	h.reviewVerification(c, true, "")
 }
 
 // RejectVerificationRequest 是驳回实名认证的入参。
@@ -103,14 +98,25 @@ type RejectVerificationRequest struct {
 
 // AdminRejectVerification 驳回实名认证，须填原因 —— 用户得知道该改什么。
 func (h *Handler) AdminRejectVerification(c *gin.Context) {
-	id, ok := IDParam(c, "id")
-	if !ok {
-		return
-	}
 	var req RejectVerificationRequest
 	if !bindJSON(c, &req) {
 		return
 	}
-	record, err := h.kyc().Review(id, httpx.CurrentUserID(c), false, req.Reason)
-	respond(c, record, err)
+	h.reviewVerification(c, false, req.Reason)
+}
+
+// reviewVerification 是通过与驳回的共用实现。
+func (h *Handler) reviewVerification(c *gin.Context, approved bool, reason string) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	record, err := h.kyc().Review(id, httpx.CurrentUserID(c), approved, reason)
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	// 审核结果通知用户。审核已经落库，发信失败只进日志。
+	h.notify.KYCReviewed(record.UserID, approved, record.RejectReason)
+	OK(c, record)
 }

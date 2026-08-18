@@ -32,10 +32,15 @@ func TestMain(m *testing.M) {
 }
 
 // newTestServer 起一个未安装态的服务，数据目录指向临时路径。
+//
+// plugins 传 nil：本包绝大多数用例与插件无关，而真起一个 Manager 就意味着
+// 每个用例都要拉子进程。需要插件的用例见 adminplugin_test.go 里的 newAdminPluginEnv。
 func newTestServer(t *testing.T) (*runtime.Runtime, http.Handler) {
 	t.Helper()
 	rt := runtime.New(t.TempDir())
-	return rt, New(rt, false)
+	engine, close := New(rt, nil, false)
+	t.Cleanup(close)
+	return rt, engine
 }
 
 // do 发一个请求并返回响应记录。

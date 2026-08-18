@@ -132,8 +132,17 @@ func (h *Handler) replyTicket(c *gin.Context, isStaff bool) {
 	if !ok {
 		return
 	}
-	reply, err := h.tickets().Reply(id, httpx.CurrentUser(c), isStaff, c.PostForm("body"), files)
-	respond(c, reply, err)
+	reply, ticket, err := h.tickets().Reply(id, httpx.CurrentUser(c), isStaff, c.PostForm("body"), files)
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	// 客服回复才通知，且必须在 service 返回成功之后 —— 事务已经提交，通知发不
+	// 出去也不会把这条回复带走。用户自己的回复不用给自己发信。
+	if isStaff {
+		h.notify.TicketReplied(ticket.UserID, ticket.TicketNo, ticket.Subject, reply.Body)
+	}
+	OK(c, reply)
 }
 
 // ticketAttachment 是附件下发的共用实现。

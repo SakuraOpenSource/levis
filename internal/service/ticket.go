@@ -105,39 +105,49 @@ func (s *TicketService) Create(user *model.User, req TicketCreateRequest) (*mode
 	return &ticket, nil
 }
 
-// Reply 追加一条回复。
+// Reply 追加一条回复，并返回所属工单。
 //
 // isStaff 决定状态流向：客服回复置为 answered（等用户看），用户回复置回
 // open（等客服处理）。已关闭的工单一律拒绝回复。
-func (s *TicketService) Reply(ticketID uint, user *model.User, isStaff bool, body string, files []Upload) (*model.TicketReply, error) {
+//
+// 一并返回工单是为了让调用方能发通知邮件：那需要工单号、主题与工单的归属用户，
+// 而事务里本来就把工单读出来了，再查一遍是白费一次查询。
+func (s *TicketService) Reply(
+	ticketID uint, user *model.User, isStaff bool, body string, files []Upload,
+) (*model.TicketReply, *model.Ticket, error) {
 	text, err := validateBody(body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(files) > MaxAttachments {
-		return nil, ErrBadRequest("单次最多上传 %d 个附件", MaxAttachments)
+		return nil, nil, ErrBadRequest("单次最多上传 %d 个附件", MaxAttachments)
 	}
 
 	var (
-		reply *model.TicketReply
-		saved []string
+		reply  *model.TicketReply
+		ticket *model.Ticket
+		saved  []string
 	)
 	err = s.db.Transaction(func(tx *gorm.DB) error {
-		ticket, err := s.lockTicket(tx, ticketID, user.ID, isStaff)
+		found, err := s.lockTicket(tx, ticketID, user.ID, isStaff)
 		if err != nil {
 			return err
 		}
-		if ticket.Status == model.TicketClosed {
+		if found.Status == model.TicketClosed {
 			return ErrConflict("工单已关闭，请重新开启后再回复")
 		}
-		reply, err = s.createReply(tx, ticket, user, text, files, &saved)
-		return err
+		reply, err = s.createReply(tx, found, user, text, files, &saved)
+		if err != nil {
+			return err
+		}
+		ticket = found
+		return nil
 	})
 	if err != nil {
 		s.store.RemoveAll(saved)
-		return nil, err
+		return nil, nil, err
 	}
-	return reply, nil
+	return reply, ticket, nil
 }
 
 // createReply 在事务内写入一条回复及其附件，并更新工单状态与最后回复时间。

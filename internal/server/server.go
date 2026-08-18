@@ -9,6 +9,7 @@ import (
 
 	"github.com/SakuraOpenSource/levis/internal/handler"
 	"github.com/SakuraOpenSource/levis/internal/middleware"
+	"github.com/SakuraOpenSource/levis/internal/plugin"
 	"github.com/SakuraOpenSource/levis/internal/runtime"
 	"github.com/SakuraOpenSource/levis/internal/web"
 )
@@ -34,10 +35,16 @@ var uploadRoutes = map[string]bool{
 	"/api/tickets/:id/replies":       true,
 	"/api/admin/tickets/:id/replies": true,
 	"/api/kyc":                       true,
+	"/api/admin/plugins/install":     true,
 }
 
 // New 构造 gin 引擎，挂载 API 与前端静态资源。
-func New(rt *runtime.Runtime, debug bool) *gin.Engine {
+//
+// plugins 可为 nil，此时插件管理接口一律返回 503；测试里不需要插件时就这么传。
+//
+// 返回的 close 释放 Handler 持有的后台资源（当前是通知队列的 worker），调用方
+// 必须在服务停止后执行它。engine 本身没有需要释放的东西，是 Handler 有。
+func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine, func()) {
 	if !debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -48,7 +55,7 @@ func New(rt *runtime.Runtime, debug bool) *gin.Engine {
 	engine.RedirectTrailingSlash = false
 	engine.MaxMultipartMemory = maxMultipartMemory
 
-	h := handler.New(rt)
+	h := handler.New(rt, plugins)
 
 	// CSRF 挂在整个 /api 上：GET 请求负责播种令牌，写请求负责校验。
 	// 前端启动时必然先调 GET /api/bootstrap，因此安装、登录、注册这些
@@ -156,6 +163,15 @@ func New(rt *runtime.Runtime, debug bool) *gin.Engine {
 	admin.POST("/tickets/:id/close", h.AdminCloseTicket)
 	admin.POST("/tickets/:id/reopen", h.AdminReopenTicket)
 	admin.GET("/tickets/:id/attachments/:aid", h.AdminTicketAttachment)
+	admin.GET("/plugins", h.AdminPlugins)
+	admin.POST("/plugins/install", h.AdminInstallPlugin)
+	admin.POST("/plugins/reload", h.AdminReloadPlugins)
+	admin.GET("/plugins/:id/frontend/*path", h.AdminPluginFrontend)
+	admin.GET("/plugins/:id", h.AdminPlugin)
+	admin.PUT("/plugins/:id/config", h.AdminUpdatePluginConfig)
+	admin.POST("/plugins/:id/enable", h.AdminEnablePlugin)
+	admin.POST("/plugins/:id/disable", h.AdminDisablePlugin)
+	admin.GET("/plugins/:id/logs", h.AdminPluginLogs)
 	admin.GET("/verifications", h.AdminVerifications)
 	admin.GET("/verifications/:id", h.AdminVerification)
 	admin.GET("/verifications/:id/photo/:side", h.AdminVerificationPhoto)
@@ -165,6 +181,8 @@ func New(rt *runtime.Runtime, debug bool) *gin.Engine {
 	// 对外 API 挂在 engine 而不是 api 组下：api 组带着 CSRF 中间件，而 Key
 	// 认证不存在浏览器隐式凭证，双提交令牌在这里既无从获取也无意义。
 	mountOpenAPI(engine, rt, h)
+	// 插件回调同理，且更敏感 —— 详见 pluginapi.go 的说明。
+	mountPluginAPI(engine, rt, h)
 
 	// 未匹配的 API 路径返回 JSON 404；其余交给前端。
 	frontend := gin.WrapF(web.Handler())
@@ -176,7 +194,7 @@ func New(rt *runtime.Runtime, debug bool) *gin.Engine {
 		frontend(c)
 	})
 
-	return engine
+	return engine, h.Close
 }
 
 // limitBody 限制请求体大小，上传接口按 uploadRoutes 放宽。

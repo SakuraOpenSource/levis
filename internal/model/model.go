@@ -329,5 +329,9 @@ func AllModels() []any {
 		&TicketAttachment{},
 		&Verification{},
 		&APIKey{},
+		&PluginKey{},
+		&PluginState{},
+		&PluginSetting{},
+		&PluginPayment{},
 	}
 }

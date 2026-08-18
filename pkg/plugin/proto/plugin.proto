@@ -1,0 +1,205 @@
+// Levis 插件契约。
+//
+// 插件是独立的可执行程序，与主程序通过本文件定义的 gRPC 服务通信。
+// 主程序始终是客户端，插件是服务端 —— 插件若要读写 Levis 的数据，
+// 走 HTTP 回调 /api/plugin/v1，不在本契约内。
+//
+// 兼容性约定：字段只增不改，废弃字段用 reserved 占位，绝不复用编号。
+// 插件与主程序的版本可能不一致，改动必须让旧插件仍能工作。
+syntax = "proto3";
+
+package levis.plugin.v1;
+
+option go_package = "github.com/SakuraOpenSource/levis/pkg/plugin/proto;proto";
+
+// Plugin 是每个插件都必须实现的服务。
+//
+// 生命周期方法（Describe/Configure/Health/Shutdown）是必须实现的；能力方法
+// 按 Manifest 里声明的 capabilities 实现，未声明的直接返回 UNIMPLEMENTED，
+// 主程序不会去调。
+service Plugin {
+  // Describe 返回插件的身份与能力。主程序在握手后立刻调用。
+  rpc Describe(DescribeRequest) returns (Manifest);
+
+  // Configure 下发管理员在后台填写的配置。
+  //
+  // 每次配置变更后都会重新调用，插件应当能够重复接收 —— 比如把 SMTP
+  // 连接池按新参数重建，而不是只在第一次生效。
+  rpc Configure(ConfigureRequest) returns (ConfigureReply);
+
+  // Health 用于存活探测，主程序按固定间隔调用。
+  rpc Health(HealthRequest) returns (HealthReply);
+
+  // Shutdown 通知插件即将退出，插件应当收尾并尽快返回。
+  //
+  // 返回后主程序仍会等待进程自行退出，超时才发信号。
+  rpc Shutdown(ShutdownRequest) returns (ShutdownReply);
+
+  // SendMail 发送一封邮件。需声明 CAPABILITY_SEND_MAIL。
+  rpc SendMail(SendMailRequest) returns (SendMailReply);
+
+  // CreatePayment 创建一笔支付，返回可供用户跳转的地址。
+  // 需声明 CAPABILITY_CREATE_PAYMENT。
+  rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentReply);
+
+  // QueryPayment 查询一笔支付的当前状态，用于用户回到站点后主动核对，
+  // 不依赖渠道回调是否已经到达。需声明 CAPABILITY_CREATE_PAYMENT。
+  rpc QueryPayment(QueryPaymentRequest) returns (QueryPaymentReply);
+}
+
+// Capability 是插件声明的能力。
+//
+// 每一项对应一组 RPC，主程序据此决定哪些 hook 可以派发给这个插件。
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+  CAPABILITY_SEND_MAIL = 1;
+  CAPABILITY_CREATE_PAYMENT = 2;
+}
+
+// FieldType 是配置项的输入类型，决定后台表单的渲染方式。
+enum FieldType {
+  FIELD_TYPE_UNSPECIFIED = 0;
+  FIELD_TYPE_TEXT = 1;
+  FIELD_TYPE_NUMBER = 2;
+  FIELD_TYPE_BOOL = 3;
+  FIELD_TYPE_SELECT = 4;
+  // FIELD_TYPE_TEXTAREA 用于私钥、证书这类多行内容。
+  FIELD_TYPE_TEXTAREA = 5;
+}
+
+// ConfigField 描述一个配置项。插件用它告诉后台该渲染什么表单。
+message ConfigField {
+  // key 是配置项标识，主程序按 (插件 ID, key) 落库。
+  string key = 1;
+  // label 是表单上显示的名称。
+  string label = 2;
+  // hint 是字段下方的补充说明，可为空。
+  string hint = 3;
+  FieldType type = 4;
+  bool required = 5;
+  // secret 为 true 时，接口永不回传该项的值，后台渲染为密码框。
+  // SMTP 密码、渠道私钥都应当置为 true。
+  bool secret = 6;
+  // default_value 在管理员未填写时作为初始值展示。
+  // secret 字段不应给默认值。
+  string default_value = 7;
+  // options 仅在 FIELD_TYPE_SELECT 时有意义。
+  repeated SelectOption options = 8;
+}
+
+// SelectOption 是下拉框的一个选项。
+message SelectOption {
+  string value = 1;
+  string label = 2;
+}
+
+message DescribeRequest {}
+
+// Manifest 是插件的自我描述。
+message Manifest {
+  // name 是展示名，如「SMTP 邮件发送」。
+  string name = 1;
+  // version 是插件自己的版本号，仅用于展示与排错。
+  string version = 2;
+  string description = 3;
+  // author 可为空。
+  string author = 4;
+  repeated Capability capabilities = 5;
+  repeated ConfigField config = 6;
+  // required_scopes 是插件回调 /api/plugin/v1 所需的权限位，
+  // 取值见 model.PluginScope*。主程序据此签发 Key，管理员可见。
+  repeated string required_scopes = 7;
+}
+
+message ConfigureRequest {
+  // values 是配置项的当前值，键为 ConfigField.key。
+  //
+  // 一律用字符串传递，由插件按自己声明的 type 解析：数字与布尔在这里
+  // 不值得为其各开一个字段，插件本来就知道自己要什么类型。
+  map<string, string> values = 1;
+}
+
+message ConfigureReply {
+  // error 非空表示配置不可用（比如 SMTP 连不上），主程序会把它显示在
+  // 后台并把插件标为异常。不要用 gRPC 错误返回这类信息 —— 配置错误是
+  // 预期内的结果，不是调用失败。
+  string error = 1;
+}
+
+message HealthRequest {}
+
+message HealthReply {
+  bool ok = 1;
+  // message 在 ok 为 false 时说明原因。
+  string message = 2;
+}
+
+message ShutdownRequest {}
+
+message ShutdownReply {}
+
+// Mailbox 是一个收件人。
+message Mailbox {
+  string address = 1;
+  // name 可为空，为空时只用地址。
+  string name = 2;
+}
+
+message SendMailRequest {
+  repeated Mailbox to = 1;
+  string subject = 2;
+  // text_body 是纯文本正文，始终提供。
+  string text_body = 3;
+  // html_body 可为空；插件应在为空时只发纯文本。
+  string html_body = 4;
+}
+
+message SendMailReply {}
+
+message CreatePaymentRequest {
+  // external_id 由主程序生成，插件必须在回调 /api/plugin/v1/wallet/credit
+  // 时原样带回 —— 它是加钱幂等的依据，渠道重复回调时靠它去重。
+  string external_id = 1;
+  // amount_cents 是金额，整数分。全系统不使用浮点表示金额。
+  int64 amount_cents = 2;
+  // currency 是 ISO 4217 代码，如 CNY。
+  string currency = 3;
+  // subject 是给用户看的付款说明。
+  string subject = 4;
+  uint64 user_id = 5;
+  // return_url 是用户付完款后应当跳回的站内地址。
+  string return_url = 6;
+}
+
+message CreatePaymentReply {
+  // pay_url 是让用户跳转过去完成支付的地址。
+  string pay_url = 1;
+  // gateway_ref 是渠道侧的单号，落库备查，可为空。
+  string gateway_ref = 2;
+  // error 非空表示创建失败且原因可以展示给用户（如「金额低于渠道下限」）。
+  string error = 3;
+}
+
+// PaymentState 是一笔支付在渠道侧的状态。
+enum PaymentState {
+  PAYMENT_STATE_UNSPECIFIED = 0;
+  PAYMENT_STATE_PENDING = 1;
+  PAYMENT_STATE_PAID = 2;
+  PAYMENT_STATE_FAILED = 3;
+  PAYMENT_STATE_CANCELLED = 4;
+}
+
+message QueryPaymentRequest {
+  string external_id = 1;
+  string gateway_ref = 2;
+}
+
+message QueryPaymentReply {
+  PaymentState state = 1;
+  // paid_amount_cents 是渠道实际收到的金额，整数分。
+  //
+  // 主程序会核对它与请求金额是否一致：不一致时不入账并记录告警，
+  // 避免「付一分钱开通一年」这类少付攻击。
+  int64 paid_amount_cents = 2;
+  string message = 3;
+}

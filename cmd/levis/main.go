@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,6 +19,8 @@ import (
 
 	"github.com/SakuraOpenSource/levis/internal/config"
 	"github.com/SakuraOpenSource/levis/internal/database"
+	"github.com/SakuraOpenSource/levis/internal/plugin"
+	"github.com/SakuraOpenSource/levis/internal/pluginhost"
 	"github.com/SakuraOpenSource/levis/internal/runtime"
 	"github.com/SakuraOpenSource/levis/internal/server"
 	"github.com/SakuraOpenSource/levis/internal/web"
@@ -77,9 +80,34 @@ func run(dataDir, listenOverride string, debug bool) error {
 		log.Printf("警告: 未嵌入前端产物，仅 API 可用（执行 make build 可构建完整程序）")
 	}
 
+	// 插件目录必须在此刻就建出来：管理员要先看到 data/plugins 才知道该往哪里
+	// 放插件，不能等到第一次点「重新扫描」时才凭空出现。
+	if err := plugin.EnsureRoot(dataDir); err != nil {
+		return err
+	}
+	plugins := pluginhost.New(rt, apiBase(addr), func(format string, args ...any) {
+		log.Printf(format, args...)
+	})
+	// 用 defer 而不是在信号分支里显式调用：defer 在 return 求值之后才跑，
+	// 因此插件必然是在 srv.Shutdown 收完在途请求之后才被停掉 —— 反过来的话，
+	// 一个正在等支付链接的请求会突然发现插件没了。ListenAndServe 直接报错
+	// 退出的那条路径同样会走到这里，不至于漏掉收尾。
+	defer plugins.Close()
+
+	// 未安装时不碰插件：启用状态与配置都在库里，此刻无库可读。安装流程走完后
+	// 由 /api/admin/plugins/reload 手动加载 —— 刚装好的站点还没有插件可跑。
+	if rt.Installed() {
+		startPlugins(rt, plugins)
+	}
+
+	handler, closeHandler := server.New(rt, plugins, debug)
+	// 与 plugins.Close 同理，defer 保证它在 srv.Shutdown 之后才跑。顺序上先停
+	// 通知队列再停插件：队列里的信要靠插件发出去，反过来会让最后几封信必然失败。
+	defer closeHandler()
+
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(rt, debug),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
@@ -107,4 +135,44 @@ func run(dataDir, listenOverride string, debug bool) error {
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	}
+}
+
+// startPlugins 清理残留凭证并拉起此前启用的插件。
+//
+// 任何一步失败都只记日志：插件是可选组件，一个装坏了的插件不该让整个站点起
+// 不来。管理员能在插件页看到状态与原因。
+func startPlugins(rt *runtime.Runtime, plugins *plugin.Manager) {
+	// 先清残留凭证再拉插件。上次若是被 kill -9 收走，库里还留着已经没有对应
+	// 进程的 Key；先清一遍能保证有效凭证不早于本次进程，也避免刚签发的新 Key
+	// 被这次清理顺手带走。
+	if err := pluginhost.RevokeStaleKeys(rt.DB()); err != nil {
+		log.Printf("清理插件回调凭证失败: %v", err)
+	}
+	if err := plugins.Reload(context.Background()); err != nil {
+		log.Printf("扫描插件目录失败: %v", err)
+		return
+	}
+	enabled, err := pluginhost.EnabledPlugins(rt.DB())
+	if err != nil {
+		log.Printf("读取插件启用状态失败: %v", err)
+		return
+	}
+	plugins.StartEnabled(context.Background(), enabled)
+}
+
+// apiBase 拼出插件回调主程序的基址。
+//
+// addr 形如 ":8080" 或 "127.0.0.1:8080"。插件与主程序同机，所以一律回落到
+// 127.0.0.1：监听地址里的 0.0.0.0 或空主机名不是一个能拨号的目标，而绕外网
+// 地址转一圈只是把本机流量推出去再回来。
+func apiBase(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		// 解析不了就不猜，让插件在没有基址的情况下运行（不签发凭证）。
+		return ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/api/plugin/v1"
 }

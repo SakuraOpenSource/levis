@@ -13,7 +13,14 @@ LDFLAGS     := -s -w -X main.version=$(VERSION)
 # 全程禁用 cgo：SQLite 用的是纯 Go 驱动，这样才能交叉编译出单文件二进制。
 GO_ENV      := CGO_ENABLED=0
 
-.PHONY: all build backend frontend clean test vet fmt dev-backend dev-frontend release
+# 插件契约的代码生成工具版本。三者都是纯 Go 程序，用 go run 临时拉起，
+# 不必预先安装，也不进入本模块的依赖图。
+BUF_VERSION      := v1.47.2
+PROTOC_GEN_GO    := v1.36.12
+PROTOC_GEN_GRPC  := v1.6.2
+PROTO_DIR        := internal/plugin/proto
+
+.PHONY: all build backend frontend clean test vet fmt dev-backend dev-frontend release proto
 
 all: build
 
@@ -41,6 +48,21 @@ frontend:
 	@cp -R $(FRONTEND)/dist/. $(DIST_DIR)/
 	@touch $(DIST_DIR)/.gitkeep
 	@echo "前端产物已拷入 $(DIST_DIR)"
+
+## proto: 由 plugin.proto 重新生成 Go 代码（仅在改动契约后需要执行）
+##
+## 生成物已入库，因此常规构建与 CI 都不需要本目标，也不需要装 protoc ——
+## buf 是纯 Go 实现，连 C++ 的 protoc 都省了。
+proto:
+	@echo "生成插件契约代码"
+	@tmp=$$(mktemp -d) && \
+		GOBIN=$$tmp go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO) && \
+		GOBIN=$$tmp go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GRPC) && \
+		PATH="$$tmp:$$PATH" go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION) \
+			generate --template $(PROTO_DIR)/buf.gen.yaml $(PROTO_DIR) && \
+		rm -rf $$tmp
+	@gofmt -w $(PROTO_DIR)
+	@echo "已更新 $(PROTO_DIR)/*.pb.go，记得一并提交"
 
 ## test: 运行后端测试
 test:

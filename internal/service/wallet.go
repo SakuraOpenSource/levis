@@ -90,6 +90,66 @@ func (s *WalletService) Recharge(userID uint, amountCents int64) (*model.Transac
 	return record, nil
 }
 
+// CreditExternal 按插件报上来的到账给用户加余额，对 (pluginID, externalID) 幂等。
+//
+// 幂等靠数据库的唯一索引，不靠「先查再写」：支付渠道的重试往往是并发的，
+// 先查再写的两个请求都会查到「不存在」，然后各加一次钱。这里的做法是直接
+// 插入，让索引冲突来告诉我们「这笔已经处理过了」，然后返回首次的结果 ——
+// 幂等接口对重复请求必须回成功，返回 409 会让渠道一直重试到人工介入。
+//
+// 资金路径不复制：仍然只经 adjustBalance 这一个入口。这个方法存在的唯一
+// 理由就是让插件的调用也走那里，而不是把私有方法改成公开。
+func (s *WalletService) CreditExternal(
+	pluginID, externalID string, userID uint, amountCents int64, gatewayRef string,
+) (*model.PluginPayment, error) {
+	if amountCents <= 0 {
+		return nil, ErrBadRequest("到账金额必须大于零")
+	}
+	if amountCents > 100_000_000 {
+		return nil, ErrBadRequest("单笔到账金额过大")
+	}
+	if externalID == "" {
+		return nil, ErrBadRequest("缺少 external_id")
+	}
+
+	record := model.PluginPayment{
+		PluginID:    pluginID,
+		ExternalID:  externalID,
+		UserID:      userID,
+		AmountCents: amountCents,
+		GatewayRef:  gatewayRef,
+		Status:      model.PluginPaymentPaid,
+	}
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&record).Error; err != nil {
+			return err
+		}
+		note := "插件 " + pluginID + " 支付到账"
+		entry, err := s.adjustBalance(tx, userID, amountCents, model.TxRecharge,
+			"plugin_payment", record.ID, note)
+		if err != nil {
+			return err
+		}
+		// 回填流水 ID，事后能从支付记录直接追到余额变动。
+		record.TransactionID = entry.ID
+		return tx.Model(&record).UpdateColumn("transaction_id", entry.ID).Error
+	})
+	if err == nil {
+		return &record, nil
+	}
+
+	// 唯一索引冲突意味着重复回调，查出首次的记录原样返回。
+	if !errors.Is(err, gorm.ErrDuplicatedKey) {
+		return nil, err
+	}
+	var existing model.PluginPayment
+	find := s.db.Where("plugin_id = ? AND external_id = ?", pluginID, externalID).First(&existing)
+	if find.Error != nil {
+		return nil, find.Error
+	}
+	return &existing, nil
+}
+
 // Overview 是钱包概览。
 type Overview struct {
 	BalanceCents  int64 `json:"balance_cents"`

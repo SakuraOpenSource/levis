@@ -54,6 +54,17 @@ func doAs(t *testing.T, handler http.Handler, method, path string, body any, coo
 func installedServer(t *testing.T) (*runtime.Runtime, http.Handler) {
 	t.Helper()
 	rt, handler := newTestServer(t)
+	installVia(t, rt, handler)
+	return rt, handler
+}
+
+// installVia 走一遍安装接口把 rt 激活。
+//
+// 与 installedServer 分开是为了让自带插件管理器的服务（见 adminplugin_test.go）
+// 也能复用同一套安装参数 —— 那种服务必须在 New 时就把 Manager 传进去，没法
+// 从 installedServer 的返回值往回改。
+func installVia(t *testing.T, rt *runtime.Runtime, handler http.Handler) {
+	t.Helper()
 	req := map[string]any{
 		"database": map[string]any{
 			"driver": "sqlite",
@@ -67,7 +78,6 @@ func installedServer(t *testing.T) (*runtime.Runtime, http.Handler) {
 	if rec := do(t, handler, http.MethodPost, "/api/install", req); rec.Code != http.StatusOK {
 		t.Fatalf("安装失败: %d %s", rec.Code, rec.Body.String())
 	}
-	return rt, handler
 }
 
 // loginAs 登录并返回登录态 cookie。

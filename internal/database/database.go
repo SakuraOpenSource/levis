@@ -49,6 +49,11 @@ func Open(db config.Database) (*gorm.DB, error) {
 	conn, err := gorm.Open(dialector, &gorm.Config{
 		Logger:                                   logger.Default.LogMode(logger.Warn),
 		DisableForeignKeyConstraintWhenMigrating: true,
+		// TranslateError 让三种驱动的唯一索引冲突统一成 gorm.ErrDuplicatedKey。
+		// 没有它，errors.Is(err, gorm.ErrDuplicatedKey) 永远为假，业务代码只能
+		// 去比对各家数据库的错误码字符串 —— 而幂等加钱正是靠这个判断来区分
+		// 「重复回调」和「真的写失败了」。
+		TranslateError: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("连接数据库失败: %w", err)

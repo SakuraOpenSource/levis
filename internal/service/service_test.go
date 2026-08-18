@@ -37,6 +37,9 @@ func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
+		// 与 database.Open 保持一致，否则测试里的唯一冲突不会被翻译成
+		// gorm.ErrDuplicatedKey，幂等分支就测不到。
+		TranslateError: true,
 	})
 	if err != nil {
 		t.Fatalf("打开测试数据库失败: %v", err)
