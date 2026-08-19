@@ -29,4 +29,10 @@ func mountPluginAPI(engine *gin.Engine, rt *runtime.Runtime, h *handler.Handler)
 
 	orders := group.Group("", middleware.RequirePluginScope(model.PluginScopeOrderRead))
 	orders.GET("/orders/:id", h.PluginOrder)
+
+	// 支付渠道的异步回调通知：不需 CSRF、不需 PluginKey（由插件验签），
+	// 但必须在已安装状态下才能处理。
+	notify := engine.Group("/api/plugin/v1/payment-notify",
+		middleware.RequireInstalled(rt))
+	notify.Any("/:plugin", h.PaymentNotify)
 }

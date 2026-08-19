@@ -197,120 +197,139 @@ type PayResult struct {
 // 生成已付账单 → 扣减库存。任一步失败整体回滚，绝不会出现「扣了钱没开服务」
 // 或「开了服务没扣钱」的中间态。
 func (s *OrderService) Pay(userID, orderID uint) (*PayResult, error) {
-	var out PayResult
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		var order model.Order
-		err := tx.Preload("Items").
-			First(&order, "id = ? AND user_id = ?", orderID, userID).Error
-		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound("订单不存在")
-			}
-			return err
-		}
-		switch order.Status {
-		case model.OrderPaid:
-			return ErrConflict("订单已支付")
-		case model.OrderCancelled:
-			return ErrConflict("订单已取消")
-		}
-		if len(order.Items) == 0 {
-			return ErrBadRequest("订单没有明细")
-		}
+	return s.pay(userID, orderID, true)
+}
 
+// PayExternal settles an already verified external payment without debiting balance.
+func (s *OrderService) PayExternal(userID, orderID uint) (*PayResult, error) {
+	return s.pay(userID, orderID, false)
+}
+
+func (s *OrderService) pay(userID, orderID uint, debit bool) (*PayResult, error) {
+	var out *PayResult
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		out, err = s.payInTx(tx, userID, orderID, debit)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// payInTx settles an order using the caller's transaction. External payment
+// finalization uses this helper so intent status and provisioning commit together.
+func (s *OrderService) payInTx(tx *gorm.DB, userID, orderID uint, debit bool) (*PayResult, error) {
+	var out PayResult
+	var order model.Order
+	err := tx.Preload("Items").
+		First(&order, "id = ? AND user_id = ?", orderID, userID).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("订单不存在")
+		}
+		return nil, err
+	}
+	switch order.Status {
+	case model.OrderPaid:
+		return nil, ErrConflict("订单已支付")
+	case model.OrderCancelled:
+		return nil, ErrConflict("订单已取消")
+	}
+	if len(order.Items) == 0 {
+		return nil, ErrBadRequest("订单没有明细")
+	}
+
+	if debit {
 		// 扣款放在最前面：余额不足会在此直接失败，后续写入都不会发生。
 		if _, err := s.wallet.adjustBalance(
 			tx, userID, -order.TotalCents, model.TxPayment,
 			"order", order.ID, fmt.Sprintf("支付订单 %s", order.OrderNo),
 		); err != nil {
-			return err
+			return nil, err
 		}
+	}
+	now := time.Now().UTC()
+	// 用 RowsAffected 兜住并发重复支付：状态已变则本事务回滚。
+	result := tx.Model(&model.Order{}).
+		Where("id = ? AND status = ?", order.ID, model.OrderPending).
+		Updates(map[string]any{"status": model.OrderPaid, "paid_at": now})
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, ErrConflict("订单状态已变更，请刷新后重试")
+	}
+	order.Status = model.OrderPaid
+	order.PaidAt = &now
 
-		now := time.Now().UTC()
-		// 用 RowsAffected 兜住并发重复支付：状态已变则本事务回滚。
-		result := tx.Model(&model.Order{}).
-			Where("id = ? AND status = ?", order.ID, model.OrderPending).
-			Updates(map[string]any{"status": model.OrderPaid, "paid_at": now})
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return ErrConflict("订单状态已变更，请刷新后重试")
-		}
-		order.Status = model.OrderPaid
-		order.PaidAt = &now
-
-		invoiceNo, err := serialNo("INV")
-		if err != nil {
-			return err
-		}
-		invoice := model.Invoice{
-			InvoiceNo:  invoiceNo,
-			UserID:     userID,
-			OrderID:    &order.ID,
-			Status:     model.InvoicePaid,
-			TotalCents: order.TotalCents,
-			DueAt:      &now,
-			PaidAt:     &now,
-		}
-		if err := tx.Create(&invoice).Error; err != nil {
-			return err
-		}
-
-		services := make([]model.Service, 0, len(order.Items))
-		invoiceItems := make([]model.InvoiceItem, 0, len(order.Items))
-		for _, item := range order.Items {
-			// 数量为 N 时开通 N 个独立服务实例，与魔方财务的行为一致。
-			for i := 0; i < item.Quantity; i++ {
-				service := model.Service{
-					UserID:     userID,
-					ProductID:  item.ProductID,
-					OrderID:    order.ID,
-					Name:       item.ProductName,
-					Status:     model.ServiceActive,
-					BillingCyc: item.BillingCyc,
-					PriceCents: item.PriceCents,
-				}
-				// 一次性付费无续费与到期概念，两个时间字段均留空。
-				if next := model.AdvanceCycle(now, item.BillingCyc); !next.IsZero() {
-					service.NextDueAt = &next
-					service.ExpiresAt = &next
-				}
-				if err := tx.Create(&service).Error; err != nil {
-					return err
-				}
-				services = append(services, service)
-
-				serviceID := service.ID
-				invoiceItems = append(invoiceItems, model.InvoiceItem{
-					InvoiceID:   invoice.ID,
-					ServiceID:   &serviceID,
-					Description: fmt.Sprintf("%s（%s）", item.ProductName, item.BillingCyc),
-					AmountCents: item.PriceCents,
-				})
-			}
-
-			// 库存为负表示不限量，跳过扣减。
-			if item.Quantity > 0 {
-				res := tx.Model(&model.Product{}).
-					Where("id = ? AND stock >= 0", item.ProductID).
-					UpdateColumn("stock", gorm.Expr("stock - ?", item.Quantity))
-				if res.Error != nil {
-					return res.Error
-				}
-			}
-		}
-		if err := tx.Create(&invoiceItems).Error; err != nil {
-			return err
-		}
-		invoice.Items = invoiceItems
-
-		out = PayResult{Order: &order, Invoice: &invoice, Services: services}
-		return nil
-	})
+	invoiceNo, err := serialNo("INV")
 	if err != nil {
 		return nil, err
 	}
+	invoice := model.Invoice{
+		InvoiceNo:  invoiceNo,
+		UserID:     userID,
+		OrderID:    &order.ID,
+		Status:     model.InvoicePaid,
+		TotalCents: order.TotalCents,
+		DueAt:      &now,
+		PaidAt:     &now,
+	}
+	if err := tx.Create(&invoice).Error; err != nil {
+		return nil, err
+	}
+
+	services := make([]model.Service, 0, len(order.Items))
+	invoiceItems := make([]model.InvoiceItem, 0, len(order.Items))
+	for _, item := range order.Items {
+		// 数量为 N 时开通 N 个独立服务实例，与魔方财务的行为一致。
+		for i := 0; i < item.Quantity; i++ {
+			service := model.Service{
+				UserID:     userID,
+				ProductID:  item.ProductID,
+				OrderID:    order.ID,
+				Name:       item.ProductName,
+				Status:     model.ServiceActive,
+				BillingCyc: item.BillingCyc,
+				PriceCents: item.PriceCents,
+			}
+			// 一次性付费无续费与到期概念，两个时间字段均留空。
+			if next := model.AdvanceCycle(now, item.BillingCyc); !next.IsZero() {
+				service.NextDueAt = &next
+				service.ExpiresAt = &next
+			}
+			if err := tx.Create(&service).Error; err != nil {
+				return nil, err
+			}
+			services = append(services, service)
+
+			serviceID := service.ID
+			invoiceItems = append(invoiceItems, model.InvoiceItem{
+				InvoiceID:   invoice.ID,
+				ServiceID:   &serviceID,
+				Description: fmt.Sprintf("%s（%s）", item.ProductName, item.BillingCyc),
+				AmountCents: item.PriceCents,
+			})
+		}
+
+		// 库存为负表示不限量，跳过扣减。
+		if item.Quantity > 0 {
+			res := tx.Model(&model.Product{}).
+				Where("id = ? AND stock >= 0", item.ProductID).
+				UpdateColumn("stock", gorm.Expr("stock - ?", item.Quantity))
+			if res.Error != nil {
+				return nil, res.Error
+			}
+		}
+	}
+	if err := tx.Create(&invoiceItems).Error; err != nil {
+		return nil, err
+	}
+	invoice.Items = invoiceItems
+
+	out = PayResult{Order: &order, Invoice: &invoice, Services: services}
 	return &out, nil
 }
 

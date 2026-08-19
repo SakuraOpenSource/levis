@@ -1179,6 +1179,138 @@ func (x *QueryPaymentReply) GetMessage() string {
 	return ""
 }
 
+type VerifyPaymentCallbackRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// raw 是渠道通知的原始表单或 JSON 字段，主程序不解释其含义。
+	Raw           map[string]string `protobuf:"bytes,1,rep,name=raw,proto3" json:"raw,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VerifyPaymentCallbackRequest) Reset() {
+	*x = VerifyPaymentCallbackRequest{}
+	mi := &file_plugin_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyPaymentCallbackRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyPaymentCallbackRequest) ProtoMessage() {}
+
+func (x *VerifyPaymentCallbackRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyPaymentCallbackRequest.ProtoReflect.Descriptor instead.
+func (*VerifyPaymentCallbackRequest) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *VerifyPaymentCallbackRequest) GetRaw() map[string]string {
+	if x != nil {
+		return x.Raw
+	}
+	return nil
+}
+
+type VerifyPaymentCallbackReply struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// external_id 必须是 CreatePaymentRequest 下发的商户单号。
+	ExternalId string `protobuf:"bytes,1,opt,name=external_id,json=externalId,proto3" json:"external_id,omitempty"`
+	// gateway_ref 是渠道侧流水号，可为空。
+	GatewayRef      string       `protobuf:"bytes,2,opt,name=gateway_ref,json=gatewayRef,proto3" json:"gateway_ref,omitempty"`
+	State           PaymentState `protobuf:"varint,3,opt,name=state,proto3,enum=levis.plugin.v1.PaymentState" json:"state,omitempty"`
+	PaidAmountCents int64        `protobuf:"varint,4,opt,name=paid_amount_cents,json=paidAmountCents,proto3" json:"paid_amount_cents,omitempty"`
+	// currency 可为空；非空时主程序必须核对为 CNY。
+	Currency      string `protobuf:"bytes,5,opt,name=currency,proto3" json:"currency,omitempty"`
+	Message       string `protobuf:"bytes,6,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VerifyPaymentCallbackReply) Reset() {
+	*x = VerifyPaymentCallbackReply{}
+	mi := &file_plugin_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyPaymentCallbackReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyPaymentCallbackReply) ProtoMessage() {}
+
+func (x *VerifyPaymentCallbackReply) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyPaymentCallbackReply.ProtoReflect.Descriptor instead.
+func (*VerifyPaymentCallbackReply) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *VerifyPaymentCallbackReply) GetExternalId() string {
+	if x != nil {
+		return x.ExternalId
+	}
+	return ""
+}
+
+func (x *VerifyPaymentCallbackReply) GetGatewayRef() string {
+	if x != nil {
+		return x.GatewayRef
+	}
+	return ""
+}
+
+func (x *VerifyPaymentCallbackReply) GetState() PaymentState {
+	if x != nil {
+		return x.State
+	}
+	return PaymentState_PAYMENT_STATE_UNSPECIFIED
+}
+
+func (x *VerifyPaymentCallbackReply) GetPaidAmountCents() int64 {
+	if x != nil {
+		return x.PaidAmountCents
+	}
+	return 0
+}
+
+func (x *VerifyPaymentCallbackReply) GetCurrency() string {
+	if x != nil {
+		return x.Currency
+	}
+	return ""
+}
+
+func (x *VerifyPaymentCallbackReply) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 var File_plugin_proto protoreflect.FileDescriptor
 
 const file_plugin_proto_rawDesc = "" +
@@ -1249,7 +1381,21 @@ const file_plugin_proto_rawDesc = "" +
 	"\x11QueryPaymentReply\x123\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1d.levis.plugin.v1.PaymentStateR\x05state\x12*\n" +
 	"\x11paid_amount_cents\x18\x02 \x01(\x03R\x0fpaidAmountCents\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage*a\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\xa0\x01\n" +
+	"\x1cVerifyPaymentCallbackRequest\x12H\n" +
+	"\x03raw\x18\x01 \x03(\v26.levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntryR\x03raw\x1a6\n" +
+	"\bRawEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf5\x01\n" +
+	"\x1aVerifyPaymentCallbackReply\x12\x1f\n" +
+	"\vexternal_id\x18\x01 \x01(\tR\n" +
+	"externalId\x12\x1f\n" +
+	"\vgateway_ref\x18\x02 \x01(\tR\n" +
+	"gatewayRef\x123\n" +
+	"\x05state\x18\x03 \x01(\x0e2\x1d.levis.plugin.v1.PaymentStateR\x05state\x12*\n" +
+	"\x11paid_amount_cents\x18\x04 \x01(\x03R\x0fpaidAmountCents\x12\x1a\n" +
+	"\bcurrency\x18\x05 \x01(\tR\bcurrency\x12\x18\n" +
+	"\amessage\x18\x06 \x01(\tR\amessage*a\n" +
 	"\n" +
 	"Capability\x12\x1a\n" +
 	"\x16CAPABILITY_UNSPECIFIED\x10\x00\x12\x18\n" +
@@ -1267,7 +1413,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\x15PAYMENT_STATE_PENDING\x10\x01\x12\x16\n" +
 	"\x12PAYMENT_STATE_PAID\x10\x02\x12\x18\n" +
 	"\x14PAYMENT_STATE_FAILED\x10\x03\x12\x1b\n" +
-	"\x17PAYMENT_STATE_CANCELLED\x10\x042\xbd\x04\n" +
+	"\x17PAYMENT_STATE_CANCELLED\x10\x042\xb2\x05\n" +
 	"\x06Plugin\x12G\n" +
 	"\bDescribe\x12 .levis.plugin.v1.DescribeRequest\x1a\x19.levis.plugin.v1.Manifest\x12O\n" +
 	"\tConfigure\x12!.levis.plugin.v1.ConfigureRequest\x1a\x1f.levis.plugin.v1.ConfigureReply\x12F\n" +
@@ -1275,7 +1421,8 @@ const file_plugin_proto_rawDesc = "" +
 	"\bShutdown\x12 .levis.plugin.v1.ShutdownRequest\x1a\x1e.levis.plugin.v1.ShutdownReply\x12L\n" +
 	"\bSendMail\x12 .levis.plugin.v1.SendMailRequest\x1a\x1e.levis.plugin.v1.SendMailReply\x12[\n" +
 	"\rCreatePayment\x12%.levis.plugin.v1.CreatePaymentRequest\x1a#.levis.plugin.v1.CreatePaymentReply\x12X\n" +
-	"\fQueryPayment\x12$.levis.plugin.v1.QueryPaymentRequest\x1a\".levis.plugin.v1.QueryPaymentReplyB:Z8github.com/SakuraOpenSource/levis/pkg/plugin/proto;protob\x06proto3"
+	"\fQueryPayment\x12$.levis.plugin.v1.QueryPaymentRequest\x1a\".levis.plugin.v1.QueryPaymentReply\x12s\n" +
+	"\x15VerifyPaymentCallback\x12-.levis.plugin.v1.VerifyPaymentCallbackRequest\x1a+.levis.plugin.v1.VerifyPaymentCallbackReplyB:Z8github.com/SakuraOpenSource/levis/pkg/plugin/proto;protob\x06proto3"
 
 var (
 	file_plugin_proto_rawDescOnce sync.Once
@@ -1290,57 +1437,64 @@ func file_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_plugin_proto_goTypes = []any{
-	(Capability)(0),              // 0: levis.plugin.v1.Capability
-	(FieldType)(0),               // 1: levis.plugin.v1.FieldType
-	(PaymentState)(0),            // 2: levis.plugin.v1.PaymentState
-	(*ConfigField)(nil),          // 3: levis.plugin.v1.ConfigField
-	(*SelectOption)(nil),         // 4: levis.plugin.v1.SelectOption
-	(*DescribeRequest)(nil),      // 5: levis.plugin.v1.DescribeRequest
-	(*Manifest)(nil),             // 6: levis.plugin.v1.Manifest
-	(*ConfigureRequest)(nil),     // 7: levis.plugin.v1.ConfigureRequest
-	(*ConfigureReply)(nil),       // 8: levis.plugin.v1.ConfigureReply
-	(*HealthRequest)(nil),        // 9: levis.plugin.v1.HealthRequest
-	(*HealthReply)(nil),          // 10: levis.plugin.v1.HealthReply
-	(*ShutdownRequest)(nil),      // 11: levis.plugin.v1.ShutdownRequest
-	(*ShutdownReply)(nil),        // 12: levis.plugin.v1.ShutdownReply
-	(*Mailbox)(nil),              // 13: levis.plugin.v1.Mailbox
-	(*SendMailRequest)(nil),      // 14: levis.plugin.v1.SendMailRequest
-	(*SendMailReply)(nil),        // 15: levis.plugin.v1.SendMailReply
-	(*CreatePaymentRequest)(nil), // 16: levis.plugin.v1.CreatePaymentRequest
-	(*CreatePaymentReply)(nil),   // 17: levis.plugin.v1.CreatePaymentReply
-	(*QueryPaymentRequest)(nil),  // 18: levis.plugin.v1.QueryPaymentRequest
-	(*QueryPaymentReply)(nil),    // 19: levis.plugin.v1.QueryPaymentReply
-	nil,                          // 20: levis.plugin.v1.ConfigureRequest.ValuesEntry
+	(Capability)(0),                      // 0: levis.plugin.v1.Capability
+	(FieldType)(0),                       // 1: levis.plugin.v1.FieldType
+	(PaymentState)(0),                    // 2: levis.plugin.v1.PaymentState
+	(*ConfigField)(nil),                  // 3: levis.plugin.v1.ConfigField
+	(*SelectOption)(nil),                 // 4: levis.plugin.v1.SelectOption
+	(*DescribeRequest)(nil),              // 5: levis.plugin.v1.DescribeRequest
+	(*Manifest)(nil),                     // 6: levis.plugin.v1.Manifest
+	(*ConfigureRequest)(nil),             // 7: levis.plugin.v1.ConfigureRequest
+	(*ConfigureReply)(nil),               // 8: levis.plugin.v1.ConfigureReply
+	(*HealthRequest)(nil),                // 9: levis.plugin.v1.HealthRequest
+	(*HealthReply)(nil),                  // 10: levis.plugin.v1.HealthReply
+	(*ShutdownRequest)(nil),              // 11: levis.plugin.v1.ShutdownRequest
+	(*ShutdownReply)(nil),                // 12: levis.plugin.v1.ShutdownReply
+	(*Mailbox)(nil),                      // 13: levis.plugin.v1.Mailbox
+	(*SendMailRequest)(nil),              // 14: levis.plugin.v1.SendMailRequest
+	(*SendMailReply)(nil),                // 15: levis.plugin.v1.SendMailReply
+	(*CreatePaymentRequest)(nil),         // 16: levis.plugin.v1.CreatePaymentRequest
+	(*CreatePaymentReply)(nil),           // 17: levis.plugin.v1.CreatePaymentReply
+	(*QueryPaymentRequest)(nil),          // 18: levis.plugin.v1.QueryPaymentRequest
+	(*QueryPaymentReply)(nil),            // 19: levis.plugin.v1.QueryPaymentReply
+	(*VerifyPaymentCallbackRequest)(nil), // 20: levis.plugin.v1.VerifyPaymentCallbackRequest
+	(*VerifyPaymentCallbackReply)(nil),   // 21: levis.plugin.v1.VerifyPaymentCallbackReply
+	nil,                                  // 22: levis.plugin.v1.ConfigureRequest.ValuesEntry
+	nil,                                  // 23: levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntry
 }
 var file_plugin_proto_depIdxs = []int32{
 	1,  // 0: levis.plugin.v1.ConfigField.type:type_name -> levis.plugin.v1.FieldType
 	4,  // 1: levis.plugin.v1.ConfigField.options:type_name -> levis.plugin.v1.SelectOption
 	0,  // 2: levis.plugin.v1.Manifest.capabilities:type_name -> levis.plugin.v1.Capability
 	3,  // 3: levis.plugin.v1.Manifest.config:type_name -> levis.plugin.v1.ConfigField
-	20, // 4: levis.plugin.v1.ConfigureRequest.values:type_name -> levis.plugin.v1.ConfigureRequest.ValuesEntry
+	22, // 4: levis.plugin.v1.ConfigureRequest.values:type_name -> levis.plugin.v1.ConfigureRequest.ValuesEntry
 	13, // 5: levis.plugin.v1.SendMailRequest.to:type_name -> levis.plugin.v1.Mailbox
 	2,  // 6: levis.plugin.v1.QueryPaymentReply.state:type_name -> levis.plugin.v1.PaymentState
-	5,  // 7: levis.plugin.v1.Plugin.Describe:input_type -> levis.plugin.v1.DescribeRequest
-	7,  // 8: levis.plugin.v1.Plugin.Configure:input_type -> levis.plugin.v1.ConfigureRequest
-	9,  // 9: levis.plugin.v1.Plugin.Health:input_type -> levis.plugin.v1.HealthRequest
-	11, // 10: levis.plugin.v1.Plugin.Shutdown:input_type -> levis.plugin.v1.ShutdownRequest
-	14, // 11: levis.plugin.v1.Plugin.SendMail:input_type -> levis.plugin.v1.SendMailRequest
-	16, // 12: levis.plugin.v1.Plugin.CreatePayment:input_type -> levis.plugin.v1.CreatePaymentRequest
-	18, // 13: levis.plugin.v1.Plugin.QueryPayment:input_type -> levis.plugin.v1.QueryPaymentRequest
-	6,  // 14: levis.plugin.v1.Plugin.Describe:output_type -> levis.plugin.v1.Manifest
-	8,  // 15: levis.plugin.v1.Plugin.Configure:output_type -> levis.plugin.v1.ConfigureReply
-	10, // 16: levis.plugin.v1.Plugin.Health:output_type -> levis.plugin.v1.HealthReply
-	12, // 17: levis.plugin.v1.Plugin.Shutdown:output_type -> levis.plugin.v1.ShutdownReply
-	15, // 18: levis.plugin.v1.Plugin.SendMail:output_type -> levis.plugin.v1.SendMailReply
-	17, // 19: levis.plugin.v1.Plugin.CreatePayment:output_type -> levis.plugin.v1.CreatePaymentReply
-	19, // 20: levis.plugin.v1.Plugin.QueryPayment:output_type -> levis.plugin.v1.QueryPaymentReply
-	14, // [14:21] is the sub-list for method output_type
-	7,  // [7:14] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	23, // 7: levis.plugin.v1.VerifyPaymentCallbackRequest.raw:type_name -> levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntry
+	2,  // 8: levis.plugin.v1.VerifyPaymentCallbackReply.state:type_name -> levis.plugin.v1.PaymentState
+	5,  // 9: levis.plugin.v1.Plugin.Describe:input_type -> levis.plugin.v1.DescribeRequest
+	7,  // 10: levis.plugin.v1.Plugin.Configure:input_type -> levis.plugin.v1.ConfigureRequest
+	9,  // 11: levis.plugin.v1.Plugin.Health:input_type -> levis.plugin.v1.HealthRequest
+	11, // 12: levis.plugin.v1.Plugin.Shutdown:input_type -> levis.plugin.v1.ShutdownRequest
+	14, // 13: levis.plugin.v1.Plugin.SendMail:input_type -> levis.plugin.v1.SendMailRequest
+	16, // 14: levis.plugin.v1.Plugin.CreatePayment:input_type -> levis.plugin.v1.CreatePaymentRequest
+	18, // 15: levis.plugin.v1.Plugin.QueryPayment:input_type -> levis.plugin.v1.QueryPaymentRequest
+	20, // 16: levis.plugin.v1.Plugin.VerifyPaymentCallback:input_type -> levis.plugin.v1.VerifyPaymentCallbackRequest
+	6,  // 17: levis.plugin.v1.Plugin.Describe:output_type -> levis.plugin.v1.Manifest
+	8,  // 18: levis.plugin.v1.Plugin.Configure:output_type -> levis.plugin.v1.ConfigureReply
+	10, // 19: levis.plugin.v1.Plugin.Health:output_type -> levis.plugin.v1.HealthReply
+	12, // 20: levis.plugin.v1.Plugin.Shutdown:output_type -> levis.plugin.v1.ShutdownReply
+	15, // 21: levis.plugin.v1.Plugin.SendMail:output_type -> levis.plugin.v1.SendMailReply
+	17, // 22: levis.plugin.v1.Plugin.CreatePayment:output_type -> levis.plugin.v1.CreatePaymentReply
+	19, // 23: levis.plugin.v1.Plugin.QueryPayment:output_type -> levis.plugin.v1.QueryPaymentReply
+	21, // 24: levis.plugin.v1.Plugin.VerifyPaymentCallback:output_type -> levis.plugin.v1.VerifyPaymentCallbackReply
+	17, // [17:25] is the sub-list for method output_type
+	9,  // [9:17] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_plugin_proto_init() }
@@ -1354,7 +1508,7 @@ func file_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_plugin_proto_rawDesc), len(file_plugin_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   18,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -45,6 +45,12 @@ service Plugin {
   // QueryPayment 查询一笔支付的当前状态，用于用户回到站点后主动核对，
   // 不依赖渠道回调是否已经到达。需声明 CAPABILITY_CREATE_PAYMENT。
   rpc QueryPayment(QueryPaymentRequest) returns (QueryPaymentReply);
+
+  // VerifyPaymentCallback 验证并归一化支付渠道的异步通知。
+  // 主程序只把渠道原始字段交给插件，不信任其中的用户、金额或支付状态；
+  // 插件验签后返回商户单号与实收金额，再由主程序匹配本地支付意图。
+  // 需声明 CAPABILITY_CREATE_PAYMENT。
+  rpc VerifyPaymentCallback(VerifyPaymentCallbackRequest) returns (VerifyPaymentCallbackReply);
 }
 
 // Capability 是插件声明的能力。
@@ -202,4 +208,21 @@ message QueryPaymentReply {
   // 避免「付一分钱开通一年」这类少付攻击。
   int64 paid_amount_cents = 2;
   string message = 3;
+}
+
+message VerifyPaymentCallbackRequest {
+  // raw 是渠道通知的原始表单或 JSON 字段，主程序不解释其含义。
+  map<string, string> raw = 1;
+}
+
+message VerifyPaymentCallbackReply {
+  // external_id 必须是 CreatePaymentRequest 下发的商户单号。
+  string external_id = 1;
+  // gateway_ref 是渠道侧流水号，可为空。
+  string gateway_ref = 2;
+  PaymentState state = 3;
+  int64 paid_amount_cents = 4;
+  // currency 可为空；非空时主程序必须核对为 CNY。
+  string currency = 5;
+  string message = 6;
 }

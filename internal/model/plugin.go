@@ -92,10 +92,37 @@ type PluginSetting struct {
 	Value string `gorm:"type:text" json:"value"`
 }
 
-// 插件支付记录的状态。
+// ExternalPayment 是主程序创建的外部支付意图。回调只能结算已创建且金额匹配的意图。
 const (
-	PluginPaymentPaid = "paid"
+	ExternalPaymentPurposeRecharge = "recharge"
+	ExternalPaymentPurposeOrder    = "order"
+	ExternalPaymentPurposeInvoice  = "invoice"
+	ExternalPaymentPurposeRenewal  = "renewal"
+	ExternalPaymentPending    = "pending"
+	ExternalPaymentProcessing = "processing"
+	ExternalPaymentPaid       = "paid"
+	ExternalPaymentFailed     = "failed"
+	PluginPaymentPaid              = ExternalPaymentPaid
 )
+
+type ExternalPayment struct {
+	Base
+	PluginID        string     `gorm:"index:idx_external_payment_plugin_ext,unique;size:64;not null" json:"plugin_id"`
+	ExternalID      string     `gorm:"index:idx_external_payment_plugin_ext,unique;size:128;not null" json:"external_id"`
+	UserID          uint       `gorm:"index;not null" json:"user_id"`
+	Purpose         string     `gorm:"size:16;not null" json:"purpose"`
+	TargetID        uint       `gorm:"index" json:"target_id"`
+	AmountCents     int64      `gorm:"not null" json:"amount_cents"`
+	Currency        string     `gorm:"size:8;not null;default:CNY" json:"currency"`
+	Subject         string     `gorm:"size:255;not null" json:"subject"`
+	ReturnURL       string     `gorm:"size:1024" json:"return_url"`
+	PayURL          string     `gorm:"size:2048" json:"pay_url"`
+	GatewayRef      string     `gorm:"size:128" json:"gateway_ref"`
+	PaidAmountCents int64      `json:"paid_amount_cents"`
+	Status          string     `gorm:"size:16;index;not null;default:pending" json:"status"`
+	FailureReason   string     `gorm:"size:255" json:"failure_reason"`
+	PaidAt          *time.Time `json:"paid_at"`
+}
 
 // PluginPayment 记录插件报上来的每一笔到账，唯一索引即幂等键。
 //

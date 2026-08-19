@@ -421,6 +421,34 @@ func (m *Manager) QueryPayment(ctx context.Context, id string, req *pb.QueryPaym
 	return out, nil
 }
 
+// VerifyPaymentCallback lets a payment plugin authenticate and normalize a raw gateway callback.
+func (m *Manager) VerifyPaymentCallback(ctx context.Context, id string, req *pb.VerifyPaymentCallbackRequest) (*pb.VerifyPaymentCallbackReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_CREATE_PAYMENT) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.VerifyPaymentCallbackReply
+	err = c.call(ctx, hookTimeout, func(ctx context.Context) error {
+		reply, err := client.VerifyPaymentCallback(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // Close 停止全部插件。主程序退出时调用。
 func (m *Manager) Close() {
 	m.cancel()

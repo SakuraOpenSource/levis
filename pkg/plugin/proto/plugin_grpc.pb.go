@@ -28,13 +28,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Plugin_Describe_FullMethodName      = "/levis.plugin.v1.Plugin/Describe"
-	Plugin_Configure_FullMethodName     = "/levis.plugin.v1.Plugin/Configure"
-	Plugin_Health_FullMethodName        = "/levis.plugin.v1.Plugin/Health"
-	Plugin_Shutdown_FullMethodName      = "/levis.plugin.v1.Plugin/Shutdown"
-	Plugin_SendMail_FullMethodName      = "/levis.plugin.v1.Plugin/SendMail"
-	Plugin_CreatePayment_FullMethodName = "/levis.plugin.v1.Plugin/CreatePayment"
-	Plugin_QueryPayment_FullMethodName  = "/levis.plugin.v1.Plugin/QueryPayment"
+	Plugin_Describe_FullMethodName              = "/levis.plugin.v1.Plugin/Describe"
+	Plugin_Configure_FullMethodName             = "/levis.plugin.v1.Plugin/Configure"
+	Plugin_Health_FullMethodName                = "/levis.plugin.v1.Plugin/Health"
+	Plugin_Shutdown_FullMethodName              = "/levis.plugin.v1.Plugin/Shutdown"
+	Plugin_SendMail_FullMethodName              = "/levis.plugin.v1.Plugin/SendMail"
+	Plugin_CreatePayment_FullMethodName         = "/levis.plugin.v1.Plugin/CreatePayment"
+	Plugin_QueryPayment_FullMethodName          = "/levis.plugin.v1.Plugin/QueryPayment"
+	Plugin_VerifyPaymentCallback_FullMethodName = "/levis.plugin.v1.Plugin/VerifyPaymentCallback"
 )
 
 // PluginClient is the client API for Plugin service.
@@ -68,6 +69,11 @@ type PluginClient interface {
 	// QueryPayment 查询一笔支付的当前状态，用于用户回到站点后主动核对，
 	// 不依赖渠道回调是否已经到达。需声明 CAPABILITY_CREATE_PAYMENT。
 	QueryPayment(ctx context.Context, in *QueryPaymentRequest, opts ...grpc.CallOption) (*QueryPaymentReply, error)
+	// VerifyPaymentCallback 验证并归一化支付渠道的异步通知。
+	// 主程序只把渠道原始字段交给插件，不信任其中的用户、金额或支付状态；
+	// 插件验签后返回商户单号与实收金额，再由主程序匹配本地支付意图。
+	// 需声明 CAPABILITY_CREATE_PAYMENT。
+	VerifyPaymentCallback(ctx context.Context, in *VerifyPaymentCallbackRequest, opts ...grpc.CallOption) (*VerifyPaymentCallbackReply, error)
 }
 
 type pluginClient struct {
@@ -148,6 +154,16 @@ func (c *pluginClient) QueryPayment(ctx context.Context, in *QueryPaymentRequest
 	return out, nil
 }
 
+func (c *pluginClient) VerifyPaymentCallback(ctx context.Context, in *VerifyPaymentCallbackRequest, opts ...grpc.CallOption) (*VerifyPaymentCallbackReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VerifyPaymentCallbackReply)
+	err := c.cc.Invoke(ctx, Plugin_VerifyPaymentCallback_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PluginServer is the server API for Plugin service.
 // All implementations must embed UnimplementedPluginServer
 // for forward compatibility.
@@ -179,6 +195,11 @@ type PluginServer interface {
 	// QueryPayment 查询一笔支付的当前状态，用于用户回到站点后主动核对，
 	// 不依赖渠道回调是否已经到达。需声明 CAPABILITY_CREATE_PAYMENT。
 	QueryPayment(context.Context, *QueryPaymentRequest) (*QueryPaymentReply, error)
+	// VerifyPaymentCallback 验证并归一化支付渠道的异步通知。
+	// 主程序只把渠道原始字段交给插件，不信任其中的用户、金额或支付状态；
+	// 插件验签后返回商户单号与实收金额，再由主程序匹配本地支付意图。
+	// 需声明 CAPABILITY_CREATE_PAYMENT。
+	VerifyPaymentCallback(context.Context, *VerifyPaymentCallbackRequest) (*VerifyPaymentCallbackReply, error)
 	mustEmbedUnimplementedPluginServer()
 }
 
@@ -209,6 +230,9 @@ func (UnimplementedPluginServer) CreatePayment(context.Context, *CreatePaymentRe
 }
 func (UnimplementedPluginServer) QueryPayment(context.Context, *QueryPaymentRequest) (*QueryPaymentReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method QueryPayment not implemented")
+}
+func (UnimplementedPluginServer) VerifyPaymentCallback(context.Context, *VerifyPaymentCallbackRequest) (*VerifyPaymentCallbackReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method VerifyPaymentCallback not implemented")
 }
 func (UnimplementedPluginServer) mustEmbedUnimplementedPluginServer() {}
 func (UnimplementedPluginServer) testEmbeddedByValue()                {}
@@ -357,6 +381,24 @@ func _Plugin_QueryPayment_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Plugin_VerifyPaymentCallback_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VerifyPaymentCallbackRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServer).VerifyPaymentCallback(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Plugin_VerifyPaymentCallback_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServer).VerifyPaymentCallback(ctx, req.(*VerifyPaymentCallbackRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Plugin_ServiceDesc is the grpc.ServiceDesc for Plugin service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -391,6 +433,10 @@ var Plugin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QueryPayment",
 			Handler:    _Plugin_QueryPayment_Handler,
+		},
+		{
+			MethodName: "VerifyPaymentCallback",
+			Handler:    _Plugin_VerifyPaymentCallback_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

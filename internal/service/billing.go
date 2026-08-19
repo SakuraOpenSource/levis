@@ -94,79 +94,95 @@ type RenewResult struct {
 // 只允许续费在用中的服务；一次性付费没有周期，谈不上续费。到期时间已过则从
 // 当前时间起算，尚未过期则从原到期日起顺延，避免「提前续费吃掉剩余时长」。
 func (s *BillingService) Renew(userID, serviceID uint) (*RenewResult, error) {
-	var out RenewResult
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		var svc model.Service
-		if err := tx.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound("服务不存在")
-			}
-			return err
-		}
-		if svc.Status != model.ServiceActive {
-			return ErrConflict("只有使用中的服务才能续费")
-		}
-		if svc.BillingCyc == model.CycleOneTime {
-			return ErrBadRequest("一次性付费服务无需续费")
-		}
+	return s.renew(userID, serviceID, true)
+}
 
+// RenewExternal settles an already verified external payment without debiting balance.
+func (s *BillingService) RenewExternal(userID, serviceID uint) (*RenewResult, error) {
+	return s.renew(userID, serviceID, false)
+}
+
+func (s *BillingService) renew(userID, serviceID uint, debit bool) (*RenewResult, error) {
+	var out *RenewResult
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		out, err = s.renewInTx(tx, userID, serviceID, debit)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// renewInTx settles a renewal using the caller's transaction.
+func (s *BillingService) renewInTx(tx *gorm.DB, userID, serviceID uint, debit bool) (*RenewResult, error) {
+	var svc model.Service
+	if err := tx.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("服务不存在")
+		}
+		return nil, err
+	}
+	if svc.Status != model.ServiceActive {
+		return nil, ErrConflict("只有使用中的服务才能续费")
+	}
+	if svc.BillingCyc == model.CycleOneTime {
+		return nil, ErrBadRequest("一次性付费服务无需续费")
+	}
+
+	if debit {
 		// 扣款放在最前面：余额不足会在此直接失败，后续写入都不会发生。
 		if _, err := s.wallet.adjustBalance(
 			tx, userID, -svc.PriceCents, model.TxPayment,
 			"service", svc.ID, fmt.Sprintf("续费 %s", svc.Name),
 		); err != nil {
-			return err
+			return nil, err
 		}
+	}
+	now := time.Now().UTC()
+	// 从「现在」与「原到期时间」中取较晚者起算，剩余时长不缩水。
+	base := now
+	if svc.ExpiresAt != nil && svc.ExpiresAt.After(now) {
+		base = *svc.ExpiresAt
+	}
+	next := model.AdvanceCycle(base, svc.BillingCyc)
+	if err := tx.Model(&model.Service{}).Where("id = ?", svc.ID).
+		Updates(map[string]any{
+			"next_due_at": next,
+			"expires_at":  next,
+			"status":      model.ServiceActive,
+		}).Error; err != nil {
+		return nil, err
+	}
 
-		now := time.Now().UTC()
-		// 从「现在」与「原到期时间」中取较晚者起算，剩余时长不缩水。
-		base := now
-		if svc.ExpiresAt != nil && svc.ExpiresAt.After(now) {
-			base = *svc.ExpiresAt
-		}
-		next := model.AdvanceCycle(base, svc.BillingCyc)
-		if err := tx.Model(&model.Service{}).Where("id = ?", svc.ID).
-			Updates(map[string]any{
-				"next_due_at": next,
-				"expires_at":  next,
-				"status":      model.ServiceActive,
-			}).Error; err != nil {
-			return err
-		}
-
-		invoiceNo, err := serialNo("INV")
-		if err != nil {
-			return err
-		}
-		invoice := model.Invoice{
-			InvoiceNo:  invoiceNo,
-			UserID:     userID,
-			Status:     model.InvoicePaid,
-			TotalCents: svc.PriceCents,
-			DueAt:      &now,
-			PaidAt:     &now,
-		}
-		if err := tx.Create(&invoice).Error; err != nil {
-			return err
-		}
-		item := model.InvoiceItem{
-			InvoiceID:   invoice.ID,
-			ServiceID:   &svc.ID,
-			Description: fmt.Sprintf("续费 %s（%s）", svc.Name, svc.BillingCyc),
-			AmountCents: svc.PriceCents,
-		}
-		if err := tx.Create(&item).Error; err != nil {
-			return err
-		}
-		invoice.Items = []model.InvoiceItem{item}
-
-		svc.NextDueAt = &next
-		svc.ExpiresAt = &next
-		out = RenewResult{Service: &svc, Invoice: &invoice}
-		return nil
-	})
+	invoiceNo, err := serialNo("INV")
 	if err != nil {
 		return nil, err
 	}
-	return &out, nil
+	invoice := model.Invoice{
+		InvoiceNo:  invoiceNo,
+		UserID:     userID,
+		Status:     model.InvoicePaid,
+		TotalCents: svc.PriceCents,
+		DueAt:      &now,
+		PaidAt:     &now,
+	}
+	if err := tx.Create(&invoice).Error; err != nil {
+		return nil, err
+	}
+	item := model.InvoiceItem{
+		InvoiceID:   invoice.ID,
+		ServiceID:   &svc.ID,
+		Description: fmt.Sprintf("续费 %s（%s）", svc.Name, svc.BillingCyc),
+		AmountCents: svc.PriceCents,
+	}
+	if err := tx.Create(&item).Error; err != nil {
+		return nil, err
+	}
+	invoice.Items = []model.InvoiceItem{item}
+
+	svc.NextDueAt = &next
+	svc.ExpiresAt = &next
+	return &RenewResult{Service: &svc, Invoice: &invoice}, nil
 }

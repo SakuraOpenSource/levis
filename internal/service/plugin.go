@@ -126,6 +126,9 @@ type PluginDetail struct {
 	Config  []ConfigField `json:"config"`
 	// Configured 报告必填项是否都已填写；未填全时前端提示「未配置」。
 	Configured bool `json:"configured"`
+	// ConfigSchemaReady 报告插件是否已经成功返回过 manifest。
+	// false 时 Config 为空不代表插件没有配置项。
+	ConfigSchemaReady bool `json:"config_schema_ready"`
 }
 
 // Detail 组装插件详情：运行状态 + manifest 里的字段定义 + 当前值。
@@ -141,10 +144,11 @@ func (s *PluginService) Detail(inst *plugin.Instance) (*PluginDetail, error) {
 	}
 
 	out := PluginDetail{
-		Snapshot:   inst.Snapshot(),
-		Granted:    state.Scopes,
-		Config:     []ConfigField{},
-		Configured: true,
+		Snapshot:          inst.Snapshot(),
+		Granted:           state.Scopes,
+		Config:            []ConfigField{},
+		Configured:        true,
+		ConfigSchemaReady: inst.Manifest() != nil,
 	}
 	if out.Granted == nil {
 		out.Granted = []string{}
@@ -154,6 +158,9 @@ func (s *PluginService) Detail(inst *plugin.Instance) (*PluginDetail, error) {
 	out.Enabled = state.Enabled
 
 	manifest := inst.Manifest()
+	if manifest == nil {
+		return &out, nil
+	}
 	for _, field := range manifest.GetConfig() {
 		value := values[field.GetKey()]
 		item := ConfigField{
@@ -219,6 +226,46 @@ func (s *PluginService) SaveConfig(inst *plugin.Instance, values map[string]stri
 			Key:      field.GetKey(),
 			Value:    value,
 		})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "plugin_id"}, {Name: "key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
+	}).Create(&rows).Error
+}
+
+// FrontendConfig 返回不依赖 manifest 的插件前端配置。secret 值只报告是否存在。
+func (s *PluginService) FrontendConfig(id string) (map[string]any, error) {
+	values, err := s.PluginConfig(id)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"pid":          values["pid"],
+		"gateway_url":  values["gateway_url"],
+		"payment_type": values["payment_type"],
+		"key_set":      values["key"] != "",
+	}, nil
+}
+
+// SaveFrontendConfig 保存前端声明的插件配置，不要求插件已经成功返回 manifest。
+func (s *PluginService) SaveFrontendConfig(id string, values map[string]string) error {
+	allowed := map[string]bool{"pid": true, "key": true, "gateway_url": true, "payment_type": true}
+	rows := make([]model.PluginSetting, 0, len(values))
+	for key, raw := range values {
+		if !allowed[key] {
+			return ErrBadRequest("不支持的插件配置项: %s", key)
+		}
+		value := strings.TrimSpace(raw)
+		if key == "key" && value == "" {
+			continue
+		}
+		if len(value) > maxConfigValueLen {
+			return ErrBadRequest("配置项 %s 的值过长（上限 %d 字节）", key, maxConfigValueLen)
+		}
+		rows = append(rows, model.PluginSetting{PluginID: id, Key: key, Value: value})
 	}
 	if len(rows) == 0 {
 		return nil

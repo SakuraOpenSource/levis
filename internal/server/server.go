@@ -110,6 +110,12 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	services.GET("/:id", h.Service)
 	services.POST("/:id/renew", h.RenewService)
 
+	payments := authed.Group("/payments")
+	payments.GET("/methods", h.PaymentMethods)
+	payments.POST("", h.CreatePayment)
+	payments.GET("/:id", h.Payment)
+	payments.POST("/:id/query", h.QueryPayment)
+
 	wallet := authed.Group("/wallet")
 	wallet.GET("", h.Wallet)
 	wallet.GET("/transactions", h.Transactions)
@@ -167,6 +173,8 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	admin.POST("/plugins/install", h.AdminInstallPlugin)
 	admin.POST("/plugins/reload", h.AdminReloadPlugins)
 	admin.GET("/plugins/:id/frontend/*path", h.AdminPluginFrontend)
+	admin.GET("/plugins/:id/frontend-config", h.AdminFrontendPluginConfig)
+	admin.PUT("/plugins/:id/frontend-config", h.AdminUpdateFrontendPluginConfig)
 	admin.GET("/plugins/:id", h.AdminPlugin)
 	admin.PUT("/plugins/:id/config", h.AdminUpdatePluginConfig)
 	admin.POST("/plugins/:id/enable", h.AdminEnablePlugin)

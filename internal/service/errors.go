@@ -49,7 +49,11 @@ func ErrUnauthorized(format string, args ...any) *Error {
 	return newError(http.StatusUnauthorized, "UNAUTHORIZED", format, args...)
 }
 
-// AsError 尝试把 err 还原为 *Error。
+// ErrUnavailable 返回 503，表示当前没有可用的外部能力。
+func ErrUnavailable(format string, args ...any) *Error {
+	return newError(http.StatusServiceUnavailable, "PAYMENT_UNAVAILABLE", format, args...)
+}
+
 func AsError(err error) (*Error, bool) {
 	var e *Error
 	if errors.As(err, &e) {

@@ -179,6 +179,39 @@ func (h *Handler) AdminUpdatePluginConfig(c *gin.Context) {
 	respond(c, detail, err)
 }
 
+// AdminFrontendPluginConfig returns the Epay frontend configuration without exposing secrets.
+func (h *Handler) AdminFrontendPluginConfig(c *gin.Context) {
+	inst, ok := h.pluginInstance(c)
+	if !ok {
+		return
+	}
+	values, err := h.pluginSvc().FrontendConfig(inst.ID())
+	respond(c, values, err)
+}
+
+// AdminUpdateFrontendPluginConfig saves frontend-owned configuration fields.
+func (h *Handler) AdminUpdateFrontendPluginConfig(c *gin.Context) {
+	inst, ok := h.pluginInstance(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Values map[string]string `json:"values"`
+	}
+	if !bindJSON(c, &req) {
+		return
+	}
+	if err := h.pluginSvc().SaveFrontendConfig(inst.ID(), req.Values); err != nil {
+		respond(c, nil, err)
+		return
+	}
+	if err := h.plugins.Reconfigure(c.Request.Context(), inst.ID()); err != nil {
+		respond(c, nil, err)
+		return
+	}
+	OK(c, gin.H{"ok": true})
+}
+
 // AdminEnablePlugin 启用插件并拉起进程。
 func (h *Handler) AdminEnablePlugin(c *gin.Context) {
 	h.setPluginEnabled(c, true)

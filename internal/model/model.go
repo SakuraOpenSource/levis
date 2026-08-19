@@ -333,5 +333,6 @@ func AllModels() []any {
 		&PluginState{},
 		&PluginSetting{},
 		&PluginPayment{},
+		&ExternalPayment{},
 	}
 }

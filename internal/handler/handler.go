@@ -93,6 +93,10 @@ func (h *Handler) admin() *service.AdminService {
 	return service.NewAdminService(h.db(), h.wallet(), h.storage)
 }
 
+func (h *Handler) payments() *service.PaymentService {
+	return service.NewPaymentService(h.db(), h.plugins, h.wallet(), h.orders(), h.billing())
+}
+
 func (h *Handler) pluginSvc() *service.PluginService {
 	return service.NewPluginService(h.db())
 }
