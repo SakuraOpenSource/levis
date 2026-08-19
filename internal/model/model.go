@@ -196,6 +196,9 @@ type Product struct {
 	Stock  int    `gorm:"not null;default:-1" json:"stock"`
 	Status string `gorm:"size:16;not null;default:active" json:"status"`
 	Sort   int    `gorm:"not null;default:0" json:"sort"`
+	// UpstreamPluginID 为空表示本地商品，非空表示上游对接插件 ID。
+	UpstreamPluginID  string `gorm:"size:64;default:''" json:"upstream_plugin_id"`
+	UpstreamProductID string `gorm:"size:64;default:''" json:"upstream_product_id"`
 }
 
 // CartItem 是购物车条目。同一用户、同一商品、同一计费周期唯一。

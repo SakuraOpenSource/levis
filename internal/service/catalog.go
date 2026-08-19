@@ -110,6 +110,9 @@ type ProductInput struct {
 	Stock       int            `json:"stock"`
 	Status      string         `json:"status"`
 	Sort        int            `json:"sort"`
+	// UpstreamPluginID 为空表示本地商品，非空表示上游对接插件 ID。
+	UpstreamPluginID  string `json:"upstream_plugin_id"`
+	UpstreamProductID string `json:"upstream_product_id"`
 }
 
 // slugPattern 之外的字符会被替换成短横线。

@@ -551,15 +551,17 @@ func (s *AdminService) CreateProduct(in ProductInput) (*model.Product, error) {
 		return nil, err
 	}
 	item := model.Product{
-		CategoryID:  in.CategoryID,
-		Name:        in.Name,
-		Description: strings.TrimSpace(in.Description),
-		Specs:       in.Specs,
-		PriceCents:  in.PriceCents,
-		BillingCyc:  in.BillingCyc,
-		Stock:       in.Stock,
-		Status:      in.Status,
-		Sort:        in.Sort,
+		CategoryID:        in.CategoryID,
+		Name:              in.Name,
+		Description:       strings.TrimSpace(in.Description),
+		Specs:             in.Specs,
+		PriceCents:        in.PriceCents,
+		BillingCyc:        in.BillingCyc,
+		Stock:             in.Stock,
+		Status:            in.Status,
+		Sort:              in.Sort,
+		UpstreamPluginID:  in.UpstreamPluginID,
+		UpstreamProductID: in.UpstreamProductID,
 	}
 	if err := s.db.Create(&item).Error; err != nil {
 		return nil, err
@@ -580,15 +582,17 @@ func (s *AdminService) UpdateProduct(id uint, in ProductInput) (*model.Product, 
 		return nil, err
 	}
 	updates := map[string]any{
-		"category_id":   in.CategoryID,
-		"name":          in.Name,
-		"description":   strings.TrimSpace(in.Description),
-		"specs":         in.Specs,
-		"price_cents":   in.PriceCents,
-		"billing_cycle": in.BillingCyc,
-		"stock":         in.Stock,
-		"status":        in.Status,
-		"sort":          in.Sort,
+		"category_id":         in.CategoryID,
+		"name":                in.Name,
+		"description":         strings.TrimSpace(in.Description),
+		"specs":               in.Specs,
+		"price_cents":         in.PriceCents,
+		"billing_cycle":       in.BillingCyc,
+		"stock":               in.Stock,
+		"status":              in.Status,
+		"sort":                in.Sort,
+		"upstream_plugin_id":  in.UpstreamPluginID,
+		"upstream_product_id": in.UpstreamProductID,
 	}
 	if err := s.db.Model(&item).Updates(updates).Error; err != nil {
 		return nil, err

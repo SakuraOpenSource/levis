@@ -236,31 +236,59 @@ func (s *PluginService) SaveConfig(inst *plugin.Instance, values map[string]stri
 	}).Create(&rows).Error
 }
 
-// FrontendConfig 返回不依赖 manifest 的插件前端配置。secret 值只报告是否存在。
-func (s *PluginService) FrontendConfig(id string) (map[string]any, error) {
+// FrontendConfig 返回插件前端配置，根据 manifest 区分 secret 字段。
+func (s *PluginService) FrontendConfig(id string, manifest *pb.Manifest) (map[string]any, error) {
 	values, err := s.PluginConfig(id)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
-		"pid":          values["pid"],
-		"gateway_url":  values["gateway_url"],
-		"payment_type": values["payment_type"],
-		"key_set":      values["key"] != "",
-	}, nil
+	out := make(map[string]any, len(values)*2)
+	for k, v := range values {
+		out[k] = v
+	}
+	if manifest != nil {
+		for _, field := range manifest.GetConfig() {
+			if field.GetSecret() {
+				out[field.GetKey()+"_set"] = values[field.GetKey()] != ""
+			}
+		}
+	}
+	// 兼容旧版 manifest 为 nil 的情况：枚举所有 keys 生成 _set 标记
+	if manifest == nil {
+		for k, v := range values {
+			out[k+"_set"] = v != ""
+		}
+	}
+	return out, nil
 }
 
-// SaveFrontendConfig 保存前端声明的插件配置，不要求插件已经成功返回 manifest。
-func (s *PluginService) SaveFrontendConfig(id string, values map[string]string) error {
-	allowed := map[string]bool{"pid": true, "key": true, "gateway_url": true, "payment_type": true}
+// SaveFrontendConfig 保存前端声明的插件配置，根据 manifest 校验字段。
+func (s *PluginService) SaveFrontendConfig(id string, manifest *pb.Manifest, values map[string]string) error {
+	allowed := map[string]bool{}
+	if manifest != nil {
+		for _, field := range manifest.GetConfig() {
+			allowed[field.GetKey()] = true
+		}
+	}
 	rows := make([]model.PluginSetting, 0, len(values))
 	for key, raw := range values {
-		if !allowed[key] {
+		if len(allowed) > 0 && !allowed[key] {
 			return ErrBadRequest("不支持的插件配置项: %s", key)
 		}
 		value := strings.TrimSpace(raw)
-		if key == "key" && value == "" {
-			continue
+		if value == "" {
+			skipSecret := false
+			if manifest != nil {
+				for _, field := range manifest.GetConfig() {
+					if field.GetKey() == key && field.GetSecret() {
+						skipSecret = true
+						break
+					}
+				}
+			}
+			if skipSecret {
+				continue
+			}
 		}
 		if len(value) > maxConfigValueLen {
 			return ErrBadRequest("配置项 %s 的值过长（上限 %d 字节）", key, maxConfigValueLen)

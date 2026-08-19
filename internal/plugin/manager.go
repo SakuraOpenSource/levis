@@ -343,6 +343,17 @@ func (m *Manager) PaymentPlugins() []string {
 	return out
 }
 
+// ProvisionPlugins 返回全部可用的上游产品对接插件 ID。
+func (m *Manager) ProvisionPlugins() []string {
+	out := []string{}
+	for _, inst := range m.List() {
+		if inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
+			out = append(out, inst.ID())
+		}
+	}
+	return out
+}
+
 // SendMail 通过任一可用的邮件插件发信。
 //
 // 没有可用插件时返回 ErrUnavailable，由调用方决定如何处理 —— 通知类邮件

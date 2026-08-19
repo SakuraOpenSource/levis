@@ -205,6 +205,12 @@ func (i *Instance) client() (pb.PluginClient, *conn) {
 	return i.conn.client, i.conn
 }
 
+// Client 返回可用的 gRPC 客户端，供 handler 直接调用插件方法。
+func (i *Instance) Client() pb.PluginClient {
+	cli, _ := i.client()
+	return cli
+}
+
 // record 写一行实例日志，同时进主程序日志。
 func (i *Instance) record(format string, args ...any) {
 	line := sprintf(format, args...)

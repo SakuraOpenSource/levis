@@ -179,13 +179,13 @@ func (h *Handler) AdminUpdatePluginConfig(c *gin.Context) {
 	respond(c, detail, err)
 }
 
-// AdminFrontendPluginConfig returns the Epay frontend configuration without exposing secrets.
+// AdminFrontendPluginConfig returns the plugin frontend configuration without exposing secrets.
 func (h *Handler) AdminFrontendPluginConfig(c *gin.Context) {
 	inst, ok := h.pluginInstance(c)
 	if !ok {
 		return
 	}
-	values, err := h.pluginSvc().FrontendConfig(inst.ID())
+	values, err := h.pluginSvc().FrontendConfig(inst.ID(), inst.Manifest())
 	respond(c, values, err)
 }
 
@@ -201,7 +201,7 @@ func (h *Handler) AdminUpdateFrontendPluginConfig(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
-	if err := h.pluginSvc().SaveFrontendConfig(inst.ID(), req.Values); err != nil {
+	if err := h.pluginSvc().SaveFrontendConfig(inst.ID(), inst.Manifest(), req.Values); err != nil {
 		respond(c, nil, err)
 		return
 	}

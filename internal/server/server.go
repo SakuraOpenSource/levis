@@ -158,6 +158,8 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	admin.POST("/products", h.AdminCreateProduct)
 	admin.PATCH("/products/:id", h.AdminUpdateProduct)
 	admin.DELETE("/products/:id", h.AdminDeleteProduct)
+	admin.GET("/provision-plugins", h.AdminProvisionPlugins)
+	admin.POST("/products/sync", h.AdminSyncProducts)
 	admin.GET("/users/:id/services", h.AdminUserServices)
 	admin.PATCH("/services/:id", h.AdminUpdateService)
 	admin.DELETE("/services/:id", h.AdminDeleteService)

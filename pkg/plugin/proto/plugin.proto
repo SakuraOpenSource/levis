@@ -51,6 +51,30 @@ service Plugin {
   // 插件验签后返回商户单号与实收金额，再由主程序匹配本地支付意图。
   // 需声明 CAPABILITY_CREATE_PAYMENT。
   rpc VerifyPaymentCallback(VerifyPaymentCallbackRequest) returns (VerifyPaymentCallbackReply);
+
+  // ListProducts 拉取上游供货商的产品列表。
+  // 需声明 CAPABILITY_PROVISION_PRODUCT。
+  rpc ListProducts(ListProductsRequest) returns (ListProductsReply);
+
+  // GetProduct 获取单个产品的详细信息。
+  // 需声明 CAPABILITY_PROVISION_PRODUCT。
+  rpc GetProduct(GetProductRequest) returns (GetProductReply);
+
+  // CreateOrder 在上游创建订单，返回上游订单号。
+  // 需声明 CAPABILITY_PROVISION_PRODUCT。
+  rpc CreateOrder(CreateOrderRequest) returns (CreateOrderReply);
+
+  // GetOrder 查询上游订单状态。
+  // 需声明 CAPABILITY_PROVISION_PRODUCT。
+  rpc GetOrder(GetOrderRequest) returns (GetOrderReply);
+
+  // ManageHost 管理上游服务实例（续费/暂停/解除暂停/删除）。
+  // 需声明 CAPABILITY_PROVISION_PRODUCT。
+  rpc ManageHost(ManageHostRequest) returns (ManageHostReply);
+
+  // GetHost 查询上游服务实例详情。
+  // 需声明 CAPABILITY_PROVISION_PRODUCT。
+  rpc GetHost(GetHostRequest) returns (GetHostReply);
 }
 
 // Capability 是插件声明的能力。
@@ -60,6 +84,9 @@ enum Capability {
   CAPABILITY_UNSPECIFIED = 0;
   CAPABILITY_SEND_MAIL = 1;
   CAPABILITY_CREATE_PAYMENT = 2;
+  // CAPABILITY_PROVISION_PRODUCT 表示插件可以对接上游供货商：
+  // 拉取产品列表、下单、查询订单、管理服务实例。
+  CAPABILITY_PROVISION_PRODUCT = 3;
 }
 
 // FieldType 是配置项的输入类型，决定后台表单的渲染方式。
@@ -227,4 +254,129 @@ message VerifyPaymentCallbackReply {
   // currency 可为空；非空时主程序必须核对为 CNY。
   string currency = 5;
   string message = 6;
+}
+
+// =============================================================================
+// 上游供货商对接（CAPABILITY_PROVISION_PRODUCT）
+// =============================================================================
+
+message ListProductsRequest {
+  // page 从 1 开始。
+  int32 page = 1;
+  int32 limit = 2;
+}
+
+// UpstreamProduct 是上游返回的一个产品。
+message UpstreamProduct {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  // price_cents 是金额，整数分。
+  int64 price_cents = 4;
+  // billing_cycle 是计费周期：monthly / quarterly / annually / biennially / triennially。
+  string billing_cycle = 5;
+  // group_name 是产品分组名，如「香港云服务器」。
+  string group_name = 6;
+  // specs 是规格的键值对，如 {"CPU":"4核","内存":"8GB","带宽":"10Mbps"}。
+  map<string, string> specs = 7;
+  // stock_available 为 true 表示可购买。
+  bool stock_available = 8;
+}
+
+message ListProductsReply {
+  repeated UpstreamProduct products = 1;
+  int32 total = 2;
+  string error = 3;
+}
+
+message GetProductRequest {
+  string id = 1;
+}
+
+message GetProductReply {
+  UpstreamProduct product = 1;
+  string error = 2;
+}
+
+message CreateOrderRequest {
+  // product_id 是上游产品 ID。
+  string product_id = 1;
+  // billing_cycle 是计费周期。
+  string billing_cycle = 2;
+  int32 quantity = 3;
+  // client_email 是下游客户邮箱，上游可能用它创建账号。
+  string client_email = 4;
+  // remark 是备注，主程序会填入 Levis 订单号。
+  string remark = 5;
+}
+
+message CreateOrderReply {
+  // upstream_order_id 是上游返回的订单号，后续查询与管理都用它。
+  string upstream_order_id = 1;
+  // upstream_order_no 是上游供展示的订单编号。
+  string upstream_order_no = 2;
+  // total_cents 是上游返回的订单金额，主程序会核对。
+  int64 total_cents = 3;
+  // status 是上游订单状态：pending / paid / active / cancelled 等。
+  string status = 4;
+  string error = 5;
+}
+
+message GetOrderRequest {
+  string upstream_order_id = 1;
+}
+
+message GetOrderReply {
+  string upstream_order_id = 1;
+  string upstream_order_no = 2;
+  int64 total_cents = 3;
+  string status = 4;
+  // host_id 是上游开通后返回的服务实例 ID，为空表示尚未开通。
+  string host_id = 5;
+  string error = 6;
+}
+
+// HostAction 是对服务实例的操作。
+enum HostAction {
+  HOST_ACTION_UNSPECIFIED = 0;
+  HOST_ACTION_RENEW = 1;
+  HOST_ACTION_SUSPEND = 2;
+  HOST_ACTION_UNSUSPEND = 3;
+  HOST_ACTION_TERMINATE = 4;
+}
+
+message ManageHostRequest {
+  string host_id = 1;
+  HostAction action = 2;
+  // billing_cycle 仅在 RENEW 时需要。
+  string billing_cycle = 3;
+}
+
+message ManageHostReply {
+  // success 为 true 表示操作成功。
+  bool success = 1;
+  // new_expiry 是续费后的新到期时间（RFC3339），仅在 RENEW 成功时返回。
+  string new_expiry = 2;
+  string error = 3;
+}
+
+message GetHostRequest {
+  string host_id = 1;
+}
+
+message UpstreamHost {
+  string id = 1;
+  string product_id = 2;
+  string product_name = 3;
+  string status = 4;
+  string billing_cycle = 5;
+  // expiry 是到期时间（RFC3339）。
+  string expiry = 6;
+  // upstream_order_id 是关联的上游订单号。
+  string upstream_order_id = 7;
+}
+
+message GetHostReply {
+  UpstreamHost host = 1;
+  string error = 2;
 }
