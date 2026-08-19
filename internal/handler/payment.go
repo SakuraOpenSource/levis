@@ -29,7 +29,7 @@ func (h *Handler) CreatePayment(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
-	item, err := h.payments().Create(c.Request.Context(), httpx.CurrentUserID(c), service.PaymentCreateInput{Purpose: req.Purpose, TargetID: req.TargetID, PluginID: req.PluginID, AmountCents: req.AmountCents})
+	item, err := h.payments().Create(c.Request.Context(), httpx.CurrentUserID(c), c.ClientIP(), service.PaymentCreateInput{Purpose: req.Purpose, TargetID: req.TargetID, PluginID: req.PluginID, AmountCents: req.AmountCents})
 	respond(c, item, err)
 }
 

@@ -58,8 +58,8 @@ proto:
 	@tmp=$$(mktemp -d) && \
 		GOBIN=$$tmp go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO) && \
 		GOBIN=$$tmp go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GRPC) && \
-		PATH="$$tmp:$$PATH" go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION) \
-			generate --template $(PROTO_DIR)/buf.gen.yaml $(PROTO_DIR) && \
+		cd $(PROTO_DIR) && PATH="$$tmp:$$PATH" go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION) \
+			generate --template buf.gen.yaml . && \
 		rm -rf $$tmp
 	@gofmt -w $(PROTO_DIR)
 	@echo "已更新 $(PROTO_DIR)/*.pb.go，记得一并提交"

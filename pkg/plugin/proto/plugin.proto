@@ -175,6 +175,8 @@ message CreatePaymentRequest {
   uint64 user_id = 5;
   // return_url 是用户付完款后应当跳回的站内地址。
   string return_url = 6;
+  // client_ip 是用户的客户端 IP，部分支付渠道要求此字段。
+  string client_ip = 7;
 }
 
 message CreatePaymentReply {

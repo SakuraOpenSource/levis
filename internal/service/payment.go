@@ -58,7 +58,7 @@ func paymentExternalID() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-func (s *PaymentService) Create(ctx context.Context, userID uint, in PaymentCreateInput) (*model.ExternalPayment, error) {
+func (s *PaymentService) Create(ctx context.Context, userID uint, clientIP string, in PaymentCreateInput) (*model.ExternalPayment, error) {
 	if s.plugins == nil {
 		return nil, ErrUnavailable("暂无可用的支付插件，请联系管理员配置")
 	}
@@ -123,7 +123,7 @@ func (s *PaymentService) Create(ctx context.Context, userID uint, in PaymentCrea
 	if err := s.db.Create(intent).Error; err != nil {
 		return nil, err
 	}
-	reply, err := s.plugins.CreatePayment(ctx, in.PluginID, &pb.CreatePaymentRequest{ExternalId: externalID, AmountCents: amount, Currency: "CNY", Subject: subject, UserId: uint64(userID)})
+	reply, err := s.plugins.CreatePayment(ctx, in.PluginID, &pb.CreatePaymentRequest{ExternalId: externalID, AmountCents: amount, Currency: "CNY", Subject: subject, UserId: uint64(userID), ClientIp: clientIP})
 	if err != nil {
 		s.db.Model(intent).Updates(map[string]any{"status": model.ExternalPaymentFailed, "failure_reason": err.Error()})
 		return nil, ErrUnavailable("创建支付失败: %s", err.Error())
