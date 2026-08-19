@@ -114,5 +114,6 @@ func respond(c *gin.Context, data any, err error) {
 		Fail(c, bizErr.Status, bizErr.Code, bizErr.Message)
 		return
 	}
-	Internal(c, "")
+	log.Printf("handler internal error: %v", err)
+	Internal(c, "服务器内部错误")
 }

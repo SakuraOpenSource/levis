@@ -126,7 +126,7 @@ func (s *PaymentService) Create(ctx context.Context, userID uint, in PaymentCrea
 	reply, err := s.plugins.CreatePayment(ctx, in.PluginID, &pb.CreatePaymentRequest{ExternalId: externalID, AmountCents: amount, Currency: "CNY", Subject: subject, UserId: uint64(userID)})
 	if err != nil {
 		s.db.Model(intent).Updates(map[string]any{"status": model.ExternalPaymentFailed, "failure_reason": err.Error()})
-		return nil, err
+		return nil, ErrUnavailable("创建支付失败: %s", err.Error())
 	}
 	intent.PayURL, intent.GatewayRef = reply.GetPayUrl(), reply.GetGatewayRef()
 	if err := s.db.Model(intent).Updates(map[string]any{"pay_url": intent.PayURL, "gateway_ref": intent.GatewayRef}).Error; err != nil {
