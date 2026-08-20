@@ -866,8 +866,6 @@ func paymentPluginFields(fields []*pb.ConfigField) []PaymentPluginField {
 	return out
 }
 
-
-
 // PaymentPlugins 返回可用的支付插件及其按方式配置 schema。
 func (s *AdminService) PaymentPlugins() ([]PaymentPluginInfo, error) {
 	if s.plugins == nil {
@@ -1016,10 +1014,10 @@ func (s *AdminService) DeletePaymentMethod(id uint) error {
 // ---------- 管理员手动服务 ----------
 
 type AdminCreateServiceRequest struct {
-	ProductID   uint   `json:"product_id"`
-	Quantity    int    `json:"quantity"`
+	ProductID    uint   `json:"product_id"`
+	Quantity     int    `json:"quantity"`
 	BillingCycle string `json:"billing_cycle"`
-	Provision   bool   `json:"provision"`
+	Provision    bool   `json:"provision"`
 }
 
 func (s *AdminService) CreateServiceForUser(userID uint, req AdminCreateServiceRequest) (*model.Service, error) {

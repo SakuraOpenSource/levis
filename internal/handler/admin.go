@@ -366,14 +366,14 @@ func (h *Handler) AdminPaymentMethods(c *gin.Context) {
 	}
 	// 解密 Config JSON 为 map 以便前端直接渲染及编辑回显
 	type outItem struct {
-		ID       uint              `json:"id"`
-		Name     string            `json:"name"`
-		PluginID string            `json:"plugin_id"`
-		Config   map[string]string `json:"config"`
-		Enabled  bool              `json:"enabled"`
-		SortOrder int              `json:"sort_order"`
-		CreatedAt string          `json:"created_at"`
-		UpdatedAt string          `json:"updated_at"`
+		ID        uint              `json:"id"`
+		Name      string            `json:"name"`
+		PluginID  string            `json:"plugin_id"`
+		Config    map[string]string `json:"config"`
+		Enabled   bool              `json:"enabled"`
+		SortOrder int               `json:"sort_order"`
+		CreatedAt string            `json:"created_at"`
+		UpdatedAt string            `json:"updated_at"`
 	}
 	out := make([]outItem, 0, len(items))
 	for _, m := range items {

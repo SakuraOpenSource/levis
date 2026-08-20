@@ -98,10 +98,10 @@ const (
 	ExternalPaymentPurposeOrder    = "order"
 	ExternalPaymentPurposeInvoice  = "invoice"
 	ExternalPaymentPurposeRenewal  = "renewal"
-	ExternalPaymentPending    = "pending"
-	ExternalPaymentProcessing = "processing"
-	ExternalPaymentPaid       = "paid"
-	ExternalPaymentFailed     = "failed"
+	ExternalPaymentPending         = "pending"
+	ExternalPaymentProcessing      = "processing"
+	ExternalPaymentPaid            = "paid"
+	ExternalPaymentFailed          = "failed"
 	PluginPaymentPaid              = ExternalPaymentPaid
 )
 
