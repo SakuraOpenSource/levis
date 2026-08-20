@@ -151,6 +151,12 @@ func (s *PaymentService) Create(ctx context.Context, userID uint, clientIP strin
 	default:
 		return nil, ErrBadRequest("不支持的支付用途")
 	}
+	if amount == 0 {
+		return nil, ErrBadRequest("该订单/服务无需在线支付（金额为 0），请使用余额支付/续费")
+	}
+	if amount < 0 {
+		return nil, ErrBadRequest("金额不能为负")
+	}
 	externalID, err := paymentExternalID()
 	if err != nil {
 		return nil, err
