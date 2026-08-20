@@ -136,8 +136,9 @@ func (s *BillingService) renewInTx(tx *gorm.DB, userID, serviceID uint, debit bo
 		return nil, ErrBadRequest("一次性付费服务无需续费")
 	}
 
-	if debit {
+	if debit && svc.PriceCents > 0 {
 		// 扣款放在最前面：余额不足会在此直接失败，后续写入都不会发生。
+		// 免费服务（0 元）无需扣款，直接跳过避免“金额不能为零”错误。
 		if _, err := s.wallet.adjustBalance(
 			tx, userID, -svc.PriceCents, model.TxPayment,
 			"service", svc.ID, fmt.Sprintf("续费 %s", svc.Name),
