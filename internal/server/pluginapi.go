@@ -35,4 +35,5 @@ func mountPluginAPI(engine *gin.Engine, rt *runtime.Runtime, h *handler.Handler)
 	notify := engine.Group("/api/plugin/v1/payment-notify",
 		middleware.RequireInstalled(rt))
 	notify.Any("/:plugin", h.PaymentNotify)
+	notify.Any("/:plugin/:method", h.PaymentNotify)
 }

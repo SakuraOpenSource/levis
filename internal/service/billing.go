@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -8,17 +9,21 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/SakuraOpenSource/levis/internal/model"
+	"github.com/SakuraOpenSource/levis/internal/plugin"
+	pb "github.com/SakuraOpenSource/levis/pkg/plugin/proto"
 )
 
 // BillingService 提供已购服务与账单的读取，以及服务的续费。
 type BillingService struct {
-	db     *gorm.DB
-	wallet *WalletService
+	db      *gorm.DB
+	wallet  *WalletService
+	plugins *plugin.Manager
 }
 
-// NewBillingService 构造 BillingService。
-func NewBillingService(db *gorm.DB, wallet *WalletService) *BillingService {
-	return &BillingService{db: db, wallet: wallet}
+// NewBillingService 构造 BillingService。plugins 可为 nil（测试或无插件场景），
+// 此时上游服务续费仅本地顺延，不会向上游发起续费。
+func NewBillingService(db *gorm.DB, wallet *WalletService, plugins *plugin.Manager) *BillingService {
+	return &BillingService{db: db, wallet: wallet, plugins: plugins}
 }
 
 // Services 分页返回用户的已购服务。
@@ -140,6 +145,18 @@ func (s *BillingService) renewInTx(tx *gorm.DB, userID, serviceID uint, debit bo
 			return nil, err
 		}
 	}
+
+	// 上游服务：先向上游发起续费（插件内部会用上游余额支付）。
+	// 上游续费失败则整体回滚，本地余额扣款一并撤销。
+	var upstreamExpiry *time.Time
+	if svc.UpstreamPluginID != "" && svc.UpstreamHostID != "" {
+		expiry, err := s.renewUpstream(&svc)
+		if err != nil {
+			return nil, err
+		}
+		upstreamExpiry = expiry
+	}
+
 	now := time.Now().UTC()
 	// 从「现在」与「原到期时间」中取较晚者起算，剩余时长不缩水。
 	base := now
@@ -147,6 +164,10 @@ func (s *BillingService) renewInTx(tx *gorm.DB, userID, serviceID uint, debit bo
 		base = *svc.ExpiresAt
 	}
 	next := model.AdvanceCycle(base, svc.BillingCyc)
+	// 上游返回了新到期时间则以上游为准，保持两边一致。
+	if upstreamExpiry != nil {
+		next = *upstreamExpiry
+	}
 	if err := tx.Model(&model.Service{}).Where("id = ?", svc.ID).
 		Updates(map[string]any{
 			"next_due_at": next,
@@ -185,4 +206,132 @@ func (s *BillingService) renewInTx(tx *gorm.DB, userID, serviceID uint, debit bo
 	svc.NextDueAt = &next
 	svc.ExpiresAt = &next
 	return &RenewResult{Service: &svc, Invoice: &invoice}, nil
+}
+
+// renewUpstream 向上游插件发起续费，返回上游给出的新到期时间（可能为 nil）。
+// 插件内部会完成上游续费单的创建与余额支付。
+func (s *BillingService) renewUpstream(svc *model.Service) (*time.Time, error) {
+	if s.plugins == nil {
+		return nil, ErrBadRequest("上游插件不可用，无法续费该服务")
+	}
+	reply, err := s.plugins.ManageHost(context.Background(), svc.UpstreamPluginID, &pb.ManageHostRequest{
+		HostId:       svc.UpstreamHostID,
+		Action:       pb.HostAction_HOST_ACTION_RENEW,
+		BillingCycle: svc.BillingCyc,
+	})
+	if err != nil {
+		return nil, ErrBadRequest("上游续费失败: %v", err)
+	}
+	if !reply.GetSuccess() {
+		return nil, ErrBadRequest("上游续费失败")
+	}
+	if e := reply.GetNewExpiry(); e != "" {
+		if t, err := time.Parse(time.RFC3339, e); err == nil {
+			return &t, nil
+		}
+	}
+	return nil, nil
+}
+
+// 电源操作动作名，与前端约定一致。
+const (
+	PowerBoot      = "boot"
+	PowerShutdown  = "shutdown"
+	PowerReboot    = "reboot"
+	PowerReinstall = "reinstall"
+)
+
+// Power 对上游服务执行电源操作（开机/关机/重启/重装系统）。
+// 仅上游对接的服务支持；本地服务没有电源概念。os 仅在 reinstall 时使用。
+func (s *BillingService) Power(userID, serviceID uint, action string, os string) error {
+	var svc model.Service
+	if err := s.db.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound("服务不存在")
+		}
+		return err
+	}
+	if svc.UpstreamPluginID == "" || svc.UpstreamHostID == "" {
+		return ErrBadRequest("该服务不支持电源操作")
+	}
+	if svc.Status != model.ServiceActive {
+		return ErrConflict("只有使用中的服务才能执行电源操作")
+	}
+
+	var pbAction pb.HostAction
+	switch action {
+	case PowerBoot:
+		pbAction = pb.HostAction_HOST_ACTION_BOOT
+	case PowerShutdown:
+		pbAction = pb.HostAction_HOST_ACTION_SHUTDOWN
+	case PowerReboot:
+		pbAction = pb.HostAction_HOST_ACTION_REBOOT
+	case PowerReinstall:
+		pbAction = pb.HostAction_HOST_ACTION_REINSTALL
+	default:
+		return ErrBadRequest("无效的电源操作")
+	}
+
+	if s.plugins == nil {
+		return ErrBadRequest("上游插件不可用")
+	}
+	reply, err := s.plugins.ManageHost(context.Background(), svc.UpstreamPluginID, &pb.ManageHostRequest{
+		HostId: svc.UpstreamHostID,
+		Action: pbAction,
+		Os:     os,
+	})
+	if err != nil {
+		return ErrBadRequest("上游操作失败: %v", err)
+	}
+	if !reply.GetSuccess() {
+		return ErrBadRequest("上游操作失败")
+	}
+	return nil
+}
+
+// UpstreamInfo 返回上游主机详情（包含支持的操作列表）。
+func (s *BillingService) UpstreamInfo(userID, serviceID uint) (*pb.UpstreamHost, error) {
+	var svc model.Service
+	if err := s.db.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("服务不存在")
+		}
+		return nil, err
+	}
+	if svc.UpstreamPluginID == "" || svc.UpstreamHostID == "" {
+		return nil, ErrBadRequest("该服务未绑定上游")
+	}
+	if s.plugins == nil {
+		return nil, ErrBadRequest("上游插件不可用")
+	}
+	reply, err := s.plugins.GetHost(context.Background(), svc.UpstreamPluginID, &pb.GetHostRequest{HostId: svc.UpstreamHostID})
+	if err != nil {
+		return nil, ErrBadRequest("获取上游信息失败: %v", err)
+	}
+	if reply.GetHost() == nil {
+		return nil, ErrBadRequest("上游未返回主机信息")
+	}
+	return reply.GetHost(), nil
+}
+
+// ListOS 返回上游主机可用的重装系统列表。
+func (s *BillingService) ListOS(userID, serviceID uint) ([]*pb.OSImage, error) {
+	var svc model.Service
+	if err := s.db.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("服务不存在")
+		}
+		return nil, err
+	}
+	if svc.UpstreamPluginID == "" || svc.UpstreamHostID == "" {
+		return nil, ErrBadRequest("该服务未绑定上游")
+	}
+	if s.plugins == nil {
+		return nil, ErrBadRequest("上游插件不可用")
+	}
+	reply, err := s.plugins.ListHostOS(context.Background(), svc.UpstreamPluginID, &pb.ListHostOSRequest{HostId: svc.UpstreamHostID})
+	if err != nil {
+		return nil, ErrBadRequest("获取系统列表失败: %v", err)
+	}
+	return reply.GetOs(), nil
 }

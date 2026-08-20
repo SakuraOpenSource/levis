@@ -212,6 +212,14 @@ const (
 	HostAction_HOST_ACTION_SUSPEND     HostAction = 2
 	HostAction_HOST_ACTION_UNSUSPEND   HostAction = 3
 	HostAction_HOST_ACTION_TERMINATE   HostAction = 4
+	// HOST_ACTION_BOOT 开机。
+	HostAction_HOST_ACTION_BOOT HostAction = 5
+	// HOST_ACTION_SHUTDOWN 关机。
+	HostAction_HOST_ACTION_SHUTDOWN HostAction = 6
+	// HOST_ACTION_REBOOT 重启。
+	HostAction_HOST_ACTION_REBOOT HostAction = 7
+	// HOST_ACTION_REINSTALL 重装系统。
+	HostAction_HOST_ACTION_REINSTALL HostAction = 8
 )
 
 // Enum value maps for HostAction.
@@ -222,6 +230,10 @@ var (
 		2: "HOST_ACTION_SUSPEND",
 		3: "HOST_ACTION_UNSUSPEND",
 		4: "HOST_ACTION_TERMINATE",
+		5: "HOST_ACTION_BOOT",
+		6: "HOST_ACTION_SHUTDOWN",
+		7: "HOST_ACTION_REBOOT",
+		8: "HOST_ACTION_REINSTALL",
 	}
 	HostAction_value = map[string]int32{
 		"HOST_ACTION_UNSPECIFIED": 0,
@@ -229,6 +241,10 @@ var (
 		"HOST_ACTION_SUSPEND":     2,
 		"HOST_ACTION_UNSUSPEND":   3,
 		"HOST_ACTION_TERMINATE":   4,
+		"HOST_ACTION_BOOT":        5,
+		"HOST_ACTION_SHUTDOWN":    6,
+		"HOST_ACTION_REBOOT":      7,
+		"HOST_ACTION_REINSTALL":   8,
 	}
 )
 
@@ -472,8 +488,12 @@ type Manifest struct {
 	// required_scopes 是插件回调 /api/plugin/v1 所需的权限位，
 	// 取值见 model.PluginScope*。主程序据此签发 Key，管理员可见。
 	RequiredScopes []string `protobuf:"bytes,7,rep,name=required_scopes,json=requiredScopes,proto3" json:"required_scopes,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// payment_config 是按支付方式实例填写的配置项（如 epay 的 PID/KEY）。
+	// 与全局 config 区分：同一支付插件可被多个支付方式复用，每个支付方式
+	// 携带一套独立的 payment_config 值，经 CreatePayment 等请求传入。
+	PaymentConfig []*ConfigField `protobuf:"bytes,8,rep,name=payment_config,json=paymentConfig,proto3" json:"payment_config,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Manifest) Reset() {
@@ -551,6 +571,13 @@ func (x *Manifest) GetConfig() []*ConfigField {
 func (x *Manifest) GetRequiredScopes() []string {
 	if x != nil {
 		return x.RequiredScopes
+	}
+	return nil
+}
+
+func (x *Manifest) GetPaymentConfig() []*ConfigField {
+	if x != nil {
+		return x.PaymentConfig
 	}
 	return nil
 }
@@ -986,7 +1013,12 @@ type CreatePaymentRequest struct {
 	// return_url 是用户付完款后应当跳回的站内地址。
 	ReturnUrl string `protobuf:"bytes,6,opt,name=return_url,json=returnUrl,proto3" json:"return_url,omitempty"`
 	// client_ip 是用户的客户端 IP，部分支付渠道要求此字段。
-	ClientIp      string `protobuf:"bytes,7,opt,name=client_ip,json=clientIp,proto3" json:"client_ip,omitempty"`
+	ClientIp string `protobuf:"bytes,7,opt,name=client_ip,json=clientIp,proto3" json:"client_ip,omitempty"`
+	// config 是按支付方式实例传入的插件配置（如 epay 的 PID/KEY），
+	// 覆盖全局 Configure 的同名配置。
+	Config map[string]string `protobuf:"bytes,8,rep,name=config,proto3" json:"config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// notify_url 是上游回调地址，由主程序按支付方式构造。
+	NotifyUrl     string `protobuf:"bytes,9,opt,name=notify_url,json=notifyUrl,proto3" json:"notify_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1070,6 +1102,20 @@ func (x *CreatePaymentRequest) GetClientIp() string {
 	return ""
 }
 
+func (x *CreatePaymentRequest) GetConfig() map[string]string {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+func (x *CreatePaymentRequest) GetNotifyUrl() string {
+	if x != nil {
+		return x.NotifyUrl
+	}
+	return ""
+}
+
 type CreatePaymentReply struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// pay_url 是让用户跳转过去完成支付的地址。
@@ -1137,6 +1183,7 @@ type QueryPaymentRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ExternalId    string                 `protobuf:"bytes,1,opt,name=external_id,json=externalId,proto3" json:"external_id,omitempty"`
 	GatewayRef    string                 `protobuf:"bytes,2,opt,name=gateway_ref,json=gatewayRef,proto3" json:"gateway_ref,omitempty"`
+	Config        map[string]string      `protobuf:"bytes,3,rep,name=config,proto3" json:"config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1183,6 +1230,13 @@ func (x *QueryPaymentRequest) GetGatewayRef() string {
 		return x.GatewayRef
 	}
 	return ""
+}
+
+func (x *QueryPaymentRequest) GetConfig() map[string]string {
+	if x != nil {
+		return x.Config
+	}
+	return nil
 }
 
 type QueryPaymentReply struct {
@@ -1253,6 +1307,7 @@ type VerifyPaymentCallbackRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// raw 是渠道通知的原始表单或 JSON 字段，主程序不解释其含义。
 	Raw           map[string]string `protobuf:"bytes,1,rep,name=raw,proto3" json:"raw,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Config        map[string]string `protobuf:"bytes,2,rep,name=config,proto3" json:"config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1290,6 +1345,13 @@ func (*VerifyPaymentCallbackRequest) Descriptor() ([]byte, []int) {
 func (x *VerifyPaymentCallbackRequest) GetRaw() map[string]string {
 	if x != nil {
 		return x.Raw
+	}
+	return nil
+}
+
+func (x *VerifyPaymentCallbackRequest) GetConfig() map[string]string {
+	if x != nil {
+		return x.Config
 	}
 	return nil
 }
@@ -1990,7 +2052,9 @@ type ManageHostRequest struct {
 	HostId string                 `protobuf:"bytes,1,opt,name=host_id,json=hostId,proto3" json:"host_id,omitempty"`
 	Action HostAction             `protobuf:"varint,2,opt,name=action,proto3,enum=levis.plugin.v1.HostAction" json:"action,omitempty"`
 	// billing_cycle 仅在 RENEW 时需要。
-	BillingCycle  string `protobuf:"bytes,3,opt,name=billing_cycle,json=billingCycle,proto3" json:"billing_cycle,omitempty"`
+	BillingCycle string `protobuf:"bytes,3,opt,name=billing_cycle,json=billingCycle,proto3" json:"billing_cycle,omitempty"`
+	// os 仅在 REINSTALL 时需要，表示要重装的系统 ID。
+	Os            string `protobuf:"bytes,4,opt,name=os,proto3" json:"os,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2042,6 +2106,13 @@ func (x *ManageHostRequest) GetAction() HostAction {
 func (x *ManageHostRequest) GetBillingCycle() string {
 	if x != nil {
 		return x.BillingCycle
+	}
+	return ""
+}
+
+func (x *ManageHostRequest) GetOs() string {
+	if x != nil {
+		return x.Os
 	}
 	return ""
 }
@@ -2163,8 +2234,10 @@ type UpstreamHost struct {
 	Expiry string `protobuf:"bytes,6,opt,name=expiry,proto3" json:"expiry,omitempty"`
 	// upstream_order_id 是关联的上游订单号。
 	UpstreamOrderId string `protobuf:"bytes,7,opt,name=upstream_order_id,json=upstreamOrderId,proto3" json:"upstream_order_id,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// actions 是上游支持的操作列表，如 on/off/reboot/reinstall。
+	Actions       []string `protobuf:"bytes,8,rep,name=actions,proto3" json:"actions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UpstreamHost) Reset() {
@@ -2246,6 +2319,13 @@ func (x *UpstreamHost) GetUpstreamOrderId() string {
 	return ""
 }
 
+func (x *UpstreamHost) GetActions() []string {
+	if x != nil {
+		return x.Actions
+	}
+	return nil
+}
+
 type GetHostReply struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Host          *UpstreamHost          `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
@@ -2298,6 +2378,162 @@ func (x *GetHostReply) GetError() string {
 	return ""
 }
 
+type OSImage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Group         string                 `protobuf:"bytes,3,opt,name=group,proto3" json:"group,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OSImage) Reset() {
+	*x = OSImage{}
+	mi := &file_plugin_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OSImage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OSImage) ProtoMessage() {}
+
+func (x *OSImage) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OSImage.ProtoReflect.Descriptor instead.
+func (*OSImage) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *OSImage) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *OSImage) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *OSImage) GetGroup() string {
+	if x != nil {
+		return x.Group
+	}
+	return ""
+}
+
+type ListHostOSRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	HostId        string                 `protobuf:"bytes,1,opt,name=host_id,json=hostId,proto3" json:"host_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListHostOSRequest) Reset() {
+	*x = ListHostOSRequest{}
+	mi := &file_plugin_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListHostOSRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListHostOSRequest) ProtoMessage() {}
+
+func (x *ListHostOSRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListHostOSRequest.ProtoReflect.Descriptor instead.
+func (*ListHostOSRequest) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *ListHostOSRequest) GetHostId() string {
+	if x != nil {
+		return x.HostId
+	}
+	return ""
+}
+
+type ListHostOSReply struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Os            []*OSImage             `protobuf:"bytes,1,rep,name=os,proto3" json:"os,omitempty"`
+	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListHostOSReply) Reset() {
+	*x = ListHostOSReply{}
+	mi := &file_plugin_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListHostOSReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListHostOSReply) ProtoMessage() {}
+
+func (x *ListHostOSReply) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListHostOSReply.ProtoReflect.Descriptor instead.
+func (*ListHostOSReply) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *ListHostOSReply) GetOs() []*OSImage {
+	if x != nil {
+		return x.Os
+	}
+	return nil
+}
+
+func (x *ListHostOSReply) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 var File_plugin_proto protoreflect.FileDescriptor
 
 const file_plugin_proto_rawDesc = "" +
@@ -2315,7 +2551,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\fSelectOption\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\tR\x05value\x12\x14\n" +
 	"\x05label\x18\x02 \x01(\tR\x05label\"\x11\n" +
-	"\x0fDescribeRequest\"\x92\x02\n" +
+	"\x0fDescribeRequest\"\xd7\x02\n" +
 	"\bManifest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12 \n" +
@@ -2323,7 +2559,8 @@ const file_plugin_proto_rawDesc = "" +
 	"\x06author\x18\x04 \x01(\tR\x06author\x12?\n" +
 	"\fcapabilities\x18\x05 \x03(\x0e2\x1b.levis.plugin.v1.CapabilityR\fcapabilities\x124\n" +
 	"\x06config\x18\x06 \x03(\v2\x1c.levis.plugin.v1.ConfigFieldR\x06config\x12'\n" +
-	"\x0frequired_scopes\x18\a \x03(\tR\x0erequiredScopes\"\x94\x01\n" +
+	"\x0frequired_scopes\x18\a \x03(\tR\x0erequiredScopes\x12C\n" +
+	"\x0epayment_config\x18\b \x03(\v2\x1c.levis.plugin.v1.ConfigFieldR\rpaymentConfig\"\x94\x01\n" +
 	"\x10ConfigureRequest\x12E\n" +
 	"\x06values\x18\x01 \x03(\v2-.levis.plugin.v1.ConfigureRequest.ValuesEntryR\x06values\x1a9\n" +
 	"\vValuesEntry\x12\x10\n" +
@@ -2345,7 +2582,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\asubject\x18\x02 \x01(\tR\asubject\x12\x1b\n" +
 	"\ttext_body\x18\x03 \x01(\tR\btextBody\x12\x1b\n" +
 	"\thtml_body\x18\x04 \x01(\tR\bhtmlBody\"\x0f\n" +
-	"\rSendMailReply\"\xe5\x01\n" +
+	"\rSendMailReply\"\x8a\x03\n" +
 	"\x14CreatePaymentRequest\x12\x1f\n" +
 	"\vexternal_id\x18\x01 \x01(\tR\n" +
 	"externalId\x12!\n" +
@@ -2355,24 +2592,38 @@ const file_plugin_proto_rawDesc = "" +
 	"\auser_id\x18\x05 \x01(\x04R\x06userId\x12\x1d\n" +
 	"\n" +
 	"return_url\x18\x06 \x01(\tR\treturnUrl\x12\x1b\n" +
-	"\tclient_ip\x18\a \x01(\tR\bclientIp\"d\n" +
+	"\tclient_ip\x18\a \x01(\tR\bclientIp\x12I\n" +
+	"\x06config\x18\b \x03(\v21.levis.plugin.v1.CreatePaymentRequest.ConfigEntryR\x06config\x12\x1d\n" +
+	"\n" +
+	"notify_url\x18\t \x01(\tR\tnotifyUrl\x1a9\n" +
+	"\vConfigEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"d\n" +
 	"\x12CreatePaymentReply\x12\x17\n" +
 	"\apay_url\x18\x01 \x01(\tR\x06payUrl\x12\x1f\n" +
 	"\vgateway_ref\x18\x02 \x01(\tR\n" +
 	"gatewayRef\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"W\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\xdc\x01\n" +
 	"\x13QueryPaymentRequest\x12\x1f\n" +
 	"\vexternal_id\x18\x01 \x01(\tR\n" +
 	"externalId\x12\x1f\n" +
 	"\vgateway_ref\x18\x02 \x01(\tR\n" +
-	"gatewayRef\"\x8e\x01\n" +
+	"gatewayRef\x12H\n" +
+	"\x06config\x18\x03 \x03(\v20.levis.plugin.v1.QueryPaymentRequest.ConfigEntryR\x06config\x1a9\n" +
+	"\vConfigEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8e\x01\n" +
 	"\x11QueryPaymentReply\x123\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1d.levis.plugin.v1.PaymentStateR\x05state\x12*\n" +
 	"\x11paid_amount_cents\x18\x02 \x01(\x03R\x0fpaidAmountCents\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"\xa0\x01\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\xae\x02\n" +
 	"\x1cVerifyPaymentCallbackRequest\x12H\n" +
-	"\x03raw\x18\x01 \x03(\v26.levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntryR\x03raw\x1a6\n" +
+	"\x03raw\x18\x01 \x03(\v26.levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntryR\x03raw\x12Q\n" +
+	"\x06config\x18\x02 \x03(\v29.levis.plugin.v1.VerifyPaymentCallbackRequest.ConfigEntryR\x06config\x1a6\n" +
 	"\bRawEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a9\n" +
+	"\vConfigEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf5\x01\n" +
 	"\x1aVerifyPaymentCallbackReply\x12\x1f\n" +
@@ -2434,18 +2685,19 @@ const file_plugin_proto_rawDesc = "" +
 	"totalCents\x12\x16\n" +
 	"\x06status\x18\x04 \x01(\tR\x06status\x12\x17\n" +
 	"\ahost_id\x18\x05 \x01(\tR\x06hostId\x12\x14\n" +
-	"\x05error\x18\x06 \x01(\tR\x05error\"\x86\x01\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\"\x96\x01\n" +
 	"\x11ManageHostRequest\x12\x17\n" +
 	"\ahost_id\x18\x01 \x01(\tR\x06hostId\x123\n" +
 	"\x06action\x18\x02 \x01(\x0e2\x1b.levis.plugin.v1.HostActionR\x06action\x12#\n" +
-	"\rbilling_cycle\x18\x03 \x01(\tR\fbillingCycle\"`\n" +
+	"\rbilling_cycle\x18\x03 \x01(\tR\fbillingCycle\x12\x0e\n" +
+	"\x02os\x18\x04 \x01(\tR\x02os\"`\n" +
 	"\x0fManageHostReply\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x1d\n" +
 	"\n" +
 	"new_expiry\x18\x02 \x01(\tR\tnewExpiry\x12\x14\n" +
 	"\x05error\x18\x03 \x01(\tR\x05error\")\n" +
 	"\x0eGetHostRequest\x12\x17\n" +
-	"\ahost_id\x18\x01 \x01(\tR\x06hostId\"\xe1\x01\n" +
+	"\ahost_id\x18\x01 \x01(\tR\x06hostId\"\xfb\x01\n" +
 	"\fUpstreamHost\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -2454,9 +2706,19 @@ const file_plugin_proto_rawDesc = "" +
 	"\x06status\x18\x04 \x01(\tR\x06status\x12#\n" +
 	"\rbilling_cycle\x18\x05 \x01(\tR\fbillingCycle\x12\x16\n" +
 	"\x06expiry\x18\x06 \x01(\tR\x06expiry\x12*\n" +
-	"\x11upstream_order_id\x18\a \x01(\tR\x0fupstreamOrderId\"W\n" +
+	"\x11upstream_order_id\x18\a \x01(\tR\x0fupstreamOrderId\x12\x18\n" +
+	"\aactions\x18\b \x03(\tR\aactions\"W\n" +
 	"\fGetHostReply\x121\n" +
 	"\x04host\x18\x01 \x01(\v2\x1d.levis.plugin.v1.UpstreamHostR\x04host\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"C\n" +
+	"\aOSImage\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
+	"\x05group\x18\x03 \x01(\tR\x05group\",\n" +
+	"\x11ListHostOSRequest\x12\x17\n" +
+	"\ahost_id\x18\x01 \x01(\tR\x06hostId\"Q\n" +
+	"\x0fListHostOSReply\x12(\n" +
+	"\x02os\x18\x01 \x03(\v2\x18.levis.plugin.v1.OSImageR\x02os\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error*\x83\x01\n" +
 	"\n" +
 	"Capability\x12\x1a\n" +
@@ -2476,14 +2738,18 @@ const file_plugin_proto_rawDesc = "" +
 	"\x15PAYMENT_STATE_PENDING\x10\x01\x12\x16\n" +
 	"\x12PAYMENT_STATE_PAID\x10\x02\x12\x18\n" +
 	"\x14PAYMENT_STATE_FAILED\x10\x03\x12\x1b\n" +
-	"\x17PAYMENT_STATE_CANCELLED\x10\x04*\x8f\x01\n" +
+	"\x17PAYMENT_STATE_CANCELLED\x10\x04*\xf2\x01\n" +
 	"\n" +
 	"HostAction\x12\x1b\n" +
 	"\x17HOST_ACTION_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11HOST_ACTION_RENEW\x10\x01\x12\x17\n" +
 	"\x13HOST_ACTION_SUSPEND\x10\x02\x12\x19\n" +
 	"\x15HOST_ACTION_UNSUSPEND\x10\x03\x12\x19\n" +
-	"\x15HOST_ACTION_TERMINATE\x10\x042\xa4\t\n" +
+	"\x15HOST_ACTION_TERMINATE\x10\x04\x12\x14\n" +
+	"\x10HOST_ACTION_BOOT\x10\x05\x12\x18\n" +
+	"\x14HOST_ACTION_SHUTDOWN\x10\x06\x12\x16\n" +
+	"\x12HOST_ACTION_REBOOT\x10\a\x12\x19\n" +
+	"\x15HOST_ACTION_REINSTALL\x10\b2\xf8\t\n" +
 	"\x06Plugin\x12G\n" +
 	"\bDescribe\x12 .levis.plugin.v1.DescribeRequest\x1a\x19.levis.plugin.v1.Manifest\x12O\n" +
 	"\tConfigure\x12!.levis.plugin.v1.ConfigureRequest\x1a\x1f.levis.plugin.v1.ConfigureReply\x12F\n" +
@@ -2500,7 +2766,9 @@ const file_plugin_proto_rawDesc = "" +
 	"\bGetOrder\x12 .levis.plugin.v1.GetOrderRequest\x1a\x1e.levis.plugin.v1.GetOrderReply\x12R\n" +
 	"\n" +
 	"ManageHost\x12\".levis.plugin.v1.ManageHostRequest\x1a .levis.plugin.v1.ManageHostReply\x12I\n" +
-	"\aGetHost\x12\x1f.levis.plugin.v1.GetHostRequest\x1a\x1d.levis.plugin.v1.GetHostReplyB:Z8github.com/SakuraOpenSource/levis/pkg/plugin/proto;protob\x06proto3"
+	"\aGetHost\x12\x1f.levis.plugin.v1.GetHostRequest\x1a\x1d.levis.plugin.v1.GetHostReply\x12R\n" +
+	"\n" +
+	"ListHostOS\x12\".levis.plugin.v1.ListHostOSRequest\x1a .levis.plugin.v1.ListHostOSReplyB:Z8github.com/SakuraOpenSource/levis/pkg/plugin/proto;protob\x06proto3"
 
 var (
 	file_plugin_proto_rawDescOnce sync.Once
@@ -2515,7 +2783,7 @@ func file_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
+var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_plugin_proto_goTypes = []any{
 	(Capability)(0),                      // 0: levis.plugin.v1.Capability
 	(FieldType)(0),                       // 1: levis.plugin.v1.FieldType
@@ -2554,58 +2822,71 @@ var file_plugin_proto_goTypes = []any{
 	(*GetHostRequest)(nil),               // 34: levis.plugin.v1.GetHostRequest
 	(*UpstreamHost)(nil),                 // 35: levis.plugin.v1.UpstreamHost
 	(*GetHostReply)(nil),                 // 36: levis.plugin.v1.GetHostReply
-	nil,                                  // 37: levis.plugin.v1.ConfigureRequest.ValuesEntry
-	nil,                                  // 38: levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntry
-	nil,                                  // 39: levis.plugin.v1.UpstreamProduct.SpecsEntry
+	(*OSImage)(nil),                      // 37: levis.plugin.v1.OSImage
+	(*ListHostOSRequest)(nil),            // 38: levis.plugin.v1.ListHostOSRequest
+	(*ListHostOSReply)(nil),              // 39: levis.plugin.v1.ListHostOSReply
+	nil,                                  // 40: levis.plugin.v1.ConfigureRequest.ValuesEntry
+	nil,                                  // 41: levis.plugin.v1.CreatePaymentRequest.ConfigEntry
+	nil,                                  // 42: levis.plugin.v1.QueryPaymentRequest.ConfigEntry
+	nil,                                  // 43: levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntry
+	nil,                                  // 44: levis.plugin.v1.VerifyPaymentCallbackRequest.ConfigEntry
+	nil,                                  // 45: levis.plugin.v1.UpstreamProduct.SpecsEntry
 }
 var file_plugin_proto_depIdxs = []int32{
 	1,  // 0: levis.plugin.v1.ConfigField.type:type_name -> levis.plugin.v1.FieldType
 	5,  // 1: levis.plugin.v1.ConfigField.options:type_name -> levis.plugin.v1.SelectOption
 	0,  // 2: levis.plugin.v1.Manifest.capabilities:type_name -> levis.plugin.v1.Capability
 	4,  // 3: levis.plugin.v1.Manifest.config:type_name -> levis.plugin.v1.ConfigField
-	37, // 4: levis.plugin.v1.ConfigureRequest.values:type_name -> levis.plugin.v1.ConfigureRequest.ValuesEntry
-	14, // 5: levis.plugin.v1.SendMailRequest.to:type_name -> levis.plugin.v1.Mailbox
-	2,  // 6: levis.plugin.v1.QueryPaymentReply.state:type_name -> levis.plugin.v1.PaymentState
-	38, // 7: levis.plugin.v1.VerifyPaymentCallbackRequest.raw:type_name -> levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntry
-	2,  // 8: levis.plugin.v1.VerifyPaymentCallbackReply.state:type_name -> levis.plugin.v1.PaymentState
-	39, // 9: levis.plugin.v1.UpstreamProduct.specs:type_name -> levis.plugin.v1.UpstreamProduct.SpecsEntry
-	24, // 10: levis.plugin.v1.ListProductsReply.products:type_name -> levis.plugin.v1.UpstreamProduct
-	24, // 11: levis.plugin.v1.GetProductReply.product:type_name -> levis.plugin.v1.UpstreamProduct
-	3,  // 12: levis.plugin.v1.ManageHostRequest.action:type_name -> levis.plugin.v1.HostAction
-	35, // 13: levis.plugin.v1.GetHostReply.host:type_name -> levis.plugin.v1.UpstreamHost
-	6,  // 14: levis.plugin.v1.Plugin.Describe:input_type -> levis.plugin.v1.DescribeRequest
-	8,  // 15: levis.plugin.v1.Plugin.Configure:input_type -> levis.plugin.v1.ConfigureRequest
-	10, // 16: levis.plugin.v1.Plugin.Health:input_type -> levis.plugin.v1.HealthRequest
-	12, // 17: levis.plugin.v1.Plugin.Shutdown:input_type -> levis.plugin.v1.ShutdownRequest
-	15, // 18: levis.plugin.v1.Plugin.SendMail:input_type -> levis.plugin.v1.SendMailRequest
-	17, // 19: levis.plugin.v1.Plugin.CreatePayment:input_type -> levis.plugin.v1.CreatePaymentRequest
-	19, // 20: levis.plugin.v1.Plugin.QueryPayment:input_type -> levis.plugin.v1.QueryPaymentRequest
-	21, // 21: levis.plugin.v1.Plugin.VerifyPaymentCallback:input_type -> levis.plugin.v1.VerifyPaymentCallbackRequest
-	23, // 22: levis.plugin.v1.Plugin.ListProducts:input_type -> levis.plugin.v1.ListProductsRequest
-	26, // 23: levis.plugin.v1.Plugin.GetProduct:input_type -> levis.plugin.v1.GetProductRequest
-	28, // 24: levis.plugin.v1.Plugin.CreateOrder:input_type -> levis.plugin.v1.CreateOrderRequest
-	30, // 25: levis.plugin.v1.Plugin.GetOrder:input_type -> levis.plugin.v1.GetOrderRequest
-	32, // 26: levis.plugin.v1.Plugin.ManageHost:input_type -> levis.plugin.v1.ManageHostRequest
-	34, // 27: levis.plugin.v1.Plugin.GetHost:input_type -> levis.plugin.v1.GetHostRequest
-	7,  // 28: levis.plugin.v1.Plugin.Describe:output_type -> levis.plugin.v1.Manifest
-	9,  // 29: levis.plugin.v1.Plugin.Configure:output_type -> levis.plugin.v1.ConfigureReply
-	11, // 30: levis.plugin.v1.Plugin.Health:output_type -> levis.plugin.v1.HealthReply
-	13, // 31: levis.plugin.v1.Plugin.Shutdown:output_type -> levis.plugin.v1.ShutdownReply
-	16, // 32: levis.plugin.v1.Plugin.SendMail:output_type -> levis.plugin.v1.SendMailReply
-	18, // 33: levis.plugin.v1.Plugin.CreatePayment:output_type -> levis.plugin.v1.CreatePaymentReply
-	20, // 34: levis.plugin.v1.Plugin.QueryPayment:output_type -> levis.plugin.v1.QueryPaymentReply
-	22, // 35: levis.plugin.v1.Plugin.VerifyPaymentCallback:output_type -> levis.plugin.v1.VerifyPaymentCallbackReply
-	25, // 36: levis.plugin.v1.Plugin.ListProducts:output_type -> levis.plugin.v1.ListProductsReply
-	27, // 37: levis.plugin.v1.Plugin.GetProduct:output_type -> levis.plugin.v1.GetProductReply
-	29, // 38: levis.plugin.v1.Plugin.CreateOrder:output_type -> levis.plugin.v1.CreateOrderReply
-	31, // 39: levis.plugin.v1.Plugin.GetOrder:output_type -> levis.plugin.v1.GetOrderReply
-	33, // 40: levis.plugin.v1.Plugin.ManageHost:output_type -> levis.plugin.v1.ManageHostReply
-	36, // 41: levis.plugin.v1.Plugin.GetHost:output_type -> levis.plugin.v1.GetHostReply
-	28, // [28:42] is the sub-list for method output_type
-	14, // [14:28] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	4,  // 4: levis.plugin.v1.Manifest.payment_config:type_name -> levis.plugin.v1.ConfigField
+	40, // 5: levis.plugin.v1.ConfigureRequest.values:type_name -> levis.plugin.v1.ConfigureRequest.ValuesEntry
+	14, // 6: levis.plugin.v1.SendMailRequest.to:type_name -> levis.plugin.v1.Mailbox
+	41, // 7: levis.plugin.v1.CreatePaymentRequest.config:type_name -> levis.plugin.v1.CreatePaymentRequest.ConfigEntry
+	42, // 8: levis.plugin.v1.QueryPaymentRequest.config:type_name -> levis.plugin.v1.QueryPaymentRequest.ConfigEntry
+	2,  // 9: levis.plugin.v1.QueryPaymentReply.state:type_name -> levis.plugin.v1.PaymentState
+	43, // 10: levis.plugin.v1.VerifyPaymentCallbackRequest.raw:type_name -> levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntry
+	44, // 11: levis.plugin.v1.VerifyPaymentCallbackRequest.config:type_name -> levis.plugin.v1.VerifyPaymentCallbackRequest.ConfigEntry
+	2,  // 12: levis.plugin.v1.VerifyPaymentCallbackReply.state:type_name -> levis.plugin.v1.PaymentState
+	45, // 13: levis.plugin.v1.UpstreamProduct.specs:type_name -> levis.plugin.v1.UpstreamProduct.SpecsEntry
+	24, // 14: levis.plugin.v1.ListProductsReply.products:type_name -> levis.plugin.v1.UpstreamProduct
+	24, // 15: levis.plugin.v1.GetProductReply.product:type_name -> levis.plugin.v1.UpstreamProduct
+	3,  // 16: levis.plugin.v1.ManageHostRequest.action:type_name -> levis.plugin.v1.HostAction
+	35, // 17: levis.plugin.v1.GetHostReply.host:type_name -> levis.plugin.v1.UpstreamHost
+	37, // 18: levis.plugin.v1.ListHostOSReply.os:type_name -> levis.plugin.v1.OSImage
+	6,  // 19: levis.plugin.v1.Plugin.Describe:input_type -> levis.plugin.v1.DescribeRequest
+	8,  // 20: levis.plugin.v1.Plugin.Configure:input_type -> levis.plugin.v1.ConfigureRequest
+	10, // 21: levis.plugin.v1.Plugin.Health:input_type -> levis.plugin.v1.HealthRequest
+	12, // 22: levis.plugin.v1.Plugin.Shutdown:input_type -> levis.plugin.v1.ShutdownRequest
+	15, // 23: levis.plugin.v1.Plugin.SendMail:input_type -> levis.plugin.v1.SendMailRequest
+	17, // 24: levis.plugin.v1.Plugin.CreatePayment:input_type -> levis.plugin.v1.CreatePaymentRequest
+	19, // 25: levis.plugin.v1.Plugin.QueryPayment:input_type -> levis.plugin.v1.QueryPaymentRequest
+	21, // 26: levis.plugin.v1.Plugin.VerifyPaymentCallback:input_type -> levis.plugin.v1.VerifyPaymentCallbackRequest
+	23, // 27: levis.plugin.v1.Plugin.ListProducts:input_type -> levis.plugin.v1.ListProductsRequest
+	26, // 28: levis.plugin.v1.Plugin.GetProduct:input_type -> levis.plugin.v1.GetProductRequest
+	28, // 29: levis.plugin.v1.Plugin.CreateOrder:input_type -> levis.plugin.v1.CreateOrderRequest
+	30, // 30: levis.plugin.v1.Plugin.GetOrder:input_type -> levis.plugin.v1.GetOrderRequest
+	32, // 31: levis.plugin.v1.Plugin.ManageHost:input_type -> levis.plugin.v1.ManageHostRequest
+	34, // 32: levis.plugin.v1.Plugin.GetHost:input_type -> levis.plugin.v1.GetHostRequest
+	38, // 33: levis.plugin.v1.Plugin.ListHostOS:input_type -> levis.plugin.v1.ListHostOSRequest
+	7,  // 34: levis.plugin.v1.Plugin.Describe:output_type -> levis.plugin.v1.Manifest
+	9,  // 35: levis.plugin.v1.Plugin.Configure:output_type -> levis.plugin.v1.ConfigureReply
+	11, // 36: levis.plugin.v1.Plugin.Health:output_type -> levis.plugin.v1.HealthReply
+	13, // 37: levis.plugin.v1.Plugin.Shutdown:output_type -> levis.plugin.v1.ShutdownReply
+	16, // 38: levis.plugin.v1.Plugin.SendMail:output_type -> levis.plugin.v1.SendMailReply
+	18, // 39: levis.plugin.v1.Plugin.CreatePayment:output_type -> levis.plugin.v1.CreatePaymentReply
+	20, // 40: levis.plugin.v1.Plugin.QueryPayment:output_type -> levis.plugin.v1.QueryPaymentReply
+	22, // 41: levis.plugin.v1.Plugin.VerifyPaymentCallback:output_type -> levis.plugin.v1.VerifyPaymentCallbackReply
+	25, // 42: levis.plugin.v1.Plugin.ListProducts:output_type -> levis.plugin.v1.ListProductsReply
+	27, // 43: levis.plugin.v1.Plugin.GetProduct:output_type -> levis.plugin.v1.GetProductReply
+	29, // 44: levis.plugin.v1.Plugin.CreateOrder:output_type -> levis.plugin.v1.CreateOrderReply
+	31, // 45: levis.plugin.v1.Plugin.GetOrder:output_type -> levis.plugin.v1.GetOrderReply
+	33, // 46: levis.plugin.v1.Plugin.ManageHost:output_type -> levis.plugin.v1.ManageHostReply
+	36, // 47: levis.plugin.v1.Plugin.GetHost:output_type -> levis.plugin.v1.GetHostReply
+	39, // 48: levis.plugin.v1.Plugin.ListHostOS:output_type -> levis.plugin.v1.ListHostOSReply
+	34, // [34:49] is the sub-list for method output_type
+	19, // [19:34] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_plugin_proto_init() }
@@ -2619,7 +2900,7 @@ func file_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_plugin_proto_rawDesc), len(file_plugin_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   36,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

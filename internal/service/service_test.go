@@ -115,7 +115,7 @@ func storedFiles(t *testing.T, store *storage.Store) []string {
 // newTestAdminService 构造带临时存储的 AdminService。
 func newTestAdminService(t *testing.T, db *gorm.DB) *AdminService {
 	t.Helper()
-	return NewAdminService(db, NewWalletService(db), newTestStore(t))
+	return NewAdminService(db, NewWalletService(db), newTestStore(t), nil)
 }
 
 // seedUser 建一个余额为 balance 的普通用户。
@@ -191,7 +191,7 @@ func buyService(t *testing.T, db *gorm.DB, user *model.User, product *model.Prod
 	t.Helper()
 	cart := NewCartService(db)
 	wallet := NewWalletService(db)
-	orders := NewOrderService(db, cart, wallet)
+	orders := NewOrderService(db, cart, wallet, nil)
 	if err := cart.Add(user.ID, AddRequest{ProductID: product.ID, Quantity: 1}); err != nil {
 		t.Fatalf("加入购物车失败: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestPayInsufficientBalanceRollsBack(t *testing.T) {
 
 	cart := NewCartService(db)
 	wallet := NewWalletService(db)
-	orders := NewOrderService(db, cart, wallet)
+	orders := NewOrderService(db, cart, wallet, nil)
 
 	if err := cart.Add(user.ID, AddRequest{ProductID: product.ID, Quantity: 1}); err != nil {
 		t.Fatalf("加入购物车失败: %v", err)
@@ -316,7 +316,7 @@ func TestPaySucceedsAndKeepsLedgerConsistent(t *testing.T) {
 
 	cart := NewCartService(db)
 	wallet := NewWalletService(db)
-	orders := NewOrderService(db, cart, wallet)
+	orders := NewOrderService(db, cart, wallet, nil)
 
 	// 买 2 份，总价 24 元。
 	if err := cart.Add(user.ID, AddRequest{ProductID: product.ID, Quantity: 2}); err != nil {
@@ -388,7 +388,7 @@ func TestPayTwiceRejected(t *testing.T) {
 
 	cart := NewCartService(db)
 	wallet := NewWalletService(db)
-	orders := NewOrderService(db, cart, wallet)
+	orders := NewOrderService(db, cart, wallet, nil)
 
 	if err := cart.Add(user.ID, AddRequest{ProductID: product.ID, Quantity: 1}); err != nil {
 		t.Fatalf("加入购物车失败: %v", err)
@@ -417,7 +417,7 @@ func TestPayOtherUsersOrderRejected(t *testing.T) {
 
 	cart := NewCartService(db)
 	wallet := NewWalletService(db)
-	orders := NewOrderService(db, cart, wallet)
+	orders := NewOrderService(db, cart, wallet, nil)
 
 	if err := cart.Add(owner.ID, AddRequest{ProductID: product.ID, Quantity: 1}); err != nil {
 		t.Fatalf("加入购物车失败: %v", err)
@@ -837,7 +837,7 @@ func TestRenewExtendsServiceAndKeepsLedger(t *testing.T) {
 	svc := buyService(t, db, user, product) // 余额 5000 → 3800
 	oldExpires := *svc.ExpiresAt
 
-	billing := NewBillingService(db, NewWalletService(db))
+	billing := NewBillingService(db, NewWalletService(db), nil)
 	result, err := billing.Renew(user.ID, svc.ID)
 	if err != nil {
 		t.Fatalf("续费失败: %v", err)
@@ -874,7 +874,7 @@ func TestRenewInsufficientBalanceRollsBack(t *testing.T) {
 	svc := buyService(t, db, user, product) // 余额 → 0
 	oldExpires := *svc.ExpiresAt
 
-	billing := NewBillingService(db, NewWalletService(db))
+	billing := NewBillingService(db, NewWalletService(db), nil)
 	if _, err := billing.Renew(user.ID, svc.ID); err == nil {
 		t.Fatal("余额不足时续费应失败")
 	}
@@ -903,7 +903,7 @@ func TestRenewInsufficientBalanceRollsBack(t *testing.T) {
 func TestRenewRejectsOnetimeAndNonActive(t *testing.T) {
 	db := newTestDB(t)
 	user := seedUser(t, db, "renew-x", 5000)
-	billing := NewBillingService(db, NewWalletService(db))
+	billing := NewBillingService(db, NewWalletService(db), nil)
 
 	onetime := model.Service{
 		UserID: user.ID, Name: "OT", Status: model.ServiceActive,
@@ -1014,7 +1014,7 @@ func TestCartOrderUnaffectedByDirectPath(t *testing.T) {
 
 	cart := NewCartService(db)
 	wallet := NewWalletService(db)
-	orders := NewOrderService(db, cart, wallet)
+	orders := NewOrderService(db, cart, wallet, nil)
 
 	if err := cart.Add(user.ID, AddRequest{ProductID: product.ID, Quantity: 3}); err != nil {
 		t.Fatalf("加入购物车失败: %v", err)
@@ -1112,7 +1112,7 @@ func TestDeleteUserRemovesUploadedFiles(t *testing.T) {
 		t.Fatalf("应落盘 3 个文件（1 附件 + 2 证件照），实际 %d 个: %v", len(before), before)
 	}
 
-	adminSvc := NewAdminService(db, NewWalletService(db), store)
+	adminSvc := NewAdminService(db, NewWalletService(db), store, nil)
 	if err := adminSvc.DeleteUser(admin.ID, user.ID); err != nil {
 		t.Fatalf("删除用户失败: %v", err)
 	}

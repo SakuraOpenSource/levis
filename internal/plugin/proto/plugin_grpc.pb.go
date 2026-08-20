@@ -42,6 +42,7 @@ const (
 	Plugin_GetOrder_FullMethodName              = "/levis.plugin.v1.Plugin/GetOrder"
 	Plugin_ManageHost_FullMethodName            = "/levis.plugin.v1.Plugin/ManageHost"
 	Plugin_GetHost_FullMethodName               = "/levis.plugin.v1.Plugin/GetHost"
+	Plugin_ListHostOS_FullMethodName            = "/levis.plugin.v1.Plugin/ListHostOS"
 )
 
 // PluginClient is the client API for Plugin service.
@@ -98,6 +99,9 @@ type PluginClient interface {
 	// GetHost 查询上游服务实例详情。
 	// 需声明 CAPABILITY_PROVISION_PRODUCT。
 	GetHost(ctx context.Context, in *GetHostRequest, opts ...grpc.CallOption) (*GetHostReply, error)
+	// ListHostOS 获取重装系统可选列表。
+	// 需声明 CAPABILITY_PROVISION_PRODUCT。
+	ListHostOS(ctx context.Context, in *ListHostOSRequest, opts ...grpc.CallOption) (*ListHostOSReply, error)
 }
 
 type pluginClient struct {
@@ -248,6 +252,16 @@ func (c *pluginClient) GetHost(ctx context.Context, in *GetHostRequest, opts ...
 	return out, nil
 }
 
+func (c *pluginClient) ListHostOS(ctx context.Context, in *ListHostOSRequest, opts ...grpc.CallOption) (*ListHostOSReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListHostOSReply)
+	err := c.cc.Invoke(ctx, Plugin_ListHostOS_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PluginServer is the server API for Plugin service.
 // All implementations must embed UnimplementedPluginServer
 // for forward compatibility.
@@ -302,6 +316,9 @@ type PluginServer interface {
 	// GetHost 查询上游服务实例详情。
 	// 需声明 CAPABILITY_PROVISION_PRODUCT。
 	GetHost(context.Context, *GetHostRequest) (*GetHostReply, error)
+	// ListHostOS 获取重装系统可选列表。
+	// 需声明 CAPABILITY_PROVISION_PRODUCT。
+	ListHostOS(context.Context, *ListHostOSRequest) (*ListHostOSReply, error)
 	mustEmbedUnimplementedPluginServer()
 }
 
@@ -353,6 +370,9 @@ func (UnimplementedPluginServer) ManageHost(context.Context, *ManageHostRequest)
 }
 func (UnimplementedPluginServer) GetHost(context.Context, *GetHostRequest) (*GetHostReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetHost not implemented")
+}
+func (UnimplementedPluginServer) ListHostOS(context.Context, *ListHostOSRequest) (*ListHostOSReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListHostOS not implemented")
 }
 func (UnimplementedPluginServer) mustEmbedUnimplementedPluginServer() {}
 func (UnimplementedPluginServer) testEmbeddedByValue()                {}
@@ -627,6 +647,24 @@ func _Plugin_GetHost_Handler(srv interface{}, ctx context.Context, dec func(inte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Plugin_ListHostOS_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListHostOSRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServer).ListHostOS(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Plugin_ListHostOS_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServer).ListHostOS(ctx, req.(*ListHostOSRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Plugin_ServiceDesc is the grpc.ServiceDesc for Plugin service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -689,6 +727,10 @@ var Plugin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetHost",
 			Handler:    _Plugin_GetHost_Handler,
+		},
+		{
+			MethodName: "ListHostOS",
+			Handler:    _Plugin_ListHostOS_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -70,11 +70,11 @@ func (h *Handler) catalog() *service.CatalogService {
 }
 
 func (h *Handler) billing() *service.BillingService {
-	return service.NewBillingService(h.db(), h.wallet())
+	return service.NewBillingService(h.db(), h.wallet(), h.plugins)
 }
 
 func (h *Handler) orders() *service.OrderService {
-	return service.NewOrderService(h.db(), h.cart(), h.wallet())
+	return service.NewOrderService(h.db(), h.cart(), h.wallet(), h.plugins)
 }
 
 func (h *Handler) tickets() *service.TicketService {
@@ -90,7 +90,7 @@ func (h *Handler) apiKeys() *service.APIKeyService {
 }
 
 func (h *Handler) admin() *service.AdminService {
-	return service.NewAdminService(h.db(), h.wallet(), h.storage)
+	return service.NewAdminService(h.db(), h.wallet(), h.storage, h.plugins)
 }
 
 func (h *Handler) payments() *service.PaymentService {

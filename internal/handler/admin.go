@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -348,4 +349,122 @@ func (h *Handler) AdminDeleteService(c *gin.Context) {
 		return
 	}
 	noContent(c)
+}
+
+// ---------- 财务：支付方式 ----------
+
+func (h *Handler) AdminPaymentPlugins(c *gin.Context) {
+	items, err := h.admin().PaymentPlugins()
+	respond(c, gin.H{"items": items}, err)
+}
+
+func (h *Handler) AdminPaymentMethods(c *gin.Context) {
+	items, err := h.admin().PaymentMethods()
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	// 解密 Config JSON 为 map 以便前端直接渲染及编辑回显
+	type outItem struct {
+		ID       uint              `json:"id"`
+		Name     string            `json:"name"`
+		PluginID string            `json:"plugin_id"`
+		Config   map[string]string `json:"config"`
+		Enabled  bool              `json:"enabled"`
+		SortOrder int              `json:"sort_order"`
+		CreatedAt string          `json:"created_at"`
+		UpdatedAt string          `json:"updated_at"`
+	}
+	out := make([]outItem, 0, len(items))
+	for _, m := range items {
+		cfg := map[string]string{}
+		if m.Config != "" {
+			_ = jsonUnmarshal([]byte(m.Config), &cfg)
+		}
+		out = append(out, outItem{ID: m.ID, Name: m.Name, PluginID: m.PluginID, Config: cfg, Enabled: m.Enabled, SortOrder: m.SortOrder, CreatedAt: m.CreatedAt.Format("2006-01-02T15:04:05Z"), UpdatedAt: m.UpdatedAt.Format("2006-01-02T15:04:05Z")})
+	}
+	OK(c, gin.H{"items": out})
+}
+
+func jsonUnmarshal(data []byte, v any) error {
+	// 避免在 handler 包直接 import encoding/json 的未使用警告，这里用标准库
+	return json.Unmarshal(data, v)
+}
+
+func (h *Handler) AdminCreatePaymentMethod(c *gin.Context) {
+	var req service.PaymentMethodInput
+	if !bindJSON(c, &req) {
+		return
+	}
+	item, err := h.admin().CreatePaymentMethod(req)
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	cfg := map[string]string{}
+	if item.Config != "" {
+		_ = jsonUnmarshal([]byte(item.Config), &cfg)
+	}
+	respond(c, gin.H{"id": item.ID, "name": item.Name, "plugin_id": item.PluginID, "config": cfg, "enabled": item.Enabled, "sort_order": item.SortOrder}, nil)
+}
+
+func (h *Handler) AdminUpdatePaymentMethod(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	var req service.PaymentMethodInput
+	if !bindJSON(c, &req) {
+		return
+	}
+	item, err := h.admin().UpdatePaymentMethod(id, req)
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	cfg := map[string]string{}
+	if item.Config != "" {
+		_ = jsonUnmarshal([]byte(item.Config), &cfg)
+	}
+	respond(c, gin.H{"id": item.ID, "name": item.Name, "plugin_id": item.PluginID, "config": cfg, "enabled": item.Enabled, "sort_order": item.SortOrder}, nil)
+}
+
+func (h *Handler) AdminDeletePaymentMethod(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.admin().DeletePaymentMethod(id); err != nil {
+		respond(c, nil, err)
+		return
+	}
+	noContent(c)
+}
+
+// AdminCreateService 为指定用户手动创建服务。
+func (h *Handler) AdminCreateService(c *gin.Context) {
+	userID, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	var req service.AdminCreateServiceRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	item, err := h.admin().CreateServiceForUser(userID, req)
+	respond(c, item, err)
+}
+
+// AdminBindService 绑定或解绑服务的上游主机。
+func (h *Handler) AdminBindService(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	var req service.AdminBindServiceRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	item, err := h.admin().BindServiceUpstream(id, req)
+	respond(c, item, err)
 }

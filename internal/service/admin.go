@@ -1,17 +1,22 @@
 package service
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/SakuraOpenSource/levis/internal/auth"
 	"github.com/SakuraOpenSource/levis/internal/model"
+	"github.com/SakuraOpenSource/levis/internal/plugin"
 	"github.com/SakuraOpenSource/levis/internal/storage"
+	pb "github.com/SakuraOpenSource/levis/pkg/plugin/proto"
 )
 
 // AdminService 提供管理后台的用户、分组与商品管理。
@@ -20,11 +25,13 @@ type AdminService struct {
 	wallet *WalletService
 	// store 用于删除用户时清理其上传的附件与证件照。
 	store *storage.Store
+	// plugins 用于把上游服务的暂停/恢复/删除同步到上游。可为 nil。
+	plugins *plugin.Manager
 }
 
 // NewAdminService 构造 AdminService。
-func NewAdminService(db *gorm.DB, wallet *WalletService, store *storage.Store) *AdminService {
-	return &AdminService{db: db, wallet: wallet, store: store}
+func NewAdminService(db *gorm.DB, wallet *WalletService, store *storage.Store, plugins *plugin.Manager) *AdminService {
+	return &AdminService{db: db, wallet: wallet, store: store, plugins: plugins}
 }
 
 // ---------- 用户管理 ----------
@@ -725,7 +732,7 @@ func (s *AdminService) UserServices(userID uint, offset, limit int) ([]model.Ser
 }
 
 // SetServiceStatus 修改服务状态。仅允许「使用中」与「暂停」之间切换，
-// 已终止的服务不在这里复活。
+// 已终止的服务不在这里复活。上游服务会同步暂停/恢复到上游。
 func (s *AdminService) SetServiceStatus(serviceID uint, status string) (*model.Service, error) {
 	if status != model.ServiceActive && status != model.ServiceSuspended {
 		return nil, ErrBadRequest("无效的服务状态")
@@ -740,6 +747,18 @@ func (s *AdminService) SetServiceStatus(serviceID uint, status string) (*model.S
 	if item.Status == status {
 		return &item, nil
 	}
+
+	// 上游服务：先把状态变更同步到上游，失败则本地不变更。
+	if item.UpstreamPluginID != "" && item.UpstreamHostID != "" {
+		action := pb.HostAction_HOST_ACTION_UNSUSPEND
+		if status == model.ServiceSuspended {
+			action = pb.HostAction_HOST_ACTION_SUSPEND
+		}
+		if err := s.manageUpstream(&item, action); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := s.db.Model(&item).Update("status", status).Error; err != nil {
 		return nil, err
 	}
@@ -749,7 +768,23 @@ func (s *AdminService) SetServiceStatus(serviceID uint, status string) (*model.S
 
 // DeleteService 删除用户的服务。账单明细仍要保留历史金额，因此先把它们对
 // 本服务的引用置空，再删除服务本身，避免留下悬空的 service_id。
+// 上游服务会先向上游发起删除（终止），失败则本地不删除。
 func (s *AdminService) DeleteService(serviceID uint) error {
+	var item model.Service
+	if err := s.db.First(&item, serviceID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound("服务不存在")
+		}
+		return err
+	}
+
+	// 上游服务：先向上游终止，失败则本地保留，避免两边不一致。
+	if item.UpstreamPluginID != "" && item.UpstreamHostID != "" {
+		if err := s.manageUpstream(&item, pb.HostAction_HOST_ACTION_TERMINATE); err != nil {
+			return err
+		}
+	}
+
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&model.InvoiceItem{}).
 			Where("service_id = ?", serviceID).
@@ -765,6 +800,383 @@ func (s *AdminService) DeleteService(serviceID uint) error {
 		}
 		return nil
 	})
+}
+
+// manageUpstream 对上游服务实例执行管理动作，失败返回业务错误。
+func (s *AdminService) manageUpstream(svc *model.Service, action pb.HostAction) error {
+	if s.plugins == nil {
+		return ErrBadRequest("上游插件不可用，无法操作该服务")
+	}
+	reply, err := s.plugins.ManageHost(context.Background(), svc.UpstreamPluginID, &pb.ManageHostRequest{
+		HostId: svc.UpstreamHostID,
+		Action: action,
+	})
+	if err != nil {
+		return ErrBadRequest("上游操作失败: %v", err)
+	}
+	if !reply.GetSuccess() {
+		return ErrBadRequest("上游操作失败")
+	}
+	return nil
+}
+
+// ---------- 财务：支付方式 ----------
+
+type PaymentMethodInput struct {
+	Name     string            `json:"name"`
+	PluginID string            `json:"plugin_id"`
+	Config   map[string]string `json:"config"`
+	Enabled  *bool             `json:"enabled"`
+	Sort     int               `json:"sort_order"`
+}
+
+type PaymentPluginField struct {
+	Key          string   `json:"key"`
+	Label        string   `json:"label"`
+	Hint         string   `json:"hint"`
+	Type         string   `json:"type"`
+	Required     bool     `json:"required"`
+	Secret       bool     `json:"secret"`
+	DefaultValue string   `json:"default_value"`
+	Options      []Option `json:"options,omitempty"`
+}
+
+type Option struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+type PaymentPluginInfo struct {
+	ID     string               `json:"id"`
+	Name   string               `json:"name"`
+	Config []PaymentPluginField `json:"config"`
+}
+
+func paymentPluginFields(fields []*pb.ConfigField) []PaymentPluginField {
+	out := make([]PaymentPluginField, 0, len(fields))
+	for _, f := range fields {
+		item := PaymentPluginField{Key: f.GetKey(), Label: f.GetLabel(), Hint: f.GetHint(), Type: fieldTypeName(f.GetType()), Required: f.GetRequired(), Secret: f.GetSecret(), DefaultValue: f.GetDefaultValue()}
+		if len(f.GetOptions()) > 0 {
+			for _, o := range f.GetOptions() {
+				item.Options = append(item.Options, Option{Value: o.GetValue(), Label: o.GetLabel()})
+			}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+
+
+// PaymentPlugins 返回可用的支付插件及其按方式配置 schema。
+func (s *AdminService) PaymentPlugins() ([]PaymentPluginInfo, error) {
+	if s.plugins == nil {
+		return []PaymentPluginInfo{}, nil
+	}
+	ids := s.plugins.PaymentPlugins()
+	out := make([]PaymentPluginInfo, 0, len(ids))
+	for _, id := range ids {
+		inst, err := s.plugins.Get(id)
+		if err != nil {
+			continue
+		}
+		m := inst.Manifest()
+		if m == nil {
+			out = append(out, PaymentPluginInfo{ID: id, Name: inst.Snapshot().Name, Config: []PaymentPluginField{}})
+			continue
+		}
+		fields := m.GetPaymentConfig()
+		if len(fields) == 0 {
+			// 兼容旧插件：若 payment_config 为空则回落到全局 config（epay 旧版）
+			fields = m.GetConfig()
+		}
+		out = append(out, PaymentPluginInfo{ID: id, Name: m.GetName(), Config: paymentPluginFields(fields)})
+	}
+	return out, nil
+}
+
+func (s *AdminService) PaymentMethods() ([]model.PaymentMethod, error) {
+	var items []model.PaymentMethod
+	if err := s.db.Order("sort_order ASC, id ASC").Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s *AdminService) CreatePaymentMethod(in PaymentMethodInput) (*model.PaymentMethod, error) {
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return nil, ErrBadRequest("支付方式名称不能为空")
+	}
+	if len(name) > 64 {
+		return nil, ErrBadRequest("名称过长")
+	}
+	pluginID := strings.TrimSpace(in.PluginID)
+	if pluginID == "" {
+		return nil, ErrBadRequest("请选择支付接口")
+	}
+	if s.plugins != nil {
+		found := false
+		for _, id := range s.plugins.PaymentPlugins() {
+			if id == pluginID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, ErrBadRequest("所选支付接口不可用")
+		}
+	}
+	configJSON := "{}"
+	if in.Config != nil {
+		trimmed := map[string]string{}
+		for k, v := range in.Config {
+			trimmed[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+		b, _ := json.Marshal(trimmed)
+		configJSON = string(b)
+	}
+	enabled := true
+	if in.Enabled != nil {
+		enabled = *in.Enabled
+	}
+	item := &model.PaymentMethod{Name: name, PluginID: pluginID, Config: configJSON, Enabled: enabled, SortOrder: in.Sort}
+	if err := s.db.Create(item).Error; err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+func (s *AdminService) UpdatePaymentMethod(id uint, in PaymentMethodInput) (*model.PaymentMethod, error) {
+	var item model.PaymentMethod
+	if err := s.db.First(&item, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("支付方式不存在")
+		}
+		return nil, err
+	}
+	updates := map[string]any{}
+	if in.Name != "" {
+		name := strings.TrimSpace(in.Name)
+		if name == "" {
+			return nil, ErrBadRequest("支付方式名称不能为空")
+		}
+		updates["name"] = name
+	}
+	if in.PluginID != "" {
+		pluginID := strings.TrimSpace(in.PluginID)
+		if s.plugins != nil {
+			found := false
+			for _, pid := range s.plugins.PaymentPlugins() {
+				if pid == pluginID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, ErrBadRequest("所选支付接口不可用")
+			}
+		}
+		updates["plugin_id"] = pluginID
+	}
+	if in.Config != nil {
+		trimmed := map[string]string{}
+		for k, v := range in.Config {
+			trimmed[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+		b, _ := json.Marshal(trimmed)
+		updates["config"] = string(b)
+	}
+	if in.Enabled != nil {
+		updates["enabled"] = *in.Enabled
+	}
+	updates["sort_order"] = in.Sort
+	if len(updates) > 0 {
+		if err := s.db.Model(&item).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+	}
+	if err := s.db.First(&item, id).Error; err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (s *AdminService) DeletePaymentMethod(id uint) error {
+	result := s.db.Delete(&model.PaymentMethod{}, id)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound("支付方式不存在")
+	}
+	return nil
+}
+
+// ---------- 管理员手动服务 ----------
+
+type AdminCreateServiceRequest struct {
+	ProductID   uint   `json:"product_id"`
+	Quantity    int    `json:"quantity"`
+	BillingCycle string `json:"billing_cycle"`
+	Provision   bool   `json:"provision"`
+}
+
+func (s *AdminService) CreateServiceForUser(userID uint, req AdminCreateServiceRequest) (*model.Service, error) {
+	if req.ProductID == 0 {
+		return nil, ErrBadRequest("请选择商品")
+	}
+	qty := req.Quantity
+	if qty < 1 {
+		qty = 1
+	}
+	if qty > 100 {
+		return nil, ErrBadRequest("数量过大")
+	}
+	var product model.Product
+	if err := s.db.First(&product, req.ProductID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("商品不存在")
+		}
+		return nil, err
+	}
+	var user model.User
+	if err := s.db.First(&user, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("用户不存在")
+		}
+		return nil, err
+	}
+	cycle := req.BillingCycle
+	if cycle == "" {
+		cycle = product.BillingCyc
+	}
+	if !model.ValidCycle(cycle) {
+		cycle = product.BillingCyc
+	}
+	services := make([]*model.Service, 0, qty)
+	var last *model.Service
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		for i := 0; i < qty; i++ {
+			svc := &model.Service{
+				UserID:     userID,
+				ProductID:  product.ID,
+				OrderID:    0,
+				Name:       product.Name,
+				Status:     model.ServiceActive,
+				BillingCyc: cycle,
+				PriceCents: product.PriceCents,
+			}
+			if next := model.AdvanceCycle(time.Now().UTC(), cycle); !next.IsZero() {
+				svc.NextDueAt = &next
+				svc.ExpiresAt = &next
+			}
+			if req.Provision && product.UpstreamPluginID != "" && product.UpstreamProductID != "" {
+				if s.plugins == nil {
+					return ErrBadRequest("上游插件不可用，无法开通")
+				}
+				// 调用上游开通
+				hostID, expiry, err := s.provisionUpstreamForAdmin(tx, &user, &product, cycle)
+				if err != nil {
+					return err
+				}
+				svc.UpstreamPluginID = product.UpstreamPluginID
+				svc.UpstreamHostID = hostID
+				if expiry != nil {
+					svc.NextDueAt = expiry
+					svc.ExpiresAt = expiry
+				}
+			}
+			if err := tx.Create(svc).Error; err != nil {
+				return err
+			}
+			services = append(services, svc)
+			last = svc
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(services) == 1 {
+		return services[0], nil
+	}
+	return last, nil
+}
+
+func (s *AdminService) provisionUpstreamForAdmin(tx *gorm.DB, user *model.User, product *model.Product, cycle string) (string, *time.Time, error) {
+	reply, err := s.plugins.CreateOrder(context.Background(), product.UpstreamPluginID, &pb.CreateOrderRequest{
+		ProductId:    product.UpstreamProductID,
+		BillingCycle: cycle,
+		Quantity:     1,
+		ClientEmail:  user.Email,
+		Remark:       fmt.Sprintf("admin-create user=%d", user.ID),
+	})
+	if err != nil {
+		return "", nil, ErrBadRequest("上游开通失败: %v", err)
+	}
+	hostID := reply.GetUpstreamOrderId()
+	if hostID == "" {
+		return "", nil, ErrBadRequest("上游开通失败: 未返回服务实例 ID")
+	}
+	var expiry *time.Time
+	if host, err := s.plugins.GetHost(context.Background(), product.UpstreamPluginID, &pb.GetHostRequest{HostId: hostID}); err == nil {
+		if e := host.GetHost().GetExpiry(); e != "" {
+			if t, err := time.Parse(time.RFC3339, e); err == nil {
+				expiry = &t
+			}
+		}
+	}
+	return hostID, expiry, nil
+}
+
+type AdminBindServiceRequest struct {
+	UpstreamPluginID string `json:"upstream_plugin_id"`
+	UpstreamHostID   string `json:"upstream_host_id"`
+}
+
+func (s *AdminService) BindServiceUpstream(serviceID uint, req AdminBindServiceRequest) (*model.Service, error) {
+	var svc model.Service
+	if err := s.db.First(&svc, serviceID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("服务不存在")
+		}
+		return nil, err
+	}
+	pluginID := strings.TrimSpace(req.UpstreamPluginID)
+	hostID := strings.TrimSpace(req.UpstreamHostID)
+	// 解绑：两者都为空表示清除绑定
+	if pluginID == "" && hostID == "" {
+		if err := s.db.Model(&svc).Updates(map[string]any{"upstream_plugin_id": "", "upstream_host_id": ""}).Error; err != nil {
+			return nil, err
+		}
+		svc.UpstreamPluginID = ""
+		svc.UpstreamHostID = ""
+		return &svc, nil
+	}
+	if pluginID == "" || hostID == "" {
+		return nil, ErrBadRequest("请同时提供上游插件和主机 ID，或都留空以解绑")
+	}
+	if s.plugins == nil {
+		return nil, ErrBadRequest("上游插件不可用")
+	}
+	inst, err := s.plugins.Get(pluginID)
+	if err != nil || !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
+		return nil, ErrBadRequest("上游插件不可用或不支持对接")
+	}
+	if inst.Client() == nil {
+		return nil, ErrBadRequest("上游插件未运行")
+	}
+	// 验证上游主机存在
+	if _, err := s.plugins.GetHost(context.Background(), pluginID, &pb.GetHostRequest{HostId: hostID}); err != nil {
+		return nil, ErrBadRequest("上游主机不存在: %v", err)
+	}
+	if err := s.db.Model(&svc).Updates(map[string]any{"upstream_plugin_id": pluginID, "upstream_host_id": hostID}).Error; err != nil {
+		return nil, err
+	}
+	svc.UpstreamPluginID = pluginID
+	svc.UpstreamHostID = hostID
+	return &svc, nil
 }
 
 // ---------- 概览 ----------

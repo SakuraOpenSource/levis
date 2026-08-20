@@ -69,6 +69,51 @@ func (h *Handler) RenewService(c *gin.Context) {
 	respond(c, result, err)
 }
 
+// ServicePowerRequest 是电源操作入参。
+type ServicePowerRequest struct {
+	// Action 取值：boot / shutdown / reboot / reinstall。
+	Action string `json:"action"`
+	OS     string `json:"os"`
+}
+
+// ServicePower 对上游对接的服务执行电源操作（开机/关机/重启/重装系统）。
+func (h *Handler) ServicePower(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	var req ServicePowerRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	err := h.billing().Power(httpx.CurrentUserID(c), id, req.Action, req.OS)
+	respond(c, gin.H{"message": "操作已提交"}, err)
+}
+
+// ServiceUpstream 返回上游主机详情与支持的操作列表。
+func (h *Handler) ServiceUpstream(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	info, err := h.billing().UpstreamInfo(httpx.CurrentUserID(c), id)
+	respond(c, info, err)
+}
+
+// ServiceOS 返回上游主机可用的重装系统列表。
+func (h *Handler) ServiceOS(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.billing().ListOS(httpx.CurrentUserID(c), id)
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	OK(c, gin.H{"items": items})
+}
+
 // Invoices 分页返回账单。
 func (h *Handler) Invoices(c *gin.Context) {
 	page, pageSize, offset := Pagination(c)

@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"gorm.io/gorm"
@@ -31,21 +33,22 @@ func NewPaymentService(db *gorm.DB, plugins *plugin.Manager, wallet *WalletServi
 type PaymentCreateInput struct {
 	Purpose     string `json:"purpose"`
 	TargetID    uint   `json:"target_id"`
-	PluginID    string `json:"plugin_id"`
+	PluginID    string `json:"plugin_id"` // 支付方式 ID（数字字符串），兼容旧调用方也可能传插件 ID
 	AmountCents int64  `json:"amount_cents"`
 }
 
 func (s *PaymentService) Methods() ([]map[string]string, error) {
-	if s.plugins == nil {
-		return nil, ErrUnavailable("暂无可用的支付插件，请联系管理员配置")
+	var methods []model.PaymentMethod
+	if err := s.db.Where("enabled = ?", true).Order("sort_order ASC, id ASC").Find(&methods).Error; err != nil {
+		return nil, err
 	}
-	ids := s.plugins.PaymentPlugins()
-	if len(ids) == 0 {
-		return nil, ErrUnavailable("暂无可用的支付插件，请联系管理员配置")
+	if len(methods) == 0 {
+		return nil, ErrUnavailable("暂无可用的支付方式，请联系管理员配置")
 	}
-	out := make([]map[string]string, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, map[string]string{"id": id, "name": id})
+	// 仅返回对应插件当前可用的方式；插件未运行时仍显示但创建时会失败
+	out := make([]map[string]string, 0, len(methods))
+	for _, m := range methods {
+		out = append(out, map[string]string{"id": fmt.Sprint(m.ID), "name": m.Name})
 	}
 	return out, nil
 }
@@ -58,22 +61,55 @@ func paymentExternalID() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-func (s *PaymentService) Create(ctx context.Context, userID uint, clientIP string, in PaymentCreateInput) (*model.ExternalPayment, error) {
-	if s.plugins == nil {
-		return nil, ErrUnavailable("暂无可用的支付插件，请联系管理员配置")
+func parsePaymentMethodConfig(raw string) map[string]string {
+	if raw == "" {
+		return map[string]string{}
 	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return map[string]string{}
+	}
+	if m == nil {
+		return map[string]string{}
+	}
+	return m
+}
+
+func paymentMethodNotifyURL(apiBase, pluginID string, methodID uint) string {
+	if apiBase == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/payment-notify/%s/%d", apiBase, pluginID, methodID)
+}
+
+func (s *PaymentService) Create(ctx context.Context, userID uint, clientIP string, in PaymentCreateInput) (*model.ExternalPayment, error) {
 	if in.PluginID == "" {
 		return nil, ErrBadRequest("请选择支付方式")
 	}
-	found := false
-	for _, id := range s.plugins.PaymentPlugins() {
-		if id == in.PluginID {
-			found = true
-			break
-		}
+	// in.PluginID 预期为支付方式 ID（数字字符串）
+	methodID, err := strconv.ParseUint(in.PluginID, 10, 64)
+	if err != nil {
+		return nil, ErrBadRequest("无效的支付方式")
 	}
-	if !found {
+	var method model.PaymentMethod
+	if err := s.db.First(&method, uint(methodID)).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("支付方式不存在")
+		}
+		return nil, err
+	}
+	if !method.Enabled {
+		return nil, ErrUnavailable("该支付方式已停用")
+	}
+	if s.plugins == nil {
+		return nil, ErrUnavailable("支付插件当前不可用")
+	}
+	inst, err := s.plugins.Get(method.PluginID)
+	if err != nil || !inst.Has(pb.Capability_CAPABILITY_CREATE_PAYMENT) {
 		return nil, ErrUnavailable("所选支付插件当前不可用")
+	}
+	if inst.Client() == nil {
+		return nil, ErrUnavailable("支付插件未运行")
 	}
 	if in.Purpose != model.ExternalPaymentPurposeRecharge && in.TargetID == 0 {
 		return nil, ErrBadRequest("缺少支付目标")
@@ -119,11 +155,17 @@ func (s *PaymentService) Create(ctx context.Context, userID uint, clientIP strin
 	if err != nil {
 		return nil, err
 	}
-	intent := &model.ExternalPayment{PluginID: in.PluginID, ExternalID: externalID, UserID: userID, Purpose: in.Purpose, TargetID: in.TargetID, AmountCents: amount, Currency: "CNY", Subject: subject, Status: model.ExternalPaymentPending}
+	cfg := parsePaymentMethodConfig(method.Config)
+	notifyURL := ""
+	if s.plugins != nil {
+		notifyURL = paymentMethodNotifyURL(s.plugins.APIBase(), method.PluginID, method.ID)
+	}
+	mid := method.ID
+	intent := &model.ExternalPayment{PluginID: method.PluginID, ExternalID: externalID, UserID: userID, Purpose: in.Purpose, TargetID: in.TargetID, AmountCents: amount, Currency: "CNY", Subject: subject, Status: model.ExternalPaymentPending, PaymentMethodID: &mid}
 	if err := s.db.Create(intent).Error; err != nil {
 		return nil, err
 	}
-	reply, err := s.plugins.CreatePayment(ctx, in.PluginID, &pb.CreatePaymentRequest{ExternalId: externalID, AmountCents: amount, Currency: "CNY", Subject: subject, UserId: uint64(userID), ClientIp: clientIP})
+	reply, err := s.plugins.CreatePayment(ctx, method.PluginID, &pb.CreatePaymentRequest{ExternalId: externalID, AmountCents: amount, Currency: "CNY", Subject: subject, UserId: uint64(userID), ClientIp: clientIP, Config: cfg, NotifyUrl: notifyURL})
 	if err != nil {
 		s.db.Model(intent).Updates(map[string]any{"status": model.ExternalPaymentFailed, "failure_reason": err.Error()})
 		return nil, ErrUnavailable("创建支付失败: %s", err.Error())
@@ -161,7 +203,20 @@ func (s *PaymentService) Query(ctx context.Context, userID, id uint) (*model.Ext
 	if s.plugins == nil {
 		return nil, ErrUnavailable("支付插件当前不可用")
 	}
-	reply, err := s.plugins.QueryPayment(ctx, item.PluginID, &pb.QueryPaymentRequest{ExternalId: item.ExternalID, GatewayRef: item.GatewayRef})
+	cfg := map[string]string{}
+	if item.PaymentMethodID != nil {
+		var method model.PaymentMethod
+		if err := s.db.First(&method, *item.PaymentMethodID).Error; err == nil {
+			cfg = parsePaymentMethodConfig(method.Config)
+		}
+	} else {
+		// 兼容旧数据：按 plugin 查第一个启用的方式
+		var method model.PaymentMethod
+		if err := s.db.Where("plugin_id = ? AND enabled = ?", item.PluginID, true).Order("sort_order ASC, id ASC").First(&method).Error; err == nil {
+			cfg = parsePaymentMethodConfig(method.Config)
+		}
+	}
+	reply, err := s.plugins.QueryPayment(ctx, item.PluginID, &pb.QueryPaymentRequest{ExternalId: item.ExternalID, GatewayRef: item.GatewayRef, Config: cfg})
 	if err != nil {
 		return nil, err
 	}

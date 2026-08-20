@@ -105,6 +105,23 @@ const (
 	PluginPaymentPaid              = ExternalPaymentPaid
 )
 
+// PaymentMethod 是财务板块的支付方式。
+//
+// 支付方式与支付插件是「实例 vs 类型」的关系：同一个 epay 插件类型可被多个
+// 支付方式复用，每个支付方式携带一套独立的插件配置（PID/KEY 等）。
+// 全局 PluginSetting 不再用于支付，每个支付方式的配置落在此表。
+type PaymentMethod struct {
+	Base
+	Name     string `gorm:"size:64;not null" json:"name"`
+	PluginID string `gorm:"size:64;index;not null" json:"plugin_id"`
+	// Config 是 JSON 编码的 map[string]string，存该方式的插件配置项
+	// （PID、KEY、gateway_url、payment_type 等）。
+	Config string `gorm:"type:text" json:"-"`
+	// ConfigMap 是 Config 的内存解析视图，不落库。
+	Enabled   bool `gorm:"not null;default:true" json:"enabled"`
+	SortOrder int  `gorm:"not null;default:0" json:"sort_order"`
+}
+
 type ExternalPayment struct {
 	Base
 	PluginID        string     `gorm:"index:idx_external_payment_plugin_ext,unique;size:64;not null" json:"plugin_id"`
@@ -122,6 +139,8 @@ type ExternalPayment struct {
 	Status          string     `gorm:"size:16;index;not null;default:pending" json:"status"`
 	FailureReason   string     `gorm:"size:255" json:"failure_reason"`
 	PaidAt          *time.Time `json:"paid_at"`
+	// PaymentMethodID 关联到创建该支付时所用的支付方式，可为空（兼容旧数据）。
+	PaymentMethodID *uint `gorm:"index" json:"payment_method_id"`
 }
 
 // PluginPayment 记录插件报上来的每一笔到账，唯一索引即幂等键。

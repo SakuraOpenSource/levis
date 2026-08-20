@@ -75,6 +75,10 @@ service Plugin {
   // GetHost 查询上游服务实例详情。
   // 需声明 CAPABILITY_PROVISION_PRODUCT。
   rpc GetHost(GetHostRequest) returns (GetHostReply);
+
+  // ListHostOS 获取重装系统可选列表。
+  // 需声明 CAPABILITY_PROVISION_PRODUCT。
+  rpc ListHostOS(ListHostOSRequest) returns (ListHostOSReply);
 }
 
 // Capability 是插件声明的能力。
@@ -142,6 +146,10 @@ message Manifest {
   // required_scopes 是插件回调 /api/plugin/v1 所需的权限位，
   // 取值见 model.PluginScope*。主程序据此签发 Key，管理员可见。
   repeated string required_scopes = 7;
+  // payment_config 是按支付方式实例填写的配置项（如 epay 的 PID/KEY）。
+  // 与全局 config 区分：同一支付插件可被多个支付方式复用，每个支付方式
+  // 携带一套独立的 payment_config 值，经 CreatePayment 等请求传入。
+  repeated ConfigField payment_config = 8;
 }
 
 message ConfigureRequest {
@@ -204,6 +212,11 @@ message CreatePaymentRequest {
   string return_url = 6;
   // client_ip 是用户的客户端 IP，部分支付渠道要求此字段。
   string client_ip = 7;
+  // config 是按支付方式实例传入的插件配置（如 epay 的 PID/KEY），
+  // 覆盖全局 Configure 的同名配置。
+  map<string, string> config = 8;
+  // notify_url 是上游回调地址，由主程序按支付方式构造。
+  string notify_url = 9;
 }
 
 message CreatePaymentReply {
@@ -227,6 +240,7 @@ enum PaymentState {
 message QueryPaymentRequest {
   string external_id = 1;
   string gateway_ref = 2;
+  map<string, string> config = 3;
 }
 
 message QueryPaymentReply {
@@ -242,6 +256,7 @@ message QueryPaymentReply {
 message VerifyPaymentCallbackRequest {
   // raw 是渠道通知的原始表单或 JSON 字段，主程序不解释其含义。
   map<string, string> raw = 1;
+  map<string, string> config = 2;
 }
 
 message VerifyPaymentCallbackReply {
@@ -343,6 +358,14 @@ enum HostAction {
   HOST_ACTION_SUSPEND = 2;
   HOST_ACTION_UNSUSPEND = 3;
   HOST_ACTION_TERMINATE = 4;
+  // HOST_ACTION_BOOT 开机。
+  HOST_ACTION_BOOT = 5;
+  // HOST_ACTION_SHUTDOWN 关机。
+  HOST_ACTION_SHUTDOWN = 6;
+  // HOST_ACTION_REBOOT 重启。
+  HOST_ACTION_REBOOT = 7;
+  // HOST_ACTION_REINSTALL 重装系统。
+  HOST_ACTION_REINSTALL = 8;
 }
 
 message ManageHostRequest {
@@ -350,6 +373,8 @@ message ManageHostRequest {
   HostAction action = 2;
   // billing_cycle 仅在 RENEW 时需要。
   string billing_cycle = 3;
+  // os 仅在 REINSTALL 时需要，表示要重装的系统 ID。
+  string os = 4;
 }
 
 message ManageHostReply {
@@ -374,9 +399,26 @@ message UpstreamHost {
   string expiry = 6;
   // upstream_order_id 是关联的上游订单号。
   string upstream_order_id = 7;
+  // actions 是上游支持的操作列表，如 on/off/reboot/reinstall。
+  repeated string actions = 8;
 }
 
 message GetHostReply {
   UpstreamHost host = 1;
+  string error = 2;
+}
+
+message OSImage {
+  string id = 1;
+  string name = 2;
+  string group = 3;
+}
+
+message ListHostOSRequest {
+  string host_id = 1;
+}
+
+message ListHostOSReply {
+  repeated OSImage os = 1;
   string error = 2;
 }

@@ -1,27 +1,33 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/SakuraOpenSource/levis/internal/model"
+	"github.com/SakuraOpenSource/levis/internal/plugin"
+	pb "github.com/SakuraOpenSource/levis/pkg/plugin/proto"
 )
 
 // OrderService 处理下单与支付。
 type OrderService struct {
-	db     *gorm.DB
-	cart   *CartService
-	wallet *WalletService
+	db      *gorm.DB
+	cart    *CartService
+	wallet  *WalletService
+	plugins *plugin.Manager
 }
 
-// NewOrderService 构造 OrderService。
-func NewOrderService(db *gorm.DB, cart *CartService, wallet *WalletService) *OrderService {
-	return &OrderService{db: db, cart: cart, wallet: wallet}
+// NewOrderService 构造 OrderService。plugins 可为 nil（测试或无插件场景），
+// 此时上游商品仅本地开通，不会向上游下单。
+func NewOrderService(db *gorm.DB, cart *CartService, wallet *WalletService, plugins *plugin.Manager) *OrderService {
+	return &OrderService{db: db, cart: cart, wallet: wallet, plugins: plugins}
 }
 
 // serialNo 生成带前缀的业务单号，形如 ORD20260813T1A2B3C4D。
@@ -241,8 +247,9 @@ func (s *OrderService) payInTx(tx *gorm.DB, userID, orderID uint, debit bool) (*
 		return nil, ErrBadRequest("订单没有明细")
 	}
 
-	if debit {
+	if debit && order.TotalCents > 0 {
 		// 扣款放在最前面：余额不足会在此直接失败，后续写入都不会发生。
+		// 免费订单（总额为 0）无款可扣，直接跳过，否则会触发「金额不能为零」。
 		if _, err := s.wallet.adjustBalance(
 			tx, userID, -order.TotalCents, model.TxPayment,
 			"order", order.ID, fmt.Sprintf("支付订单 %s", order.OrderNo),
@@ -284,6 +291,12 @@ func (s *OrderService) payInTx(tx *gorm.DB, userID, orderID uint, debit bool) (*
 	services := make([]model.Service, 0, len(order.Items))
 	invoiceItems := make([]model.InvoiceItem, 0, len(order.Items))
 	for _, item := range order.Items {
+		// 读取商品以判断是否为上游对接商品。
+		var product model.Product
+		if err := tx.First(&product, item.ProductID).Error; err != nil {
+			return nil, err
+		}
+
 		// 数量为 N 时开通 N 个独立服务实例，与魔方财务的行为一致。
 		for i := 0; i < item.Quantity; i++ {
 			service := model.Service{
@@ -300,6 +313,23 @@ func (s *OrderService) payInTx(tx *gorm.DB, userID, orderID uint, debit bool) (*
 				service.NextDueAt = &next
 				service.ExpiresAt = &next
 			}
+
+			// 上游对接商品：调用插件向上游下单并开通，把上游 host_id 存入服务。
+			// 上游下单失败则整体回滚，绝不允许「扣了钱却没在上游开通」。
+			if product.UpstreamPluginID != "" && product.UpstreamProductID != "" {
+				hostID, upstreamExpiry, err := s.provisionUpstream(tx, userID, &product, item.BillingCyc, order.OrderNo)
+				if err != nil {
+					return nil, err
+				}
+				service.UpstreamPluginID = product.UpstreamPluginID
+				service.UpstreamHostID = hostID
+				// 上游返回了到期时间则以上游为准，保持两边一致。
+				if upstreamExpiry != nil {
+					service.NextDueAt = upstreamExpiry
+					service.ExpiresAt = upstreamExpiry
+				}
+			}
+
 			if err := tx.Create(&service).Error; err != nil {
 				return nil, err
 			}
@@ -331,6 +361,53 @@ func (s *OrderService) payInTx(tx *gorm.DB, userID, orderID uint, debit bool) (*
 
 	out = PayResult{Order: &order, Invoice: &invoice, Services: services}
 	return &out, nil
+}
+
+// provisionUpstream 调用上游插件下单开通，返回上游服务实例 ID 与到期时间。
+//
+// 插件内部会完成上游的下单、结算与余额支付；返回的 upstream_order_id
+// 即上游服务实例 ID（如魔方财务 host_id），后续管理操作都凭它定位。
+// 开通成功后再调 GetHost 拉取到期时间，拉取失败不影响开通结果。
+func (s *OrderService) provisionUpstream(tx *gorm.DB, userID uint, product *model.Product, cycle, orderNo string) (string, *time.Time, error) {
+	if s.plugins == nil {
+		return "", nil, ErrBadRequest("上游插件不可用，无法开通该商品")
+	}
+
+	// 上游可能用客户邮箱建账号，取下单用户的邮箱。
+	var user model.User
+	if err := tx.First(&user, userID).Error; err != nil {
+		return "", nil, err
+	}
+
+	reply, err := s.plugins.CreateOrder(context.Background(), product.UpstreamPluginID, &pb.CreateOrderRequest{
+		ProductId:    product.UpstreamProductID,
+		BillingCycle: cycle,
+		Quantity:     1,
+		ClientEmail:  user.Email,
+		Remark:       orderNo,
+	})
+	if err != nil {
+		log.Printf("上游开通失败 plugin=%s product=%s order=%s: %v",
+			product.UpstreamPluginID, product.UpstreamProductID, orderNo, err)
+		return "", nil, ErrBadRequest("上游开通失败: %v", err)
+	}
+
+	hostID := reply.GetUpstreamOrderId()
+	if hostID == "" {
+		return "", nil, ErrBadRequest("上游开通失败: 未返回服务实例 ID")
+	}
+
+	// 拉取上游服务信息，同步到期时间；失败不阻断开通。
+	var expiry *time.Time
+	if host, err := s.plugins.GetHost(context.Background(), product.UpstreamPluginID, &pb.GetHostRequest{HostId: hostID}); err == nil {
+		if e := host.GetHost().GetExpiry(); e != "" {
+			if t, err := time.Parse(time.RFC3339, e); err == nil {
+				expiry = &t
+			}
+		}
+	}
+
+	return hostID, expiry, nil
 }
 
 // Cancel 取消待支付订单。

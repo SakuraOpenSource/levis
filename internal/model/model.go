@@ -261,6 +261,11 @@ type Service struct {
 	PriceCents int64      `gorm:"not null;default:0" json:"price_cents"`
 	NextDueAt  *time.Time `json:"next_due_at"`
 	ExpiresAt  *time.Time `json:"expires_at"`
+	// UpstreamPluginID 非空表示该服务由上游插件开通，值为插件 ID。
+	UpstreamPluginID string `gorm:"size:64;default:''" json:"upstream_plugin_id"`
+	// UpstreamHostID 是上游开通后返回的服务实例 ID（如魔方财务 host_id），
+	// 续费、暂停、电源操作都用它定位上游资源。
+	UpstreamHostID string `gorm:"size:64;default:''" json:"upstream_host_id"`
 }
 
 // 账单状态。
@@ -337,5 +342,6 @@ func AllModels() []any {
 		&PluginSetting{},
 		&PluginPayment{},
 		&ExternalPayment{},
+		&PaymentMethod{},
 	}
 }

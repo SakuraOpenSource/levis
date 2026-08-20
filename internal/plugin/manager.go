@@ -30,6 +30,12 @@ var ErrNotLoadable = errors.New("插件不可加载")
 // 秒级。但不能没有上限 —— 支付类调用是同步的，用户正在等页面响应。
 const hookTimeout = 10 * time.Second
 
+// provisionTimeout 是上游产品对接类调用的超时。
+//
+// CreateOrder 内部要串行执行多个上游 HTTP 请求（下单、结算、支付等），
+// ManageHost 的续费也要走上游下单+支付，10 秒远远不够，需要独立放宽。
+const provisionTimeout = 120 * time.Second
+
 // ConfigProvider 提供某个插件的配置值。
 //
 // 定义成接口而不是直接依赖 service：本包不该知道配置存在数据库还是别处，
@@ -432,6 +438,99 @@ func (m *Manager) QueryPayment(ctx context.Context, id string, req *pb.QueryPaym
 	return out, nil
 }
 
+// CreateOrder 让指定上游插件创建一笔上游订单（下单并支付开通）。
+func (m *Manager) CreateOrder(ctx context.Context, id string, req *pb.CreateOrderRequest) (*pb.CreateOrderReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.CreateOrderReply
+	err = c.call(ctx, provisionTimeout, func(ctx context.Context) error {
+		reply, err := client.CreateOrder(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.GetError() != "" {
+		return nil, fmt.Errorf("%s", out.GetError())
+	}
+	return out, nil
+}
+
+// GetHost 查询上游服务实例信息。
+func (m *Manager) GetHost(ctx context.Context, id string, req *pb.GetHostRequest) (*pb.GetHostReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.GetHostReply
+	err = c.call(ctx, provisionTimeout, func(ctx context.Context) error {
+		reply, err := client.GetHost(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.GetError() != "" {
+		return nil, fmt.Errorf("%s", out.GetError())
+	}
+	return out, nil
+}
+
+// ManageHost 对上游服务实例执行管理操作（续费、暂停、恢复、删除、电源操作）。
+func (m *Manager) ManageHost(ctx context.Context, id string, req *pb.ManageHostRequest) (*pb.ManageHostReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.ManageHostReply
+	err = c.call(ctx, provisionTimeout, func(ctx context.Context) error {
+		reply, err := client.ManageHost(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.GetError() != "" {
+		return nil, fmt.Errorf("%s", out.GetError())
+	}
+	return out, nil
+}
+
 // VerifyPaymentCallback lets a payment plugin authenticate and normalize a raw gateway callback.
 func (m *Manager) VerifyPaymentCallback(ctx context.Context, id string, req *pb.VerifyPaymentCallbackRequest) (*pb.VerifyPaymentCallbackReply, error) {
 	inst, err := m.get(id)
@@ -459,6 +558,40 @@ func (m *Manager) VerifyPaymentCallback(ctx context.Context, id string, req *pb.
 	}
 	return out, nil
 }
+
+// ListHostOS 获取上游主机可用的重装系统列表。
+func (m *Manager) ListHostOS(ctx context.Context, id string, req *pb.ListHostOSRequest) (*pb.ListHostOSReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.ListHostOSReply
+	err = c.call(ctx, provisionTimeout, func(ctx context.Context) error {
+		reply, err := client.ListHostOS(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.GetError() != "" {
+		return nil, fmt.Errorf("%s", out.GetError())
+	}
+	return out, nil
+}
+
+// APIBase 返回插件回调主程序的基址。
+func (m *Manager) APIBase() string { return m.apiBase }
 
 // Close 停止全部插件。主程序退出时调用。
 func (m *Manager) Close() {
