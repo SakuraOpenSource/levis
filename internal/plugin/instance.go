@@ -6,6 +6,7 @@ import (
 	"time"
 
 	pb "github.com/SakuraOpenSource/levis/pkg/plugin/proto"
+	"google.golang.org/grpc/metadata"
 )
 
 // State 是插件实例的运行状态。
@@ -209,6 +210,16 @@ func (i *Instance) client() (pb.PluginClient, *conn) {
 func (i *Instance) Client() pb.PluginClient {
 	cli, _ := i.client()
 	return cli
+}
+
+// TokenContext 将插件令牌注入 context，使外部调用方可以安全地直接调用 gRPC 方法。
+func (i *Instance) TokenContext(ctx context.Context) context.Context {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.conn == nil {
+		return ctx
+	}
+	return metadata.AppendToOutgoingContext(ctx, MetadataToken, i.conn.token)
 }
 
 // record 写一行实例日志，同时进主程序日志。

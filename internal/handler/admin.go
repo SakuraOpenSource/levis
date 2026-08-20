@@ -7,6 +7,7 @@ import (
 
 	"github.com/SakuraOpenSource/levis/internal/httpx"
 	"github.com/SakuraOpenSource/levis/internal/model"
+	"github.com/SakuraOpenSource/levis/internal/plugin"
 	"github.com/SakuraOpenSource/levis/internal/service"
 	pb "github.com/SakuraOpenSource/levis/pkg/plugin/proto"
 )
@@ -184,39 +185,23 @@ func (h *Handler) AdminProvisionPlugins(c *gin.Context) {
 	OK(c, gin.H{"items": items})
 }
 
-// AdminSyncProducts 从上游插件同步产品列表到本地。
-func (h *Handler) AdminSyncProducts(c *gin.Context) {
+// AdminUpstreamProducts 返回上游插件的产品列表，供管理端选择上游商品时使用。
+func (h *Handler) AdminUpstreamProducts(c *gin.Context) {
 	if !h.pluginsReady(c) {
 		return
 	}
-	var req struct {
-		PluginID string `json:"plugin_id"`
-	}
-	if !bindJSON(c, &req) {
-		return
-	}
-	if req.PluginID == "" {
+	pluginID := c.Query("plugin_id")
+	if pluginID == "" {
 		BadRequest(c, "请指定上游插件")
 		return
 	}
 
-	inst, err := h.plugins.Get(req.PluginID)
+	inst, client, err := h.provisionClient(c, pluginID)
 	if err != nil {
-		NotFound(c, "插件不存在")
-		return
-	}
-	if !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
-		BadRequest(c, "该插件不支持产品对接")
 		return
 	}
 
-	client := inst.Client()
-	if client == nil {
-		Internal(c, "插件未运行")
-		return
-	}
-
-	reply, err := client.ListProducts(c.Request.Context(), &pb.ListProductsRequest{Page: 1, Limit: 100})
+	reply, err := client.ListProducts(inst.TokenContext(c.Request.Context()), &pb.ListProductsRequest{Page: 1, Limit: 200})
 	if err != nil {
 		Internal(c, "获取上游产品失败: "+err.Error())
 		return
@@ -226,55 +211,97 @@ func (h *Handler) AdminSyncProducts(c *gin.Context) {
 		return
 	}
 
-	created := 0
+	items := make([]gin.H, 0, len(reply.GetProducts()))
 	for _, up := range reply.GetProducts() {
-		// 检查是否已存在同步记录
-		var existing model.Product
-		result := h.db().Where("upstream_plugin_id = ? AND upstream_product_id = ?",
-			req.PluginID, up.GetId()).First(&existing)
-		if result.Error == nil {
-			// 更新
-			h.db().Model(&existing).Updates(map[string]any{
-				"name":          up.GetName(),
-				"description":   up.GetDescription(),
-				"price_cents":   up.GetPriceCents(),
-				"billing_cycle": up.GetBillingCycle(),
-				"specs":         model.SpecList{},
-				"stock":         stockFromAvailable(up.GetStockAvailable()),
-				"status":        model.ProductActive,
-			})
-			continue
-		}
-		// 新建
-		specs := model.SpecList{}
-		for k, v := range up.GetSpecs() {
-			specs = append(specs, model.Spec{Label: k, Value: v})
-		}
-		product := model.Product{
-			Name:              up.GetName(),
-			Description:       up.GetDescription(),
-			PriceCents:        up.GetPriceCents(),
-			BillingCyc:        up.GetBillingCycle(),
-			Specs:             specs,
-			Stock:             stockFromAvailable(up.GetStockAvailable()),
-			Status:            model.ProductActive,
-			UpstreamPluginID:  req.PluginID,
-			UpstreamProductID: up.GetId(),
-		}
-		if err := h.db().Create(&product).Error; err != nil {
-			continue
-		}
-		created++
+		items = append(items, gin.H{
+			"id":            up.GetId(),
+			"name":          up.GetName(),
+			"description":   up.GetDescription(),
+			"group_name":    up.GetGroupName(),
+			"price_cents":   up.GetPriceCents(),
+			"billing_cycle": up.GetBillingCycle(),
+		})
 	}
 
-	OK(c, gin.H{"created": created, "total": len(reply.GetProducts())})
+	OK(c, gin.H{"items": items})
 }
 
-func stockFromAvailable(available bool) int {
-	if available {
-		return -1 // 不限
+// AdminSyncProductInfo 从上游拉取单个商品的价格、计费周期与简介并更新本地记录。
+func (h *Handler) AdminSyncProductInfo(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
 	}
-	return 0
+
+	var product model.Product
+	if err := h.db().First(&product, id).Error; err != nil {
+		NotFound(c, "商品不存在")
+		return
+	}
+	if product.UpstreamPluginID == "" || product.UpstreamProductID == "" {
+		BadRequest(c, "该商品未关联上游")
+		return
+	}
+
+	inst, client, err := h.provisionClient(c, product.UpstreamPluginID)
+	if err != nil {
+		return
+	}
+
+	reply, err := client.GetProduct(inst.TokenContext(c.Request.Context()), &pb.GetProductRequest{Id: product.UpstreamProductID})
+	if err != nil {
+		Internal(c, "获取上游商品失败: "+err.Error())
+		return
+	}
+	if reply.GetError() != "" {
+		Internal(c, "上游返回错误: "+reply.GetError())
+		return
+	}
+	up := reply.GetProduct()
+	if up == nil {
+		Internal(c, "上游未返回商品信息")
+		return
+	}
+
+	updates := map[string]any{}
+	if up.GetDescription() != "" {
+		updates["description"] = up.GetDescription()
+	}
+	if up.GetPriceCents() > 0 {
+		updates["price_cents"] = up.GetPriceCents()
+	}
+	if up.GetBillingCycle() != "" {
+		updates["billing_cycle"] = up.GetBillingCycle()
+	}
+	if len(updates) == 0 {
+		BadRequest(c, "上游未返回可同步的价格、周期或简介")
+		return
+	}
+	if err := h.db().Model(&product).Updates(updates).Error; err != nil {
+		Internal(c, "更新失败: "+err.Error())
+		return
+	}
+
+	OK(c, gin.H{"message": "同步完成"})
+}
+
+// provisionClient 校验插件存在且支持产品对接，返回插件实例与其 gRPC 客户端。
+func (h *Handler) provisionClient(c *gin.Context, pluginID string) (*plugin.Instance, pb.PluginClient, error) {
+	inst, err := h.plugins.Get(pluginID)
+	if err != nil {
+		NotFound(c, "插件不存在")
+		return nil, nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
+		BadRequest(c, "该插件不支持产品对接")
+		return nil, nil, err
+	}
+	client := inst.Client()
+	if client == nil {
+		Internal(c, "插件未运行")
+		return nil, nil, err
+	}
+	return inst, client, nil
 }
 
 // ---------- 服务管理 ----------
