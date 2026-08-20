@@ -89,7 +89,15 @@ func TestOpenAPIRejectsBadKeys(t *testing.T) {
 		{"完全没有", ""},
 		{"随便一串", "not-a-key"},
 		{"前缀对但内容错", "lvs_ffffffffffffffffffffffffffffffff"},
-		{"改了一位", env.secret[:len(env.secret)-1] + "0"},
+		{"改了一位", func() string {
+			// 随机密钥末位有 1/16 概率本来就是 '0'，直接拼 '0' 会导致用例未实际改动而误判为通过。
+			last := env.secret[len(env.secret)-1]
+			repl := byte('0')
+			if last == '0' {
+				repl = '1'
+			}
+			return env.secret[:len(env.secret)-1] + string(repl)
+		}()},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
