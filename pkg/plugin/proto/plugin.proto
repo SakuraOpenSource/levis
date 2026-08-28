@@ -79,6 +79,14 @@ service Plugin {
   // ListHostOS 获取重装系统可选列表。
   // 需声明 CAPABILITY_PROVISION_PRODUCT。
   rpc ListHostOS(ListHostOSRequest) returns (ListHostOSReply);
+
+  // StartKYC 发起实名认证并返回认证跳转地址/HTML。
+  // 需声明 CAPABILITY_KYC。
+  rpc StartKYC(StartKYCRequest) returns (StartKYCReply);
+
+  // QueryKYC 查询实名认证结果。
+  // 需声明 CAPABILITY_KYC。
+  rpc QueryKYC(QueryKYCRequest) returns (QueryKYCReply);
 }
 
 // Capability 是插件声明的能力。
@@ -91,6 +99,7 @@ enum Capability {
   // CAPABILITY_PROVISION_PRODUCT 表示插件可以对接上游供货商：
   // 拉取产品列表、下单、查询订单、管理服务实例。
   CAPABILITY_PROVISION_PRODUCT = 3;
+  CAPABILITY_KYC = 4;
 }
 
 // FieldType 是配置项的输入类型，决定后台表单的渲染方式。
@@ -421,4 +430,30 @@ message ListHostOSRequest {
 message ListHostOSReply {
   repeated OSImage os = 1;
   string error = 2;
+}
+
+message StartKYCRequest {
+  string name = 1;
+  string id_card = 2;
+  map<string, string> config = 3;
+}
+
+message StartKYCReply {
+  string certify_id = 1;
+  string certify_html = 2;
+  string certify_url = 3;
+  string message = 4;
+}
+
+message QueryKYCRequest {
+  string certify_id = 1;
+  map<string, string> config = 2;
+}
+
+message QueryKYCReply {
+  // passed: T 通过，F 未通过，P 处理中。
+  string passed = 1;
+  string identity_info = 2;
+  string material_info = 3;
+  string message = 4;
 }

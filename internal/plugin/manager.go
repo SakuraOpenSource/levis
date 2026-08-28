@@ -590,6 +590,61 @@ func (m *Manager) ListHostOS(ctx context.Context, id string, req *pb.ListHostOSR
 	return out, nil
 }
 
+// KYCPlugin 返回第一个运行中且声明实名认证能力的插件。
+func (m *Manager) KYCPlugin() *Instance {
+	return m.find(pb.Capability_CAPABILITY_KYC)
+}
+
+// StartKYC 调用指定实名认证插件发起认证。
+func (m *Manager) StartKYC(ctx context.Context, id string, req *pb.StartKYCRequest) (*pb.StartKYCReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_KYC) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.StartKYCReply
+	err = c.call(ctx, hookTimeout, func(ctx context.Context) error {
+		reply, err := client.StartKYC(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	return out, err
+}
+
+// QueryKYC 调用指定实名认证插件查询状态。
+func (m *Manager) QueryKYC(ctx context.Context, id string, req *pb.QueryKYCRequest) (*pb.QueryKYCReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_KYC) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.QueryKYCReply
+	err = c.call(ctx, hookTimeout, func(ctx context.Context) error {
+		reply, err := client.QueryKYC(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	return out, err
+}
+
 // APIBase 返回插件回调主程序的基址。
 func (m *Manager) APIBase() string { return m.apiBase }
 

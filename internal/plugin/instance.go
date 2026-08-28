@@ -474,6 +474,10 @@ func capabilityName(c pb.Capability) string {
 		return "send_mail"
 	case pb.Capability_CAPABILITY_CREATE_PAYMENT:
 		return "create_payment"
+	case pb.Capability_CAPABILITY_PROVISION_PRODUCT:
+		return "provision_product"
+	case pb.Capability_CAPABILITY_KYC:
+		return "kyc"
 	}
 	return "unknown"
 }

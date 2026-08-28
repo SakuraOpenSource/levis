@@ -43,6 +43,8 @@ const (
 	Plugin_ManageHost_FullMethodName            = "/levis.plugin.v1.Plugin/ManageHost"
 	Plugin_GetHost_FullMethodName               = "/levis.plugin.v1.Plugin/GetHost"
 	Plugin_ListHostOS_FullMethodName            = "/levis.plugin.v1.Plugin/ListHostOS"
+	Plugin_StartKYC_FullMethodName              = "/levis.plugin.v1.Plugin/StartKYC"
+	Plugin_QueryKYC_FullMethodName              = "/levis.plugin.v1.Plugin/QueryKYC"
 )
 
 // PluginClient is the client API for Plugin service.
@@ -102,6 +104,12 @@ type PluginClient interface {
 	// ListHostOS 获取重装系统可选列表。
 	// 需声明 CAPABILITY_PROVISION_PRODUCT。
 	ListHostOS(ctx context.Context, in *ListHostOSRequest, opts ...grpc.CallOption) (*ListHostOSReply, error)
+	// StartKYC 发起实名认证并返回认证跳转地址/HTML。
+	// 需声明 CAPABILITY_KYC。
+	StartKYC(ctx context.Context, in *StartKYCRequest, opts ...grpc.CallOption) (*StartKYCReply, error)
+	// QueryKYC 查询实名认证结果。
+	// 需声明 CAPABILITY_KYC。
+	QueryKYC(ctx context.Context, in *QueryKYCRequest, opts ...grpc.CallOption) (*QueryKYCReply, error)
 }
 
 type pluginClient struct {
@@ -262,6 +270,26 @@ func (c *pluginClient) ListHostOS(ctx context.Context, in *ListHostOSRequest, op
 	return out, nil
 }
 
+func (c *pluginClient) StartKYC(ctx context.Context, in *StartKYCRequest, opts ...grpc.CallOption) (*StartKYCReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StartKYCReply)
+	err := c.cc.Invoke(ctx, Plugin_StartKYC_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginClient) QueryKYC(ctx context.Context, in *QueryKYCRequest, opts ...grpc.CallOption) (*QueryKYCReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(QueryKYCReply)
+	err := c.cc.Invoke(ctx, Plugin_QueryKYC_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PluginServer is the server API for Plugin service.
 // All implementations must embed UnimplementedPluginServer
 // for forward compatibility.
@@ -319,6 +347,12 @@ type PluginServer interface {
 	// ListHostOS 获取重装系统可选列表。
 	// 需声明 CAPABILITY_PROVISION_PRODUCT。
 	ListHostOS(context.Context, *ListHostOSRequest) (*ListHostOSReply, error)
+	// StartKYC 发起实名认证并返回认证跳转地址/HTML。
+	// 需声明 CAPABILITY_KYC。
+	StartKYC(context.Context, *StartKYCRequest) (*StartKYCReply, error)
+	// QueryKYC 查询实名认证结果。
+	// 需声明 CAPABILITY_KYC。
+	QueryKYC(context.Context, *QueryKYCRequest) (*QueryKYCReply, error)
 	mustEmbedUnimplementedPluginServer()
 }
 
@@ -373,6 +407,12 @@ func (UnimplementedPluginServer) GetHost(context.Context, *GetHostRequest) (*Get
 }
 func (UnimplementedPluginServer) ListHostOS(context.Context, *ListHostOSRequest) (*ListHostOSReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListHostOS not implemented")
+}
+func (UnimplementedPluginServer) StartKYC(context.Context, *StartKYCRequest) (*StartKYCReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartKYC not implemented")
+}
+func (UnimplementedPluginServer) QueryKYC(context.Context, *QueryKYCRequest) (*QueryKYCReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method QueryKYC not implemented")
 }
 func (UnimplementedPluginServer) mustEmbedUnimplementedPluginServer() {}
 func (UnimplementedPluginServer) testEmbeddedByValue()                {}
@@ -665,6 +705,42 @@ func _Plugin_ListHostOS_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Plugin_StartKYC_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartKYCRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServer).StartKYC(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Plugin_StartKYC_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServer).StartKYC(ctx, req.(*StartKYCRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Plugin_QueryKYC_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(QueryKYCRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServer).QueryKYC(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Plugin_QueryKYC_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServer).QueryKYC(ctx, req.(*QueryKYCRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Plugin_ServiceDesc is the grpc.ServiceDesc for Plugin service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -731,6 +807,14 @@ var Plugin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListHostOS",
 			Handler:    _Plugin_ListHostOS_Handler,
+		},
+		{
+			MethodName: "StartKYC",
+			Handler:    _Plugin_StartKYC_Handler,
+		},
+		{
+			MethodName: "QueryKYC",
+			Handler:    _Plugin_QueryKYC_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

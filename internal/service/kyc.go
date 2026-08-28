@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -12,7 +13,9 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/SakuraOpenSource/levis/internal/model"
+	"github.com/SakuraOpenSource/levis/internal/plugin"
 	"github.com/SakuraOpenSource/levis/internal/storage"
+	pb "github.com/SakuraOpenSource/levis/pkg/plugin/proto"
 )
 
 // kycCategory 是证件照在 uploads 下的分类目录名。
@@ -39,13 +42,97 @@ const (
 
 // KYCService 处理实名认证的提交与审核。
 type KYCService struct {
-	db    *gorm.DB
-	store *storage.Store
+	db      *gorm.DB
+	store   *storage.Store
+	plugins *plugin.Manager
 }
 
 // NewKYCService 构造 KYCService。
-func NewKYCService(db *gorm.DB, store *storage.Store) *KYCService {
-	return &KYCService{db: db, store: store}
+func NewKYCService(db *gorm.DB, store *storage.Store, plugins ...*plugin.Manager) *KYCService {
+	var manager *plugin.Manager
+	if len(plugins) > 0 {
+		manager = plugins[0]
+	}
+	return &KYCService{db: db, store: store, plugins: manager}
+}
+
+// StartExternal 发起第三方实名认证。身份证号只在本次 RPC 中使用，插件与
+// 主程序均不把它写进日志；数据库保留现有 KYC 记录是为了查询与反重复认证。
+func (s *KYCService) StartExternal(ctx context.Context, userID uint, name, idNumber string) (*model.Verification, *pb.StartKYCReply, error) {
+	if s.plugins == nil {
+		return nil, nil, ErrUnavailable("未启用实名认证插件")
+	}
+	inst := s.plugins.KYCPlugin()
+	if inst == nil {
+		return nil, nil, ErrUnavailable("没有可用的实名认证插件")
+	}
+	name, err := ValidateRealName(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	idNumber, err = ValidateIDNumber(idNumber)
+	if err != nil {
+		return nil, nil, err
+	}
+	if existing, err := s.find(userID); err != nil {
+		return nil, nil, err
+	} else if existing != nil && existing.Status == model.KYCApproved {
+		return nil, nil, ErrConflict("已通过实名认证，如需变更请联系客服")
+	}
+	reply, err := s.plugins.StartKYC(ctx, inst.ID(), &pb.StartKYCRequest{Name: name, IdCard: idNumber})
+	if err != nil {
+		return nil, nil, ErrUnavailable("发起实名认证失败: %v", err)
+	}
+	if reply.GetCertifyId() == "" {
+		return nil, nil, ErrUnavailable("实名认证插件未返回 certify_id")
+	}
+	now := time.Now().UTC()
+	record := model.Verification{UserID: userID, RealName: name, IDNumber: idNumber, Status: model.KYCPending, SubmittedAt: now, PluginID: inst.ID(), CertifyID: reply.GetCertifyId()}
+	if existing, err := s.find(userID); err == nil && existing != nil {
+		record.ID = existing.ID
+		record.CreatedAt = existing.CreatedAt
+	}
+	if err := s.db.Save(&record).Error; err != nil {
+		return nil, nil, err
+	}
+	return &record, reply, nil
+}
+
+// QueryExternal 查询第三方认证状态并在通过时更新本地 KYC 状态。
+func (s *KYCService) QueryExternal(ctx context.Context, userID uint) (*model.Verification, string, error) {
+	record, err := s.find(userID)
+	if err != nil || record == nil {
+		if err != nil {
+			return nil, "", err
+		}
+		return nil, "", ErrNotFound("尚未发起实名认证")
+	}
+	if record.PluginID == "" || record.CertifyID == "" {
+		return record, "", ErrConflict("当前认证记录不是第三方认证流程")
+	}
+	if s.plugins == nil {
+		return nil, "", ErrUnavailable("实名认证插件不可用")
+	}
+	reply, err := s.plugins.QueryKYC(ctx, record.PluginID, &pb.QueryKYCRequest{CertifyId: record.CertifyID})
+	if err != nil {
+		return nil, "", ErrUnavailable("查询实名认证失败: %v", err)
+	}
+	passed := strings.ToUpper(strings.TrimSpace(reply.GetPassed()))
+	if passed == "T" && record.Status != model.KYCApproved {
+		now := time.Now().UTC()
+		if err := s.db.Model(record).Updates(map[string]any{"status": model.KYCApproved, "reviewed_at": now, "reviewed_by": 0, "reject_reason": ""}).Error; err != nil {
+			return nil, "", err
+		}
+		record.Status = model.KYCApproved
+		record.ReviewedAt = &now
+	} else if passed == "F" && record.Status == model.KYCPending {
+		if err := s.db.Model(record).Updates(map[string]any{"status": model.KYCRejected, "reject_reason": "支付宝实名认证未通过"}).Error; err != nil {
+			return nil, "", err
+		}
+		record.Status = model.KYCRejected
+		record.RejectReason = "支付宝实名认证未通过"
+	}
+	return record, passed, nil
 }
 
 // SubmitRequest 是实名提交入参。

@@ -41,6 +41,9 @@ type Verification struct {
 	ReviewedBy   uint       `json:"reviewed_by"`
 	ReviewedAt   *time.Time `json:"reviewed_at"`
 	SubmittedAt  time.Time  `json:"submitted_at"`
+	// PluginID 与 CertifyID 仅在第三方认证流程中使用。人工上传认证保持为空。
+	PluginID  string `gorm:"size:64" json:"plugin_id,omitempty"`
+	CertifyID string `gorm:"size:128;index" json:"certify_id,omitempty"`
 	// Username 是审核列表展示用的关联字段，不落库。
 	Username string `gorm:"-" json:"username,omitempty"`
 }
