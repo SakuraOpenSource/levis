@@ -44,6 +44,10 @@ type Verification struct {
 	// PluginID 与 CertifyID 仅在第三方认证流程中使用。人工上传认证保持为空。
 	PluginID  string `gorm:"size:64" json:"plugin_id,omitempty"`
 	CertifyID string `gorm:"size:128;index" json:"certify_id,omitempty"`
+	// InputJSON 是第三方认证用户提交的字段（JSON 对象，键为插件声明的
+	// 字段 key）。内容含证件号等敏感信息，绝不走 JSON 序列化下发：用户侧
+	// 接口不返回，管理端详情接口单独解码后附带。
+	InputJSON string `gorm:"type:text" json:"-"`
 	// Username 是审核列表展示用的关联字段，不落库。
 	Username string `gorm:"-" json:"username,omitempty"`
 }

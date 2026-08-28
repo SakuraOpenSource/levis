@@ -159,6 +159,10 @@ message Manifest {
   // 与全局 config 区分：同一支付插件可被多个支付方式复用，每个支付方式
   // 携带一套独立的 payment_config 值，经 CreatePayment 等请求传入。
   repeated ConfigField payment_config = 8;
+  // kyc_fields 是实名认证插件要求用户填写的字段声明。声明了
+  // CAPABILITY_KYC 的插件应至少声明一个字段；主程序据此渲染动态表单，
+  // 并只把这里声明过的键值传给 StartKYC。
+  repeated ConfigField kyc_fields = 9;
 }
 
 message ConfigureRequest {
@@ -433,9 +437,12 @@ message ListHostOSReply {
 }
 
 message StartKYCRequest {
-  string name = 1;
-  string id_card = 2;
-  map<string, string> config = 3;
+  // input 是用户提交的字段，键为 Manifest.kyc_fields 声明的 key。
+  // 主程序只传声明过的键；姓名、证件号等由插件自行从 input 解析，
+  // 契约不再假定所有实名认证流程都要同样的信息。
+  map<string, string> input = 1;
+  // config 是插件配置的临时覆盖，一般留空 —— 正常配置经 Configure 下发。
+  map<string, string> config = 2;
 }
 
 message StartKYCReply {

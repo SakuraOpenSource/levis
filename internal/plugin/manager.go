@@ -595,6 +595,27 @@ func (m *Manager) KYCPlugin() *Instance {
 	return m.find(pb.Capability_CAPABILITY_KYC)
 }
 
+// KYCPlugins 返回全部运行中且声明实名认证能力的插件，供管理端挑选模式。
+func (m *Manager) KYCPlugins() []*Instance {
+	var out []*Instance
+	for _, inst := range m.List() {
+		if inst.Has(pb.Capability_CAPABILITY_KYC) {
+			out = append(out, inst)
+		}
+	}
+	return out
+}
+
+// KYCPluginByID 返回指定 ID 且声明实名认证能力的运行中插件；ID 不存在、
+// 未运行或未声明该能力时返回 nil。
+func (m *Manager) KYCPluginByID(id string) *Instance {
+	inst, err := m.get(id)
+	if err != nil || !inst.Has(pb.Capability_CAPABILITY_KYC) {
+		return nil
+	}
+	return inst
+}
+
 // StartKYC 调用指定实名认证插件发起认证。
 func (m *Manager) StartKYC(ctx context.Context, id string, req *pb.StartKYCRequest) (*pb.StartKYCReply, error) {
 	inst, err := m.get(id)

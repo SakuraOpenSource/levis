@@ -179,6 +179,8 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	admin.DELETE("/payment-methods/:id", h.AdminDeletePaymentMethod)
 	admin.GET("/settings/captcha", h.AdminCaptchaSettings)
 	admin.PUT("/settings/captcha", h.AdminUpdateCaptchaSettings)
+	admin.GET("/settings/kyc", h.AdminKYCSettings)
+	admin.PUT("/settings/kyc", h.AdminUpdateKYCSettings)
 	admin.GET("/tickets", h.AdminTickets)
 	admin.GET("/tickets/:id", h.AdminTicket)
 	admin.POST("/tickets/:id/replies", h.AdminReplyTicket)

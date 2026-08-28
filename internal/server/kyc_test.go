@@ -391,10 +391,18 @@ func TestAdminVerificationDetailShowsFullIDNumber(t *testing.T) {
 
 	rec = doAs(t, handler, http.MethodGet,
 		"/api/admin/verifications/"+itoa(page.Items[0].ID), nil, admin)
-	var detail kycRecord
-	decodeJSON(t, rec, &detail)
+	var detailWrap struct {
+		Record kycRecord         `json:"record"`
+		Input  map[string]string `json:"input"`
+	}
+	decodeJSON(t, rec, &detailWrap)
+	detail := detailWrap.Record
 	if detail.IDNumber != validID1 {
 		t.Errorf("审核详情应给出完整号码，实际 %s", detail.IDNumber)
+	}
+	// 人工上传的记录没有插件提交字段。
+	if len(detailWrap.Input) != 0 {
+		t.Errorf("人工记录不应带 input，实际 %v", detailWrap.Input)
 	}
 
 	// 管理员能看照片。
@@ -449,10 +457,11 @@ func TestAdminReviewRules(t *testing.T) {
 func TestExternalVerificationWithoutPlugin(t *testing.T) {
 	_, handler, _, users := installedWithUsers(t, "alice")
 
+	// 默认人工审核模式：外部认证入口不该被走到。
 	rec := doAs(t, handler, http.MethodPost, "/api/kyc/external",
 		map[string]string{"real_name": "张三", "id_number": validID1}, users["alice"])
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("无插件发起第三方实名称应返回 503，实际 %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("人工审核模式下发起第三方实名称应返回 400，实际 %d %s", rec.Code, rec.Body.String())
 	}
 
 	rec = doAs(t, handler, http.MethodGet, "/api/kyc/external", nil, users["alice"])
@@ -471,5 +480,71 @@ func TestExternalVerificationRequiresAuth(t *testing.T) {
 	}
 	if rec := doAs(t, handler, http.MethodGet, "/api/kyc/external", nil, nil); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("未登录查询第三方实名称应返回 401，实际 %d", rec.Code)
+	}
+}
+
+// 用户端实名状态接口返回当前模式；默认人工审核、无字段。
+func TestKYCModeDefaultManual(t *testing.T) {
+	_, handler, _, users := installedWithUsers(t, "alice")
+
+	rec := doAs(t, handler, http.MethodGet, "/api/kyc", nil, users["alice"])
+	if rec.Code != http.StatusOK {
+		t.Fatalf("读取实名状态失败: %d %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Mode       string `json:"mode"`
+		PluginName string `json:"plugin_name"`
+		Fields     []struct {
+			Key string `json:"key"`
+		} `json:"fields"`
+	}
+	decodeJSON(t, rec, &body)
+	if body.Mode != service.KYCModeManual {
+		t.Errorf("默认模式应为 manual，实际 %q", body.Mode)
+	}
+	if body.PluginName != "" || len(body.Fields) != 0 {
+		t.Errorf("人工审核模式不应带插件信息，实际 %q %v", body.PluginName, body.Fields)
+	}
+}
+
+// 管理端实名模式设置：读取、保存合法值、拒绝未知插件。
+func TestAdminKYCSettings(t *testing.T) {
+	_, handler, adminCookies, _ := installedWithUsers(t, "alice")
+
+	rec := doAs(t, handler, http.MethodGet, "/api/admin/settings/kyc", nil, adminCookies)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("读取实名设置失败: %d %s", rec.Code, rec.Body.String())
+	}
+	var settings struct {
+		Mode    string `json:"mode"`
+		Plugins []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"plugins"`
+	}
+	decodeJSON(t, rec, &settings)
+	if settings.Mode != service.KYCModeManual {
+		t.Errorf("默认模式应为 manual，实际 %q", settings.Mode)
+	}
+	if len(settings.Plugins) != 0 {
+		t.Errorf("无插件时选项应为空，实际 %v", settings.Plugins)
+	}
+
+	rec = doAs(t, handler, http.MethodPut, "/api/admin/settings/kyc",
+		map[string]string{"mode": service.KYCModeManual}, adminCookies)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存人工审核模式应返回 200，实际 %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 未安装的插件 ID 不能成为模式。
+	rec = doAs(t, handler, http.MethodPut, "/api/admin/settings/kyc",
+		map[string]string{"mode": "not-a-plugin"}, adminCookies)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("未知插件模式应返回 400，实际 %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 未登录不可读写。
+	if rec := doAs(t, handler, http.MethodGet, "/api/admin/settings/kyc", nil, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("未登录读取实名设置应返回 401，实际 %d", rec.Code)
 	}
 }

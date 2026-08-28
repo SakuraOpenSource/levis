@@ -495,6 +495,10 @@ type Manifest struct {
 	// 与全局 config 区分：同一支付插件可被多个支付方式复用，每个支付方式
 	// 携带一套独立的 payment_config 值，经 CreatePayment 等请求传入。
 	PaymentConfig []*ConfigField `protobuf:"bytes,8,rep,name=payment_config,json=paymentConfig,proto3" json:"payment_config,omitempty"`
+	// kyc_fields 是实名认证插件要求用户填写的字段声明。声明了
+	// CAPABILITY_KYC 的插件应至少声明一个字段；主程序据此渲染动态表单，
+	// 并只把这里声明过的键值传给 StartKYC。
+	KycFields     []*ConfigField `protobuf:"bytes,9,rep,name=kyc_fields,json=kycFields,proto3" json:"kyc_fields,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -581,6 +585,13 @@ func (x *Manifest) GetRequiredScopes() []string {
 func (x *Manifest) GetPaymentConfig() []*ConfigField {
 	if x != nil {
 		return x.PaymentConfig
+	}
+	return nil
+}
+
+func (x *Manifest) GetKycFields() []*ConfigField {
+	if x != nil {
+		return x.KycFields
 	}
 	return nil
 }
@@ -2538,10 +2549,13 @@ func (x *ListHostOSReply) GetError() string {
 }
 
 type StartKYCRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	IdCard        string                 `protobuf:"bytes,2,opt,name=id_card,json=idCard,proto3" json:"id_card,omitempty"`
-	Config        map[string]string      `protobuf:"bytes,3,rep,name=config,proto3" json:"config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// input 是用户提交的字段，键为 Manifest.kyc_fields 声明的 key。
+	// 主程序只传声明过的键；姓名、证件号等由插件自行从 input 解析，
+	// 契约不再假定所有实名认证流程都要同样的信息。
+	Input map[string]string `protobuf:"bytes,1,rep,name=input,proto3" json:"input,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// config 是插件配置的临时覆盖，一般留空 —— 正常配置经 Configure 下发。
+	Config        map[string]string `protobuf:"bytes,2,rep,name=config,proto3" json:"config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2576,18 +2590,11 @@ func (*StartKYCRequest) Descriptor() ([]byte, []int) {
 	return file_plugin_proto_rawDescGZIP(), []int{36}
 }
 
-func (x *StartKYCRequest) GetName() string {
+func (x *StartKYCRequest) GetInput() map[string]string {
 	if x != nil {
-		return x.Name
+		return x.Input
 	}
-	return ""
-}
-
-func (x *StartKYCRequest) GetIdCard() string {
-	if x != nil {
-		return x.IdCard
-	}
-	return ""
+	return nil
 }
 
 func (x *StartKYCRequest) GetConfig() map[string]string {
@@ -2803,7 +2810,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\fSelectOption\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\tR\x05value\x12\x14\n" +
 	"\x05label\x18\x02 \x01(\tR\x05label\"\x11\n" +
-	"\x0fDescribeRequest\"\xd7\x02\n" +
+	"\x0fDescribeRequest\"\x94\x03\n" +
 	"\bManifest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12 \n" +
@@ -2812,7 +2819,9 @@ const file_plugin_proto_rawDesc = "" +
 	"\fcapabilities\x18\x05 \x03(\x0e2\x1b.levis.plugin.v1.CapabilityR\fcapabilities\x124\n" +
 	"\x06config\x18\x06 \x03(\v2\x1c.levis.plugin.v1.ConfigFieldR\x06config\x12'\n" +
 	"\x0frequired_scopes\x18\a \x03(\tR\x0erequiredScopes\x12C\n" +
-	"\x0epayment_config\x18\b \x03(\v2\x1c.levis.plugin.v1.ConfigFieldR\rpaymentConfig\"\x94\x01\n" +
+	"\x0epayment_config\x18\b \x03(\v2\x1c.levis.plugin.v1.ConfigFieldR\rpaymentConfig\x12;\n" +
+	"\n" +
+	"kyc_fields\x18\t \x03(\v2\x1c.levis.plugin.v1.ConfigFieldR\tkycFields\"\x94\x01\n" +
 	"\x10ConfigureRequest\x12E\n" +
 	"\x06values\x18\x01 \x03(\v2-.levis.plugin.v1.ConfigureRequest.ValuesEntryR\x06values\x1a9\n" +
 	"\vValuesEntry\x12\x10\n" +
@@ -2971,11 +2980,14 @@ const file_plugin_proto_rawDesc = "" +
 	"\ahost_id\x18\x01 \x01(\tR\x06hostId\"Q\n" +
 	"\x0fListHostOSReply\x12(\n" +
 	"\x02os\x18\x01 \x03(\v2\x18.levis.plugin.v1.OSImageR\x02os\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"\xbf\x01\n" +
-	"\x0fStartKYCRequest\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12\x17\n" +
-	"\aid_card\x18\x02 \x01(\tR\x06idCard\x12D\n" +
-	"\x06config\x18\x03 \x03(\v2,.levis.plugin.v1.StartKYCRequest.ConfigEntryR\x06config\x1a9\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"\x8f\x02\n" +
+	"\x0fStartKYCRequest\x12A\n" +
+	"\x05input\x18\x01 \x03(\v2+.levis.plugin.v1.StartKYCRequest.InputEntryR\x05input\x12D\n" +
+	"\x06config\x18\x02 \x03(\v2,.levis.plugin.v1.StartKYCRequest.ConfigEntryR\x06config\x1a8\n" +
+	"\n" +
+	"InputEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a9\n" +
 	"\vConfigEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8c\x01\n" +
@@ -3064,7 +3076,7 @@ func file_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
+var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
 var file_plugin_proto_goTypes = []any{
 	(Capability)(0),                      // 0: levis.plugin.v1.Capability
 	(FieldType)(0),                       // 1: levis.plugin.v1.FieldType
@@ -3116,8 +3128,9 @@ var file_plugin_proto_goTypes = []any{
 	nil,                                  // 47: levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntry
 	nil,                                  // 48: levis.plugin.v1.VerifyPaymentCallbackRequest.ConfigEntry
 	nil,                                  // 49: levis.plugin.v1.UpstreamProduct.SpecsEntry
-	nil,                                  // 50: levis.plugin.v1.StartKYCRequest.ConfigEntry
-	nil,                                  // 51: levis.plugin.v1.QueryKYCRequest.ConfigEntry
+	nil,                                  // 50: levis.plugin.v1.StartKYCRequest.InputEntry
+	nil,                                  // 51: levis.plugin.v1.StartKYCRequest.ConfigEntry
+	nil,                                  // 52: levis.plugin.v1.QueryKYCRequest.ConfigEntry
 }
 var file_plugin_proto_depIdxs = []int32{
 	1,  // 0: levis.plugin.v1.ConfigField.type:type_name -> levis.plugin.v1.FieldType
@@ -3125,61 +3138,63 @@ var file_plugin_proto_depIdxs = []int32{
 	0,  // 2: levis.plugin.v1.Manifest.capabilities:type_name -> levis.plugin.v1.Capability
 	4,  // 3: levis.plugin.v1.Manifest.config:type_name -> levis.plugin.v1.ConfigField
 	4,  // 4: levis.plugin.v1.Manifest.payment_config:type_name -> levis.plugin.v1.ConfigField
-	44, // 5: levis.plugin.v1.ConfigureRequest.values:type_name -> levis.plugin.v1.ConfigureRequest.ValuesEntry
-	14, // 6: levis.plugin.v1.SendMailRequest.to:type_name -> levis.plugin.v1.Mailbox
-	45, // 7: levis.plugin.v1.CreatePaymentRequest.config:type_name -> levis.plugin.v1.CreatePaymentRequest.ConfigEntry
-	46, // 8: levis.plugin.v1.QueryPaymentRequest.config:type_name -> levis.plugin.v1.QueryPaymentRequest.ConfigEntry
-	2,  // 9: levis.plugin.v1.QueryPaymentReply.state:type_name -> levis.plugin.v1.PaymentState
-	47, // 10: levis.plugin.v1.VerifyPaymentCallbackRequest.raw:type_name -> levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntry
-	48, // 11: levis.plugin.v1.VerifyPaymentCallbackRequest.config:type_name -> levis.plugin.v1.VerifyPaymentCallbackRequest.ConfigEntry
-	2,  // 12: levis.plugin.v1.VerifyPaymentCallbackReply.state:type_name -> levis.plugin.v1.PaymentState
-	49, // 13: levis.plugin.v1.UpstreamProduct.specs:type_name -> levis.plugin.v1.UpstreamProduct.SpecsEntry
-	24, // 14: levis.plugin.v1.ListProductsReply.products:type_name -> levis.plugin.v1.UpstreamProduct
-	24, // 15: levis.plugin.v1.GetProductReply.product:type_name -> levis.plugin.v1.UpstreamProduct
-	3,  // 16: levis.plugin.v1.ManageHostRequest.action:type_name -> levis.plugin.v1.HostAction
-	35, // 17: levis.plugin.v1.GetHostReply.host:type_name -> levis.plugin.v1.UpstreamHost
-	37, // 18: levis.plugin.v1.ListHostOSReply.os:type_name -> levis.plugin.v1.OSImage
-	50, // 19: levis.plugin.v1.StartKYCRequest.config:type_name -> levis.plugin.v1.StartKYCRequest.ConfigEntry
-	51, // 20: levis.plugin.v1.QueryKYCRequest.config:type_name -> levis.plugin.v1.QueryKYCRequest.ConfigEntry
-	6,  // 21: levis.plugin.v1.Plugin.Describe:input_type -> levis.plugin.v1.DescribeRequest
-	8,  // 22: levis.plugin.v1.Plugin.Configure:input_type -> levis.plugin.v1.ConfigureRequest
-	10, // 23: levis.plugin.v1.Plugin.Health:input_type -> levis.plugin.v1.HealthRequest
-	12, // 24: levis.plugin.v1.Plugin.Shutdown:input_type -> levis.plugin.v1.ShutdownRequest
-	15, // 25: levis.plugin.v1.Plugin.SendMail:input_type -> levis.plugin.v1.SendMailRequest
-	17, // 26: levis.plugin.v1.Plugin.CreatePayment:input_type -> levis.plugin.v1.CreatePaymentRequest
-	19, // 27: levis.plugin.v1.Plugin.QueryPayment:input_type -> levis.plugin.v1.QueryPaymentRequest
-	21, // 28: levis.plugin.v1.Plugin.VerifyPaymentCallback:input_type -> levis.plugin.v1.VerifyPaymentCallbackRequest
-	23, // 29: levis.plugin.v1.Plugin.ListProducts:input_type -> levis.plugin.v1.ListProductsRequest
-	26, // 30: levis.plugin.v1.Plugin.GetProduct:input_type -> levis.plugin.v1.GetProductRequest
-	28, // 31: levis.plugin.v1.Plugin.CreateOrder:input_type -> levis.plugin.v1.CreateOrderRequest
-	30, // 32: levis.plugin.v1.Plugin.GetOrder:input_type -> levis.plugin.v1.GetOrderRequest
-	32, // 33: levis.plugin.v1.Plugin.ManageHost:input_type -> levis.plugin.v1.ManageHostRequest
-	34, // 34: levis.plugin.v1.Plugin.GetHost:input_type -> levis.plugin.v1.GetHostRequest
-	38, // 35: levis.plugin.v1.Plugin.ListHostOS:input_type -> levis.plugin.v1.ListHostOSRequest
-	40, // 36: levis.plugin.v1.Plugin.StartKYC:input_type -> levis.plugin.v1.StartKYCRequest
-	42, // 37: levis.plugin.v1.Plugin.QueryKYC:input_type -> levis.plugin.v1.QueryKYCRequest
-	7,  // 38: levis.plugin.v1.Plugin.Describe:output_type -> levis.plugin.v1.Manifest
-	9,  // 39: levis.plugin.v1.Plugin.Configure:output_type -> levis.plugin.v1.ConfigureReply
-	11, // 40: levis.plugin.v1.Plugin.Health:output_type -> levis.plugin.v1.HealthReply
-	13, // 41: levis.plugin.v1.Plugin.Shutdown:output_type -> levis.plugin.v1.ShutdownReply
-	16, // 42: levis.plugin.v1.Plugin.SendMail:output_type -> levis.plugin.v1.SendMailReply
-	18, // 43: levis.plugin.v1.Plugin.CreatePayment:output_type -> levis.plugin.v1.CreatePaymentReply
-	20, // 44: levis.plugin.v1.Plugin.QueryPayment:output_type -> levis.plugin.v1.QueryPaymentReply
-	22, // 45: levis.plugin.v1.Plugin.VerifyPaymentCallback:output_type -> levis.plugin.v1.VerifyPaymentCallbackReply
-	25, // 46: levis.plugin.v1.Plugin.ListProducts:output_type -> levis.plugin.v1.ListProductsReply
-	27, // 47: levis.plugin.v1.Plugin.GetProduct:output_type -> levis.plugin.v1.GetProductReply
-	29, // 48: levis.plugin.v1.Plugin.CreateOrder:output_type -> levis.plugin.v1.CreateOrderReply
-	31, // 49: levis.plugin.v1.Plugin.GetOrder:output_type -> levis.plugin.v1.GetOrderReply
-	33, // 50: levis.plugin.v1.Plugin.ManageHost:output_type -> levis.plugin.v1.ManageHostReply
-	36, // 51: levis.plugin.v1.Plugin.GetHost:output_type -> levis.plugin.v1.GetHostReply
-	39, // 52: levis.plugin.v1.Plugin.ListHostOS:output_type -> levis.plugin.v1.ListHostOSReply
-	41, // 53: levis.plugin.v1.Plugin.StartKYC:output_type -> levis.plugin.v1.StartKYCReply
-	43, // 54: levis.plugin.v1.Plugin.QueryKYC:output_type -> levis.plugin.v1.QueryKYCReply
-	38, // [38:55] is the sub-list for method output_type
-	21, // [21:38] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	4,  // 5: levis.plugin.v1.Manifest.kyc_fields:type_name -> levis.plugin.v1.ConfigField
+	44, // 6: levis.plugin.v1.ConfigureRequest.values:type_name -> levis.plugin.v1.ConfigureRequest.ValuesEntry
+	14, // 7: levis.plugin.v1.SendMailRequest.to:type_name -> levis.plugin.v1.Mailbox
+	45, // 8: levis.plugin.v1.CreatePaymentRequest.config:type_name -> levis.plugin.v1.CreatePaymentRequest.ConfigEntry
+	46, // 9: levis.plugin.v1.QueryPaymentRequest.config:type_name -> levis.plugin.v1.QueryPaymentRequest.ConfigEntry
+	2,  // 10: levis.plugin.v1.QueryPaymentReply.state:type_name -> levis.plugin.v1.PaymentState
+	47, // 11: levis.plugin.v1.VerifyPaymentCallbackRequest.raw:type_name -> levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntry
+	48, // 12: levis.plugin.v1.VerifyPaymentCallbackRequest.config:type_name -> levis.plugin.v1.VerifyPaymentCallbackRequest.ConfigEntry
+	2,  // 13: levis.plugin.v1.VerifyPaymentCallbackReply.state:type_name -> levis.plugin.v1.PaymentState
+	49, // 14: levis.plugin.v1.UpstreamProduct.specs:type_name -> levis.plugin.v1.UpstreamProduct.SpecsEntry
+	24, // 15: levis.plugin.v1.ListProductsReply.products:type_name -> levis.plugin.v1.UpstreamProduct
+	24, // 16: levis.plugin.v1.GetProductReply.product:type_name -> levis.plugin.v1.UpstreamProduct
+	3,  // 17: levis.plugin.v1.ManageHostRequest.action:type_name -> levis.plugin.v1.HostAction
+	35, // 18: levis.plugin.v1.GetHostReply.host:type_name -> levis.plugin.v1.UpstreamHost
+	37, // 19: levis.plugin.v1.ListHostOSReply.os:type_name -> levis.plugin.v1.OSImage
+	50, // 20: levis.plugin.v1.StartKYCRequest.input:type_name -> levis.plugin.v1.StartKYCRequest.InputEntry
+	51, // 21: levis.plugin.v1.StartKYCRequest.config:type_name -> levis.plugin.v1.StartKYCRequest.ConfigEntry
+	52, // 22: levis.plugin.v1.QueryKYCRequest.config:type_name -> levis.plugin.v1.QueryKYCRequest.ConfigEntry
+	6,  // 23: levis.plugin.v1.Plugin.Describe:input_type -> levis.plugin.v1.DescribeRequest
+	8,  // 24: levis.plugin.v1.Plugin.Configure:input_type -> levis.plugin.v1.ConfigureRequest
+	10, // 25: levis.plugin.v1.Plugin.Health:input_type -> levis.plugin.v1.HealthRequest
+	12, // 26: levis.plugin.v1.Plugin.Shutdown:input_type -> levis.plugin.v1.ShutdownRequest
+	15, // 27: levis.plugin.v1.Plugin.SendMail:input_type -> levis.plugin.v1.SendMailRequest
+	17, // 28: levis.plugin.v1.Plugin.CreatePayment:input_type -> levis.plugin.v1.CreatePaymentRequest
+	19, // 29: levis.plugin.v1.Plugin.QueryPayment:input_type -> levis.plugin.v1.QueryPaymentRequest
+	21, // 30: levis.plugin.v1.Plugin.VerifyPaymentCallback:input_type -> levis.plugin.v1.VerifyPaymentCallbackRequest
+	23, // 31: levis.plugin.v1.Plugin.ListProducts:input_type -> levis.plugin.v1.ListProductsRequest
+	26, // 32: levis.plugin.v1.Plugin.GetProduct:input_type -> levis.plugin.v1.GetProductRequest
+	28, // 33: levis.plugin.v1.Plugin.CreateOrder:input_type -> levis.plugin.v1.CreateOrderRequest
+	30, // 34: levis.plugin.v1.Plugin.GetOrder:input_type -> levis.plugin.v1.GetOrderRequest
+	32, // 35: levis.plugin.v1.Plugin.ManageHost:input_type -> levis.plugin.v1.ManageHostRequest
+	34, // 36: levis.plugin.v1.Plugin.GetHost:input_type -> levis.plugin.v1.GetHostRequest
+	38, // 37: levis.plugin.v1.Plugin.ListHostOS:input_type -> levis.plugin.v1.ListHostOSRequest
+	40, // 38: levis.plugin.v1.Plugin.StartKYC:input_type -> levis.plugin.v1.StartKYCRequest
+	42, // 39: levis.plugin.v1.Plugin.QueryKYC:input_type -> levis.plugin.v1.QueryKYCRequest
+	7,  // 40: levis.plugin.v1.Plugin.Describe:output_type -> levis.plugin.v1.Manifest
+	9,  // 41: levis.plugin.v1.Plugin.Configure:output_type -> levis.plugin.v1.ConfigureReply
+	11, // 42: levis.plugin.v1.Plugin.Health:output_type -> levis.plugin.v1.HealthReply
+	13, // 43: levis.plugin.v1.Plugin.Shutdown:output_type -> levis.plugin.v1.ShutdownReply
+	16, // 44: levis.plugin.v1.Plugin.SendMail:output_type -> levis.plugin.v1.SendMailReply
+	18, // 45: levis.plugin.v1.Plugin.CreatePayment:output_type -> levis.plugin.v1.CreatePaymentReply
+	20, // 46: levis.plugin.v1.Plugin.QueryPayment:output_type -> levis.plugin.v1.QueryPaymentReply
+	22, // 47: levis.plugin.v1.Plugin.VerifyPaymentCallback:output_type -> levis.plugin.v1.VerifyPaymentCallbackReply
+	25, // 48: levis.plugin.v1.Plugin.ListProducts:output_type -> levis.plugin.v1.ListProductsReply
+	27, // 49: levis.plugin.v1.Plugin.GetProduct:output_type -> levis.plugin.v1.GetProductReply
+	29, // 50: levis.plugin.v1.Plugin.CreateOrder:output_type -> levis.plugin.v1.CreateOrderReply
+	31, // 51: levis.plugin.v1.Plugin.GetOrder:output_type -> levis.plugin.v1.GetOrderReply
+	33, // 52: levis.plugin.v1.Plugin.ManageHost:output_type -> levis.plugin.v1.ManageHostReply
+	36, // 53: levis.plugin.v1.Plugin.GetHost:output_type -> levis.plugin.v1.GetHostReply
+	39, // 54: levis.plugin.v1.Plugin.ListHostOS:output_type -> levis.plugin.v1.ListHostOSReply
+	41, // 55: levis.plugin.v1.Plugin.StartKYC:output_type -> levis.plugin.v1.StartKYCReply
+	43, // 56: levis.plugin.v1.Plugin.QueryKYC:output_type -> levis.plugin.v1.QueryKYCReply
+	40, // [40:57] is the sub-list for method output_type
+	23, // [23:40] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_plugin_proto_init() }
@@ -3193,7 +3208,7 @@ func file_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_plugin_proto_rawDesc), len(file_plugin_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   48,
+			NumMessages:   49,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -90,6 +90,9 @@ const (
 	SettingCaptchaRegister = "captcha_register"
 	SettingCaptchaCharset  = "captcha_charset"
 	SettingCaptchaLength   = "captcha_length"
+
+	// SettingKYCMode 是实名认证模式：值为 "manual" 或实名认证插件 ID。
+	SettingKYCMode = "kyc_mode"
 )
 
 // User 是系统用户。普通用户与管理员共用此表，由 Role 区分。

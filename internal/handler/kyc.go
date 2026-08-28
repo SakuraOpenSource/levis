@@ -1,17 +1,52 @@
 package handler
 
 import (
+	"encoding/json"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 
 	"github.com/SakuraOpenSource/levis/internal/httpx"
 	"github.com/SakuraOpenSource/levis/internal/model"
+	"github.com/SakuraOpenSource/levis/internal/plugin"
 	"github.com/SakuraOpenSource/levis/internal/service"
 )
 
-// Verification 返回当前用户的实名认证状态；未提交过时 record 为 null。
+// Verification 返回当前用户的实名认证状态与站点采用的认证模式。
+// mode 为 manual 时前端渲染证件照上传表单；为插件 ID 时用 fields 渲染
+// 该插件声明的动态表单。配置的插件不可用时回落人工审核，避免死胡同。
 func (h *Handler) Verification(c *gin.Context) {
 	record, err := h.kyc().Mine(httpx.CurrentUserID(c))
-	respond(c, gin.H{"record": record}, err)
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	mode, pluginName, fields := h.kycMode()
+	respond(c, gin.H{
+		"record":      record,
+		"mode":        mode,
+		"plugin_name": pluginName,
+		"fields":      fields,
+	}, nil)
+}
+
+// kycMode 返回当前实名认证模式与对应插件的字段声明。
+// 返回的 mode 是实际生效的模式：配置的插件不可用时回落 manual。
+func (h *Handler) kycMode() (mode, pluginName string, fields []service.KYCFieldSchema) {
+	mode = h.settings().KYCMode()
+	var inst *plugin.Instance
+	if h.plugins != nil && mode != service.KYCModeManual {
+		inst = h.plugins.KYCPluginByID(mode)
+	}
+	if inst == nil {
+		return service.KYCModeManual, "", nil
+	}
+	schemas := service.KYCFieldSchemas(inst.Manifest().GetKycFields())
+	if len(schemas) == 0 {
+		// 声明了 KYC 却不告诉用户填什么，同样回落人工审核。
+		return service.KYCModeManual, "", nil
+	}
+	return mode, inst.Snapshot().Name, schemas
 }
 
 // SubmitVerification 提交实名认证。请求体为 multipart：
@@ -41,19 +76,19 @@ func (h *Handler) SubmitVerification(c *gin.Context) {
 }
 
 // StartExternalVerificationRequest 是发起第三方实名认证的入参。
+// values 的键由实名认证插件的字段声明决定，主程序不做结构假设。
 type StartExternalVerificationRequest struct {
-	RealName string `json:"real_name"`
-	IDNumber string `json:"id_number"`
+	Values map[string]string `json:"values"`
 }
 
-// StartExternalVerification 发起第三方实名认证（如支付宝认证）。
+// StartExternalVerification 通过实名认证插件发起第三方认证。
 // 返回认证单号与跳转地址/HTML，由前端引导用户完成认证。
 func (h *Handler) StartExternalVerification(c *gin.Context) {
 	var req StartExternalVerificationRequest
 	if !bindJSON(c, &req) {
 		return
 	}
-	record, reply, err := h.kyc().StartExternal(c.Request.Context(), httpx.CurrentUserID(c), req.RealName, req.IDNumber)
+	record, reply, err := h.kyc().StartExternal(c.Request.Context(), httpx.CurrentUserID(c), req.Values)
 	if err != nil {
 		respond(c, nil, err)
 		return
@@ -104,13 +139,31 @@ func (h *Handler) AdminVerifications(c *gin.Context) {
 }
 
 // AdminVerification 返回实名记录详情，身份证号完整 —— 审核必须拿它与照片比对。
+// 插件模式的记录额外返回 input（用户提交的字段键值），供审核比对。
 func (h *Handler) AdminVerification(c *gin.Context) {
 	id, ok := IDParam(c, "id")
 	if !ok {
 		return
 	}
 	record, err := h.kyc().Get(id)
-	respond(c, record, err)
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	respond(c, gin.H{"record": record, "input": decodeKYCInput(record.InputJSON)}, nil)
+}
+
+// decodeKYCInput 解析第三方认证记录的用户输入；空值或坏 JSON 返回 nil，
+// 管理端按 nil 渲染「无提交字段」。
+func decodeKYCInput(raw string) map[string]string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var input map[string]string
+	if err := json.Unmarshal([]byte(raw), &input); err != nil {
+		return nil
+	}
+	return input
 }
 
 // AdminVerificationPhoto 下发指定记录的证件照，供管理员审核。
@@ -160,4 +213,53 @@ func (h *Handler) reviewVerification(c *gin.Context, approved bool, reason strin
 	// 审核结果通知用户。审核已经落库，发信失败只进日志。
 	h.notify.KYCReviewed(record.UserID, approved, record.RejectReason)
 	OK(c, record)
+}
+
+// AdminKYCSettings 返回实名认证模式设置与可用的实名认证插件选项。
+func (h *Handler) AdminKYCSettings(c *gin.Context) {
+	type kycPluginOption struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	options := []kycPluginOption{}
+	if h.plugins != nil {
+		for _, inst := range h.plugins.KYCPlugins() {
+			options = append(options, kycPluginOption{ID: inst.ID(), Name: inst.Snapshot().Name})
+		}
+	}
+	OK(c, gin.H{"mode": h.settings().KYCMode(), "plugins": options})
+}
+
+// AdminUpdateKYCSettingsRequest 是保存实名认证模式的入参。
+type AdminUpdateKYCSettingsRequest struct {
+	Mode string `json:"mode"`
+}
+
+// AdminUpdateKYCSettings 保存实名认证模式：manual 或当前可用的实名插件 ID。
+func (h *Handler) AdminUpdateKYCSettings(c *gin.Context) {
+	var req AdminUpdateKYCSettingsRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	mode := strings.TrimSpace(req.Mode)
+	if mode != service.KYCModeManual {
+		available := false
+		if h.plugins != nil {
+			for _, inst := range h.plugins.KYCPlugins() {
+				if inst.ID() == mode {
+					available = true
+					break
+				}
+			}
+		}
+		if !available {
+			Fail(c, 400, "BAD_REQUEST", "实名认证模式只能是人工审核或当前可用的实名插件")
+			return
+		}
+	}
+	if err := h.settings().SaveKYCMode(mode); err != nil {
+		respond(c, nil, err)
+		return
+	}
+	OK(c, gin.H{"mode": mode})
 }

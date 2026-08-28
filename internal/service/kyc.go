@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -56,38 +58,147 @@ func NewKYCService(db *gorm.DB, store *storage.Store, plugins ...*plugin.Manager
 	return &KYCService{db: db, store: store, plugins: manager}
 }
 
-// StartExternal 发起第三方实名认证。身份证号只在本次 RPC 中使用，插件与
-// 主程序均不把它写进日志；数据库保留现有 KYC 记录是为了查询与反重复认证。
-func (s *KYCService) StartExternal(ctx context.Context, userID uint, name, idNumber string) (*model.Verification, *pb.StartKYCReply, error) {
+// KYCFieldSchema 是实名认证插件要求用户提交的字段定义，发给前端渲染动态表单。
+type KYCFieldSchema struct {
+	Key      string         `json:"key"`
+	Label    string         `json:"label"`
+	Type     string         `json:"type"`
+	Required bool           `json:"required"`
+	Secret   bool           `json:"secret"`
+	Hint     string         `json:"hint,omitempty"`
+	Options  []SelectOption `json:"options,omitempty"`
+}
+
+// KYCFieldSchemas 把插件 manifest 声明的字段转换为前端友好的结构。
+// 插件没声明字段时返回空切片：没有字段可填的实名认证没有意义，调用方
+// 应当据此回落人工审核。
+func KYCFieldSchemas(fields []*pb.ConfigField) []KYCFieldSchema {
+	out := make([]KYCFieldSchema, 0, len(fields))
+	for _, f := range fields {
+		if f.GetKey() == "" {
+			continue
+		}
+		item := KYCFieldSchema{
+			Key:      f.GetKey(),
+			Label:    f.GetLabel(),
+			Type:     fieldTypeName(f.GetType()),
+			Required: f.GetRequired(),
+			Secret:   f.GetSecret(),
+			Hint:     f.GetHint(),
+		}
+		for _, o := range f.GetOptions() {
+			item.Options = append(item.Options, SelectOption{Value: o.GetValue(), Label: o.GetLabel()})
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// maxKYCInputLen 限制单个字段值的长度：身份证号、姓名这类字段远用不了
+// 这么长，给足余量只为挡住把数据库当日志写的请求。
+const maxKYCInputLen = 256
+
+// validateKYCInput 按插件声明的字段校验用户输入，只保留声明过的键。
+//
+// 未知键一律丢弃而不是透传：插件声明的字段就是它要看的全部，多余键值
+// 不该借实名通道进插件。required 缺失、数字字段非法、select 越界都算
+// 请求错误，由插件定义的 label 直接提示用户。
+func validateKYCInput(fields []*pb.ConfigField, values map[string]string) (map[string]string, error) {
+	input := make(map[string]string, len(values))
+	for _, f := range fields {
+		key := f.GetKey()
+		if key == "" {
+			continue
+		}
+		value := strings.TrimSpace(values[key])
+		if value == "" {
+			if f.GetRequired() {
+				return nil, ErrBadRequest("请填写%s", fieldLabel(f))
+			}
+			continue
+		}
+		if utf8.RuneCountInString(value) > maxKYCInputLen {
+			return nil, ErrBadRequest("%s长度不能超过 %d 个字符", fieldLabel(f), maxKYCInputLen)
+		}
+		switch f.GetType() {
+		case pb.FieldType_FIELD_TYPE_NUMBER:
+			if _, err := strconv.ParseFloat(value, 64); err != nil {
+				return nil, ErrBadRequest("%s必须是数字", fieldLabel(f))
+			}
+		case pb.FieldType_FIELD_TYPE_SELECT:
+			matched := false
+			for _, o := range f.GetOptions() {
+				if o.GetValue() == value {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return nil, ErrBadRequest("%s的取值不在可选范围内", fieldLabel(f))
+			}
+		}
+		input[key] = value
+	}
+	if len(input) == 0 {
+		return nil, ErrBadRequest("没有可提交的认证信息")
+	}
+	return input, nil
+}
+
+// fieldLabel 返回字段展示名，空 label 退化为 key，保证提示可读。
+func fieldLabel(f *pb.ConfigField) string {
+	if label := strings.TrimSpace(f.GetLabel()); label != "" {
+		return label
+	}
+	return f.GetKey()
+}
+
+// StartExternal 通过站点设置指定的实名认证插件发起第三方认证。
+//
+// 用户提交什么由插件决定：manifest 的 kyc_fields 声明字段，主程序只做
+// 必填、类型与长度校验，不假定所有认证都要姓名加身份证号。input 原样
+// 存进 InputJSON 供管理端审核查看；插件与主程序都不把它写进日志。
+func (s *KYCService) StartExternal(ctx context.Context, userID uint, values map[string]string) (*model.Verification, *pb.StartKYCReply, error) {
+	mode := NewSettingService(s.db).KYCMode()
+	if mode == KYCModeManual {
+		return nil, nil, ErrBadRequest("当前实名认证为人工审核模式，请上传证件照")
+	}
 	if s.plugins == nil {
-		return nil, nil, ErrUnavailable("未启用实名认证插件")
+		return nil, nil, ErrUnavailable("实名认证插件不可用")
 	}
-	inst := s.plugins.KYCPlugin()
+	inst := s.plugins.KYCPluginByID(mode)
 	if inst == nil {
-		return nil, nil, ErrUnavailable("没有可用的实名认证插件")
-	}
-	name, err := ValidateRealName(name)
-	if err != nil {
-		return nil, nil, err
-	}
-	idNumber, err = ValidateIDNumber(idNumber)
-	if err != nil {
-		return nil, nil, err
+		return nil, nil, ErrUnavailable("实名认证插件不可用，请联系管理员调整站点设置")
 	}
 	if existing, err := s.find(userID); err != nil {
 		return nil, nil, err
 	} else if existing != nil && existing.Status == model.KYCApproved {
 		return nil, nil, ErrConflict("已通过实名认证，如需变更请联系客服")
 	}
-	reply, err := s.plugins.StartKYC(ctx, inst.ID(), &pb.StartKYCRequest{Name: name, IdCard: idNumber})
+	input, err := validateKYCInput(inst.Manifest().GetKycFields(), values)
+	if err != nil {
+		return nil, nil, err
+	}
+	reply, err := s.plugins.StartKYC(ctx, inst.ID(), &pb.StartKYCRequest{Input: input})
 	if err != nil {
 		return nil, nil, ErrUnavailable("发起实名认证失败: %v", err)
 	}
 	if reply.GetCertifyId() == "" {
 		return nil, nil, ErrUnavailable("实名认证插件未返回 certify_id")
 	}
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return nil, nil, err
+	}
 	now := time.Now().UTC()
-	record := model.Verification{UserID: userID, RealName: name, IDNumber: idNumber, Status: model.KYCPending, SubmittedAt: now, PluginID: inst.ID(), CertifyID: reply.GetCertifyId()}
+	record := model.Verification{
+		UserID:      userID,
+		Status:      model.KYCPending,
+		SubmittedAt: now,
+		PluginID:    inst.ID(),
+		CertifyID:   reply.GetCertifyId(),
+		InputJSON:   string(inputJSON),
+	}
 	if existing, err := s.find(userID); err == nil && existing != nil {
 		record.ID = existing.ID
 		record.CreatedAt = existing.CreatedAt
@@ -126,11 +237,18 @@ func (s *KYCService) QueryExternal(ctx context.Context, userID uint) (*model.Ver
 		record.Status = model.KYCApproved
 		record.ReviewedAt = &now
 	} else if passed == "F" && record.Status == model.KYCPending {
-		if err := s.db.Model(record).Updates(map[string]any{"status": model.KYCRejected, "reject_reason": "支付宝实名认证未通过"}).Error; err != nil {
+		reason := strings.TrimSpace(reply.GetMessage())
+		if reason == "" {
+			reason = "实名认证未通过"
+		}
+		if utf8.RuneCountInString(reason) > 255 {
+			reason = string([]rune(reason)[:255])
+		}
+		if err := s.db.Model(record).Updates(map[string]any{"status": model.KYCRejected, "reject_reason": reason}).Error; err != nil {
 			return nil, "", err
 		}
 		record.Status = model.KYCRejected
-		record.RejectReason = "支付宝实名认证未通过"
+		record.RejectReason = reason
 	}
 	return record, passed, nil
 }

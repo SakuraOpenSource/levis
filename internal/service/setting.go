@@ -108,6 +108,32 @@ func (s *SettingService) SaveCaptcha(in CaptchaConfig) (CaptchaConfig, error) {
 	return in, nil
 }
 
+// KYCModeManual 是实名认证的人工审核模式：用户上传证件照，管理员比对。
+const KYCModeManual = "manual"
+
+// KYCMode 读取实名认证模式：manual 或实名认证插件 ID。
+// 未配置或存了空值时回落人工审核 —— 模式缺失不该挡住实名流程。
+func (s *SettingService) KYCMode() string {
+	var row model.Setting
+	if err := s.db.First(&row, "key = ?", model.SettingKYCMode).Error; err != nil {
+		return KYCModeManual
+	}
+	if value := strings.TrimSpace(row.Value); value != "" {
+		return value
+	}
+	return KYCModeManual
+}
+
+// SaveKYCMode 保存实名认证模式。是否为可用的插件 ID 由调用方（handler）
+// 对照当前插件列表校验，这里只管落库。
+func (s *SettingService) SaveKYCMode(mode string) error {
+	row := model.Setting{Key: model.SettingKYCMode, Value: strings.TrimSpace(mode)}
+	return s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"value"}),
+	}).Create(&row).Error
+}
+
 // boolSetting 把开关存成 "1"/"0"。设置表是纯字符串的键值表，
 // 用固定字面量比依赖 strconv.FormatBool 的 "true"/"false" 更短也更稳。
 func boolSetting(v bool) string {
