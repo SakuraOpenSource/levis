@@ -176,6 +176,18 @@ GET      /admin/stats
 make test
 ```
 
+## 赞助
+
+如果可以的话来支持一下开发者喵。
+
+微信
+
+![微信](https://github.com/RoyOfficial233/RoyOfficial233/blob/main/images/wechat.png?raw=true)
+
+支付宝
+
+![支付宝](https://github.com/RoyOfficial233/RoyOfficial233/blob/main/images/alipay.png?raw=true)
+
 ## License
 
 本项目遵循 GPL-v3 开源协议。
