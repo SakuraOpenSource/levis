@@ -140,6 +140,9 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	kyc.GET("", h.Verification)
 	kyc.POST("", h.SubmitVerification)
 	kyc.GET("/photo/:side", h.VerificationPhoto)
+	// 第三方实名认证：POST 发起认证拿到跳转地址，GET 轮询认证结果。
+	kyc.POST("/external", h.StartExternalVerification)
+	kyc.GET("/external", h.QueryExternalVerification)
 
 	apiKeys := authed.Group("/api-keys")
 	apiKeys.GET("", h.APIKeys)

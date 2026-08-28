@@ -444,3 +444,32 @@ func TestAdminReviewRules(t *testing.T) {
 		t.Fatalf("审核不存在的记录应返回 404，实际 %d", rec.Code)
 	}
 }
+
+// 未安装实名认证插件时，第三方认证接口返回 503 而不是报内部错误。
+func TestExternalVerificationWithoutPlugin(t *testing.T) {
+	_, handler, _, users := installedWithUsers(t, "alice")
+
+	rec := doAs(t, handler, http.MethodPost, "/api/kyc/external",
+		map[string]string{"real_name": "张三", "id_number": validID1}, users["alice"])
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("无插件发起第三方实名称应返回 503，实际 %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doAs(t, handler, http.MethodGet, "/api/kyc/external", nil, users["alice"])
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("无记录查询第三方实名称应返回 404，实际 %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 第三方认证接口同样要求登录。
+func TestExternalVerificationRequiresAuth(t *testing.T) {
+	_, handler, _, _ := installedWithUsers(t, "alice")
+
+	if rec := doAs(t, handler, http.MethodPost, "/api/kyc/external",
+		map[string]string{"real_name": "张三", "id_number": validID1}, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("未登录发起第三方实名称应返回 401，实际 %d", rec.Code)
+	}
+	if rec := doAs(t, handler, http.MethodGet, "/api/kyc/external", nil, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("未登录查询第三方实名称应返回 401，实际 %d", rec.Code)
+	}
+}

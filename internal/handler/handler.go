@@ -82,7 +82,7 @@ func (h *Handler) tickets() *service.TicketService {
 }
 
 func (h *Handler) kyc() *service.KYCService {
-	return service.NewKYCService(h.db(), h.storage)
+	return service.NewKYCService(h.db(), h.storage, h.plugins)
 }
 
 func (h *Handler) apiKeys() *service.APIKeyService {

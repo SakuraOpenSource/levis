@@ -40,6 +40,47 @@ func (h *Handler) SubmitVerification(c *gin.Context) {
 	respond(c, record, nil)
 }
 
+// StartExternalVerificationRequest 是发起第三方实名认证的入参。
+type StartExternalVerificationRequest struct {
+	RealName string `json:"real_name"`
+	IDNumber string `json:"id_number"`
+}
+
+// StartExternalVerification 发起第三方实名认证（如支付宝认证）。
+// 返回认证单号与跳转地址/HTML，由前端引导用户完成认证。
+func (h *Handler) StartExternalVerification(c *gin.Context) {
+	var req StartExternalVerificationRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	record, reply, err := h.kyc().StartExternal(c.Request.Context(), httpx.CurrentUserID(c), req.RealName, req.IDNumber)
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	// 回给前端的记录同样打码，完整号码只在发起 RPC 时用过一次。
+	record.IDNumber = model.MaskIDNumber(record.IDNumber)
+	respond(c, gin.H{
+		"record":       record,
+		"certify_id":   reply.GetCertifyId(),
+		"certify_url":  reply.GetCertifyUrl(),
+		"certify_html": reply.GetCertifyHtml(),
+		"message":      reply.GetMessage(),
+	}, nil)
+}
+
+// QueryExternalVerification 查询第三方实名认证结果，并在通过时更新本地状态。
+// passed 为 T（通过）/ F（未通过）/ P（处理中）。
+func (h *Handler) QueryExternalVerification(c *gin.Context) {
+	record, passed, err := h.kyc().QueryExternal(c.Request.Context(), httpx.CurrentUserID(c))
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	record.IDNumber = model.MaskIDNumber(record.IDNumber)
+	respond(c, gin.H{"record": record, "passed": passed}, nil)
+}
+
 // VerificationPhoto 下发当前用户自己的证件照。
 func (h *Handler) VerificationPhoto(c *gin.Context) {
 	file, mime, err := h.kyc().Photo(httpx.CurrentUserID(c), c.Param("side"))
