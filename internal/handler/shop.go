@@ -148,3 +148,9 @@ func (h *Handler) CancelOrder(c *gin.Context) {
 	}
 	noContent(c)
 }
+
+// AgentProgramSummary 返回当前用户的代理加盟信息（等级/下一档/生效折扣）。
+func (h *Handler) AgentProgramSummary(c *gin.Context) {
+	summary, err := h.agentProgram().Summary(httpx.CurrentUserID(c))
+	respond(c, summary, err)
+}

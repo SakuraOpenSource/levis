@@ -93,6 +93,9 @@ const (
 
 	// SettingKYCMode 是实名认证模式：值为 "manual" 或实名认证插件 ID。
 	SettingKYCMode = "kyc_mode"
+
+	// SettingAgentProgramEnabled 是代理加盟开关："1"/"0"。
+	SettingAgentProgramEnabled = "agent_program_enabled"
 )
 
 // User 是系统用户。普通用户与管理员共用此表，由 Role 区分。
@@ -128,6 +131,24 @@ const (
 	ProductActive = "active"
 	ProductHidden = "hidden"
 )
+
+// AgentTier 是代理加盟等级：用户当前余额达到 MinBalanceCents 即为该级
+// （多档满足时取最高档），实时判定不落库。
+type AgentTier struct {
+	Base
+	Name            string `gorm:"size:64;not null" json:"name"`
+	MinBalanceCents int64  `gorm:"not null;default:0" json:"min_balance_cents"`
+	Sort            int    `gorm:"not null;default:0" json:"sort"`
+}
+
+// AgentTierDiscount 是等级在某个商品分组上的折扣，千分比表示
+// （800 = 8 折）。小分组上的配置覆盖大分组（沿父链取最深命中）。
+type AgentTierDiscount struct {
+	Base
+	TierID           uint `gorm:"index:idx_tier_category,unique;not null" json:"tier_id"`
+	CategoryID       uint `gorm:"index:idx_tier_category,unique;not null" json:"category_id"`
+	DiscountPermille int  `gorm:"not null" json:"discount_permille"`
+}
 
 // Spec 是商品的一条规格，如 {Label: "CPU", Value: "4 核"}。
 //
@@ -242,6 +263,8 @@ type OrderItem struct {
 	PriceCents  int64  `gorm:"not null;default:0" json:"price_cents"`
 	Quantity    int    `gorm:"not null;default:1" json:"quantity"`
 	BillingCyc  string `gorm:"column:billing_cycle;size:16;not null" json:"billing_cycle"`
+	// DiscountPermille 是成交时的代理折扣快照（千分比，0 表示无折扣）。
+	DiscountPermille int `gorm:"not null;default:0" json:"discount_permille"`
 }
 
 // 服务状态。
@@ -327,6 +350,8 @@ func AllModels() []any {
 		&Setting{},
 		&User{},
 		&ProductCategory{},
+		&AgentTier{},
+		&AgentTierDiscount{},
 		&Product{},
 		&CartItem{},
 		&Order{},

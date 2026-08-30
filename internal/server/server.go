@@ -180,6 +180,11 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	admin.GET("/settings/captcha", h.AdminCaptchaSettings)
 	admin.PUT("/settings/captcha", h.AdminUpdateCaptchaSettings)
 	admin.GET("/settings/kyc", h.AdminKYCSettings)
+
+	// 代理加盟：管理端整体读写，用户端只读摘要。
+	admin.GET("/agent-program", h.AgentProgram)
+	admin.PUT("/agent-program", h.UpdateAgentProgram)
+	authed.GET("/agent-program/summary", h.AgentProgramSummary)
 	admin.PUT("/settings/kyc", h.AdminUpdateKYCSettings)
 	admin.GET("/tickets", h.AdminTickets)
 	admin.GET("/tickets/:id", h.AdminTicket)

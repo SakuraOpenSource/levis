@@ -60,9 +60,22 @@ const MaxOrderLines = 20
 //
 // 价格与商品名一律从数据库实时读取后快照进条目，绝不采用调用方传入的金额 ——
 // 这是全系统唯一的定价入口，购物车与开放接口共用。
-func buildOrderItems(tx *gorm.DB, lines []OrderLine) ([]model.OrderItem, int64, error) {
+// userID 非零且代理加盟开启时，按用户等级的分组折扣折算（小分组覆盖大分组）。
+func buildOrderItems(tx *gorm.DB, userID uint, lines []OrderLine) ([]model.OrderItem, int64, error) {
 	items := make([]model.OrderItem, 0, len(lines))
 	var total int64
+	// 代理折扣一次性判定：等级由余额实时推导，折扣按分组沿父链解析。
+	var agents *AgentProgramService
+	var tier *model.AgentTier
+	if userID != 0 {
+		agents = NewAgentProgramService(tx)
+		if agents.Enabled() {
+			var user model.User
+			if err := tx.First(&user, userID).Error; err == nil {
+				tier = agents.TierForBalance(user.BalanceCents)
+			}
+		}
+	}
 	for _, line := range lines {
 		if line.Quantity <= 0 {
 			return nil, 0, ErrBadRequest("商品数量必须大于零")
@@ -91,14 +104,24 @@ func buildOrderItems(tx *gorm.DB, lines []OrderLine) ([]model.OrderItem, int64, 
 			return nil, 0, ErrBadRequest("无效的计费周期")
 		}
 
-		total += product.PriceCents * int64(line.Quantity)
+		unitPrice := product.PriceCents
+		discountPermille := 0
+		if agents != nil && tier != nil {
+			if permille, ok := agents.DiscountFor(tier.ID, product.CategoryID); ok && permille > 0 && permille < 1000 {
+				discountPermille = permille
+				unitPrice = product.PriceCents * int64(permille) / 1000
+			}
+		}
+		total += unitPrice * int64(line.Quantity)
 		items = append(items, model.OrderItem{
 			// 冗余快照：商品日后改价或改名，历史订单仍显示成交时的值。
 			ProductID:   product.ID,
 			ProductName: product.Name,
-			PriceCents:  product.PriceCents,
+			PriceCents:  unitPrice,
 			Quantity:    line.Quantity,
 			BillingCyc:  cycle,
+
+			DiscountPermille: discountPermille,
 		})
 	}
 	return items, total, nil
@@ -161,7 +184,7 @@ func (s *OrderService) CreateDirect(userID uint, lines []OrderLine) (*model.Orde
 
 // create 在事务内写入订单与明细。
 func (s *OrderService) create(tx *gorm.DB, userID uint, lines []OrderLine, out *model.Order) error {
-	orderItems, total, err := buildOrderItems(tx, lines)
+	orderItems, total, err := buildOrderItems(tx, userID, lines)
 	if err != nil {
 		return err
 	}

@@ -468,3 +468,62 @@ func (h *Handler) AdminBindService(c *gin.Context) {
 	item, err := h.admin().BindServiceUpstream(id, req)
 	respond(c, item, err)
 }
+
+// ===== 代理加盟 =====
+
+// AgentProgram 返回代理加盟整体配置（开关 + 等级 + 折扣）。
+func (h *Handler) AgentProgram(c *gin.Context) {
+	cfg, err := h.agentProgram().Config()
+	respond(c, cfg, err)
+}
+
+// UpdateAgentProgramInput 是整体保存入参：开关 + 等级/折扣全量覆盖。
+type UpdateAgentProgramInput struct {
+	Enabled bool                `json:"enabled"`
+	Tiers   []service.TierInput `json:"tiers"`
+	// Discounts 每条 (tier_id, category_id, discount_permille)；0/1000 表示删除。
+	Discounts []service.DiscountInput `json:"discounts"`
+}
+
+// UpdateAgentProgram 保存代理加盟配置（等级与折扣全量重建）。
+func (h *Handler) UpdateAgentProgram(c *gin.Context) {
+	var in UpdateAgentProgramInput
+	if !bindJSON(c, &in) {
+		return
+	}
+	svc := h.agentProgram()
+	if err := svc.SetEnabled(in.Enabled); err != nil {
+		respond(c, nil, err)
+		return
+	}
+	// 全量重建：先清后建，等级 ID 会变化，前端以名称为稳定标识无妨。
+	if err := svc.DB().Where("1 = 1").Delete(&model.AgentTierDiscount{}).Error; err != nil {
+		respond(c, nil, err)
+		return
+	}
+	if err := svc.DB().Where("1 = 1").Delete(&model.AgentTier{}).Error; err != nil {
+		respond(c, nil, err)
+		return
+	}
+	tierIDs := make(map[uint]uint, len(in.Tiers))
+	for i, tier := range in.Tiers {
+		created, err := svc.SaveTier(0, tier)
+		if err != nil {
+			respond(c, nil, err)
+			return
+		}
+		tierIDs[uint(i)] = created.ID
+	}
+	for _, d := range in.Discounts {
+		id, ok := tierIDs[d.TierID]
+		if !ok {
+			continue
+		}
+		if err := svc.SetDiscount(service.DiscountInput{TierID: id, CategoryID: d.CategoryID, DiscountPermille: d.DiscountPermille}); err != nil {
+			respond(c, nil, err)
+			return
+		}
+	}
+	cfg, err := svc.Config()
+	respond(c, cfg, err)
+}

@@ -52,8 +52,13 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager) *Handler {
 // Close 释放 Handler 持有的后台资源。
 func (h *Handler) Close() { h.notify.Close() }
 
-func (h *Handler) db() *gorm.DB                   { return h.rt.DB() }
-func (h *Handler) users() *service.UserService    { return service.NewUserService(h.db()) }
+func (h *Handler) db() *gorm.DB                { return h.rt.DB() }
+func (h *Handler) users() *service.UserService { return service.NewUserService(h.db()) }
+
+// agentProgram 构造代理加盟服务。
+func (h *Handler) agentProgram() *service.AgentProgramService {
+	return service.NewAgentProgramService(h.db())
+}
 func (h *Handler) cart() *service.CartService     { return service.NewCartService(h.db()) }
 func (h *Handler) wallet() *service.WalletService { return service.NewWalletService(h.db()) }
 
