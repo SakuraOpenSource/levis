@@ -574,6 +574,8 @@ func (s *AdminService) CreateProduct(in ProductInput) (*model.Product, error) {
 		Sort:              in.Sort,
 		UpstreamPluginID:  in.UpstreamPluginID,
 		UpstreamProductID: in.UpstreamProductID,
+		InterfaceID:       in.InterfaceID,
+		ProvisionConfig:   in.ProvisionConfig,
 	}
 	if err := s.db.Create(&item).Error; err != nil {
 		return nil, err
@@ -605,6 +607,8 @@ func (s *AdminService) UpdateProduct(id uint, in ProductInput) (*model.Product, 
 		"sort":                in.Sort,
 		"upstream_plugin_id":  in.UpstreamPluginID,
 		"upstream_product_id": in.UpstreamProductID,
+		"interface_id":        in.InterfaceID,
+		"provision_config":    in.ProvisionConfig,
 	}
 	if err := s.db.Model(&item).Updates(updates).Error; err != nil {
 		return nil, err
@@ -679,6 +683,56 @@ func (s *AdminService) validateProduct(in *ProductInput) error {
 			return ErrBadRequest("所属分组不存在")
 		}
 		return err
+	}
+
+	// 接口商品：校验接口存在且其模块支持产品对接，并整理开通配置。
+	// 接口与上游插件两种绑定互斥，接口优先 —— 选了接口就清掉上游字段，
+	// 避免两套开通入口同时生效。
+	if in.InterfaceID != 0 {
+		if _, err := NewUpstreamService(s.db, s.plugins).InterfaceForPlugin(in.InterfaceID); err != nil {
+			return err
+		}
+		in.UpstreamPluginID = ""
+		in.UpstreamProductID = ""
+		if err := normalizeProvisionConfig(&in.ProvisionConfig); err != nil {
+			return err
+		}
+	} else {
+		in.ProvisionConfig = model.ProvisionSpec{}
+	}
+	return nil
+}
+
+// normalizeProvisionConfig 校验并归一接口商品的开通配置。
+//
+// 固定模式把每个区间收敛为单点（Min = Max = Min），弹性模式要求 Min <= Max；
+// 流量为 0 表示不限。CPU / 内存 / 硬盘在任何模式下都必须为正数。
+func normalizeProvisionConfig(cfg *model.ProvisionSpec) error {
+	cfg.Driver = strings.ToLower(strings.TrimSpace(cfg.Driver))
+	if cfg.Driver != "incus" && cfg.Driver != "qemu" {
+		return ErrBadRequest("驱动只支持 incus 或 qemu")
+	}
+	if cfg.Mode != model.ProvisionModeFixed && cfg.Mode != model.ProvisionModeElastic {
+		return ErrBadRequest("开通配置必须是 fixed（固定）或 elastic（弹性）")
+	}
+	ranges := []struct {
+		name    string
+		rng     *model.SpecRange
+		minimum int
+	}{
+		{"CPU", &cfg.CPU, 1},
+		{"内存", &cfg.MemoryMB, 16},
+		{"硬盘", &cfg.DiskGB, 1},
+		{"带宽", &cfg.BandwidthMbps, 0},
+		{"流量", &cfg.TrafficGB, 0},
+	}
+	for _, item := range ranges {
+		if item.rng.Min < item.minimum || item.rng.Max < item.rng.Min {
+			return ErrBadRequest("%s的取值范围不合法（最小 %d，且最小值不超过最大值）", item.name, item.minimum)
+		}
+		if cfg.Mode == model.ProvisionModeFixed {
+			*item.rng = model.Fixed(item.rng.Min)
+		}
 	}
 	return nil
 }
@@ -1074,16 +1128,16 @@ func (s *AdminService) CreateServiceForUser(userID uint, req AdminCreateServiceR
 				svc.NextDueAt = &next
 				svc.ExpiresAt = &next
 			}
-			if req.Provision && product.UpstreamPluginID != "" && product.UpstreamProductID != "" {
+			if req.Provision && (product.InterfaceID != 0 || (product.UpstreamPluginID != "" && product.UpstreamProductID != "")) {
 				if s.plugins == nil {
 					return ErrBadRequest("上游插件不可用，无法开通")
 				}
 				// 调用上游开通
-				hostID, expiry, err := s.provisionUpstreamForAdmin(tx, &user, &product, cycle)
+				pluginID, hostID, expiry, err := s.provisionUpstreamForAdmin(tx, &user, &product, cycle)
 				if err != nil {
 					return err
 				}
-				svc.UpstreamPluginID = product.UpstreamPluginID
+				svc.UpstreamPluginID = pluginID
 				svc.UpstreamHostID = hostID
 				if expiry != nil {
 					svc.NextDueAt = expiry
@@ -1107,30 +1161,19 @@ func (s *AdminService) CreateServiceForUser(userID uint, req AdminCreateServiceR
 	return last, nil
 }
 
-func (s *AdminService) provisionUpstreamForAdmin(tx *gorm.DB, user *model.User, product *model.Product, cycle string) (string, *time.Time, error) {
-	reply, err := s.plugins.CreateOrder(context.Background(), product.UpstreamPluginID, &pb.CreateOrderRequest{
-		ProductId:    product.UpstreamProductID,
-		BillingCycle: cycle,
-		Quantity:     1,
-		ClientEmail:  user.Email,
-		Remark:       fmt.Sprintf("admin-create user=%d", user.ID),
-	})
+func (s *AdminService) provisionUpstreamForAdmin(tx *gorm.DB, user *model.User, product *model.Product, cycle string) (string, string, *time.Time, error) {
+	// 管理员代开没有用户选配：弹性取下限、固定取固定值，镜像由插件按驱动自选。
+	options := defaultProvisionOptions(product.ProvisionConfig)
+	pluginID, _, err := resolvePluginForProduct(s.db, product)
 	if err != nil {
-		return "", nil, ErrBadRequest("上游开通失败: %v", err)
+		return "", "", nil, err
 	}
-	hostID := reply.GetUpstreamOrderId()
-	if hostID == "" {
-		return "", nil, ErrBadRequest("上游开通失败: 未返回服务实例 ID")
+	orderNo := fmt.Sprintf("admin-create user=%d", user.ID)
+	hostID, expiry, err := createUpstreamOrder(s.plugins, s.db, product, cycle, orderNo, user.Email, options)
+	if err != nil {
+		return "", "", nil, err
 	}
-	var expiry *time.Time
-	if host, err := s.plugins.GetHost(context.Background(), product.UpstreamPluginID, &pb.GetHostRequest{HostId: hostID}); err == nil {
-		if e := host.GetHost().GetExpiry(); e != "" {
-			if t, err := time.Parse(time.RFC3339, e); err == nil {
-				expiry = &t
-			}
-		}
-	}
-	return hostID, expiry, nil
+	return pluginID, hostID, expiry, nil
 }
 
 type AdminBindServiceRequest struct {

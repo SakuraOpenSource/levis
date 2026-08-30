@@ -115,6 +115,10 @@ type ProductInput struct {
 	// UpstreamPluginID 为空表示本地商品，非空表示上游对接插件 ID。
 	UpstreamPluginID  string `json:"upstream_plugin_id"`
 	UpstreamProductID string `json:"upstream_product_id"`
+	// InterfaceID 非零表示经「接口管理」的接口开通，与 Upstream 两种方式互斥，
+	// 接口优先。
+	InterfaceID     uint                `json:"interface_id"`
+	ProvisionConfig model.ProvisionSpec `json:"provision_config"`
 }
 
 // slugPattern 之外的字符会被替换成短横线。

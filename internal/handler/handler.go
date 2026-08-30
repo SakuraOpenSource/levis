@@ -74,6 +74,10 @@ func (h *Handler) catalog() *service.CatalogService {
 	return service.NewCatalogService(h.db())
 }
 
+func (h *Handler) upstream() *service.UpstreamService {
+	return service.NewUpstreamService(h.db(), h.plugins)
+}
+
 func (h *Handler) billing() *service.BillingService {
 	return service.NewBillingService(h.db(), h.wallet(), h.plugins)
 }

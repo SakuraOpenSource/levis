@@ -73,6 +73,12 @@ func (s *CartService) Add(userID uint, req AddRequest) error {
 		return err
 	}
 
+	// 接口商品带选配（规格与系统镜像），购物车装不下这些信息，
+	// 统一引导到商品页直接购买。
+	if product.InterfaceID != 0 {
+		return ErrBadRequest("该商品需选配规格与系统，请在商品页直接购买")
+	}
+
 	// 未指定周期时沿用商品默认周期。
 	cycle := req.BillingCyc
 	if cycle == "" {

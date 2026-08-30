@@ -80,6 +80,12 @@ service Plugin {
   // 需声明 CAPABILITY_PROVISION_PRODUCT。
   rpc ListHostOS(ListHostOSRequest) returns (ListHostOSReply);
 
+  // ListProductOS 获取商品在购买时可选的系统镜像列表。
+  // 与 ListHostOS（重装已有主机）相对：本方法面向开通前的选型，
+  // 供购买页渲染系统下拉。未实现的插件返回 UNIMPLEMENTED，主程序须容忍。
+  // 需声明 CAPABILITY_PROVISION_PRODUCT。
+  rpc ListProductOS(ListProductOSRequest) returns (ListHostOSReply);
+
   // StartKYC 发起实名认证并返回认证跳转地址/HTML。
   // 需声明 CAPABILITY_KYC。
   rpc StartKYC(StartKYCRequest) returns (StartKYCReply);
@@ -292,6 +298,10 @@ message ListProductsRequest {
   // page 从 1 开始。
   int32 page = 1;
   int32 limit = 2;
+  // interface_config 是「接口管理」里为该接口保存的模块配置值
+  // （如 api_url / api_key），按请求透传。老插件可安全忽略 ——
+  // 同一插件可以同时服务多个接口，配置不能只存在插件进程里。
+  map<string, string> interface_config = 3;
 }
 
 // UpstreamProduct 是上游返回的一个产品。
@@ -319,6 +329,8 @@ message ListProductsReply {
 
 message GetProductRequest {
   string id = 1;
+  // 接口配置，见 ListProductsRequest.interface_config。
+  map<string, string> interface_config = 2;
 }
 
 message GetProductReply {
@@ -336,6 +348,14 @@ message CreateOrderRequest {
   string client_email = 4;
   // remark 是备注，主程序会填入 Levis 订单号。
   string remark = 5;
+  // interface_config 是「接口管理」里为该接口保存的模块配置值
+  // （如 api_url / api_key），按请求透传，见 ListProductsRequest。
+  map<string, string> interface_config = 6;
+  // options 是购买时用户提交的选配快照（弹性云的规格与系统镜像），
+  // 如 {"cpu":"2","memory_mb":"1024","disk_gb":"10",
+  //     "bandwidth_mbps":"10","traffic_gb":"100","image_id":"3"}。
+  // 固定规格商品主程序传空，插件应自行回退到商品配置。
+  map<string, string> options = 7;
 }
 
 message CreateOrderReply {
@@ -352,6 +372,8 @@ message CreateOrderReply {
 
 message GetOrderRequest {
   string upstream_order_id = 1;
+  // 接口配置，见 ListProductsRequest.interface_config。
+  map<string, string> interface_config = 2;
 }
 
 message GetOrderReply {
@@ -388,6 +410,8 @@ message ManageHostRequest {
   string billing_cycle = 3;
   // os 仅在 REINSTALL 时需要，表示要重装的系统 ID。
   string os = 4;
+  // 接口配置，见 ListProductsRequest.interface_config。
+  map<string, string> interface_config = 5;
 }
 
 message ManageHostReply {
@@ -400,6 +424,8 @@ message ManageHostReply {
 
 message GetHostRequest {
   string host_id = 1;
+  // 接口配置，见 ListProductsRequest.interface_config。
+  map<string, string> interface_config = 2;
 }
 
 message UpstreamHost {
@@ -429,11 +455,23 @@ message OSImage {
 
 message ListHostOSRequest {
   string host_id = 1;
+  // 接口配置，见 ListProductsRequest.interface_config。
+  map<string, string> interface_config = 2;
 }
 
 message ListHostOSReply {
   repeated OSImage os = 1;
   string error = 2;
+}
+
+// ListProductOSRequest 面向购买前选型：按商品（及其接口、驱动）列出可选系统。
+message ListProductOSRequest {
+  // product_id 预留：本地商品 ID。插件当前的过滤依据是 options.driver。
+  string product_id = 1;
+  // 接口配置，见 ListProductsRequest.interface_config。
+  map<string, string> interface_config = 2;
+  // options 携带过滤条件，如 driver=incus / qemu。
+  map<string, string> options = 3;
 }
 
 message StartKYCRequest {

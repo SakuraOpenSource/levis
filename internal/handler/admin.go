@@ -165,7 +165,9 @@ func (h *Handler) AdminDeleteProduct(c *gin.Context) {
 	noContent(c)
 }
 
-// AdminProvisionPlugins 返回可用的上游产品对接插件列表。
+// AdminProvisionPlugins 返回可用的上游产品对接插件列表，供管理端选择
+// 上游插件（传统同步）或接口模块（接口管理）时使用。响应同时携带插件
+// 声明的配置字段，接口表单据此动态渲染（如 Virtualis 的地址与密钥）。
 func (h *Handler) AdminProvisionPlugins(c *gin.Context) {
 	if !h.pluginsReady(c) {
 		return
@@ -178,12 +180,88 @@ func (h *Handler) AdminProvisionPlugins(c *gin.Context) {
 			continue
 		}
 		snap := inst.Snapshot()
+		fields := make([]gin.H, 0)
+		if manifest := inst.Manifest(); manifest != nil {
+			for _, f := range manifest.GetConfig() {
+				options := make([]gin.H, 0, len(f.GetOptions()))
+				for _, opt := range f.GetOptions() {
+					options = append(options, gin.H{"value": opt.GetValue(), "label": opt.GetLabel()})
+				}
+				fields = append(fields, gin.H{
+					"key":      f.GetKey(),
+					"label":    f.GetLabel(),
+					"hint":     f.GetHint(),
+					"type":     f.GetType().String(),
+					"required": f.GetRequired(),
+					"secret":   f.GetSecret(),
+					"default":  f.GetDefaultValue(),
+					"options":  options,
+				})
+			}
+		}
 		items = append(items, gin.H{
-			"id":   id,
-			"name": snap.Name,
+			"id":     id,
+			"name":   snap.Name,
+			"config": fields,
 		})
 	}
 	OK(c, gin.H{"items": items})
+}
+
+// AdminInterfaces 返回全部上游接口。
+func (h *Handler) AdminInterfaces(c *gin.Context) {
+	items, err := h.upstream().Interfaces()
+	respond(c, gin.H{"items": items}, err)
+}
+
+// AdminCreateInterface 新增接口。
+func (h *Handler) AdminCreateInterface(c *gin.Context) {
+	var req service.InterfaceInput
+	if !bindJSON(c, &req) {
+		return
+	}
+	item, err := h.upstream().Create(req)
+	respond(c, item, err)
+}
+
+// AdminUpdateInterface 修改接口。
+func (h *Handler) AdminUpdateInterface(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	var req service.InterfaceInput
+	if !bindJSON(c, &req) {
+		return
+	}
+	item, err := h.upstream().Update(id, req)
+	respond(c, item, err)
+}
+
+// AdminDeleteInterface 删除接口。
+func (h *Handler) AdminDeleteInterface(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.upstream().Delete(id); err != nil {
+		respond(c, nil, err)
+		return
+	}
+	noContent(c)
+}
+
+// AdminTestInterface 测试接口连通性（经插件调用上游一次）。
+func (h *Handler) AdminTestInterface(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.upstream().Test(id); err != nil {
+		respond(c, nil, err)
+		return
+	}
+	OK(c, gin.H{"message": "接口可用"})
 }
 
 // AdminUpstreamProducts 返回上游插件的产品列表，供管理端选择上游商品时使用。

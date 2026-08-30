@@ -33,6 +33,32 @@ func (h *Handler) Product(c *gin.Context) {
 	respond(c, item, err)
 }
 
+// ProductOS 返回接口商品在购买时可选的系统镜像（按商品的驱动过滤）。
+func (h *Handler) ProductOS(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.upstream().ProductOS(id)
+	respond(c, gin.H{"items": items}, err)
+}
+
+// BuyNowRequest 是「立即购买」的入参：绕过购物车直接生成待支付订单。
+// 接口商品的选配（规格与系统）必须随单提交。
+type BuyNowRequest struct {
+	service.OrderLine
+}
+
+// BuyNow 为当前用户创建一笔单明细的直购订单，返回后前端跳转支付。
+func (h *Handler) BuyNow(c *gin.Context) {
+	var req BuyNowRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	order, err := h.orders().CreateDirect(httpx.CurrentUserID(c), []service.OrderLine{req.OrderLine})
+	respond(c, order, err)
+}
+
 // Cart 返回当前用户购物车。
 func (h *Handler) Cart(c *gin.Context) {
 	view, err := h.cart().List(httpx.CurrentUserID(c))

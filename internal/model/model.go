@@ -252,6 +252,129 @@ type Product struct {
 	// UpstreamPluginID 为空表示本地商品，非空表示上游对接插件 ID。
 	UpstreamPluginID  string `gorm:"size:64;default:''" json:"upstream_plugin_id"`
 	UpstreamProductID string `gorm:"size:64;default:''" json:"upstream_product_id"`
+	// InterfaceID 非零表示商品经「接口管理」里的某个接口向上游开通，
+	// 由接口决定用哪个插件模块。与 UpstreamPluginID 互斥：接口优先。
+	InterfaceID uint `gorm:"index;not null;default:0" json:"interface_id"`
+	// ProvisionConfig 是接口商品的开通配置（驱动 + 弹性/固定规格）。
+	ProvisionConfig ProvisionSpec `gorm:"type:text" json:"provision_config"`
+}
+
+// 接口商品的开通配置模式与驱动。
+const (
+	ProvisionModeFixed   = "fixed"
+	ProvisionModeElastic = "elastic"
+)
+
+// SpecRange 是一项规格的取值区间。固定配置时 Min == Max。
+type SpecRange struct {
+	Min int `json:"min"`
+	Max int `json:"max"`
+}
+
+// ProvisionSpec 是接口商品的开通配置：驱动 + 各规格的区间或固定值。
+//
+// 流量以 GB 为单位入库（管理员可用 TB 录入，前端负责换算）；
+// Min/Max 为 0 表示不限流量。
+type ProvisionSpec struct {
+	Driver        string    `json:"driver"` // incus / qemu
+	Mode          string    `json:"mode"`   // fixed / elastic
+	CPU           SpecRange `json:"cpu"`
+	MemoryMB      SpecRange `json:"memory_mb"`
+	DiskGB        SpecRange `json:"disk_gb"`
+	BandwidthMbps SpecRange `json:"bandwidth_mbps"`
+	TrafficGB     SpecRange `json:"traffic_gb"`
+}
+
+// Fixed 把一项规格归一为固定值。
+func Fixed(v int) SpecRange { return SpecRange{Min: v, Max: v} }
+
+// Value 实现 driver.Valuer：开通配置以 JSON 文本入库。
+func (p ProvisionSpec) Value() (driver.Value, error) {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return nil, err
+	}
+	return string(raw), nil
+}
+
+// Scan 实现 sql.Scanner，兼容 NULL 与空串（非接口商品历史行无值）。
+func (p *ProvisionSpec) Scan(src any) error {
+	if src == nil {
+		*p = ProvisionSpec{}
+		return nil
+	}
+	var raw []byte
+	switch v := src.(type) {
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		return fmt.Errorf("model: 无法把 %T 解析为 ProvisionSpec", src)
+	}
+	if len(raw) == 0 {
+		*p = ProvisionSpec{}
+		return nil
+	}
+	if err := json.Unmarshal(raw, p); err != nil {
+		return errors.New("model: 开通配置不是合法的 JSON 对象")
+	}
+	return nil
+}
+
+// OptionMap 是购买时的选配快照（弹性规格与所选系统镜像），
+// 以 JSON 文本存入订单明细，供展示与向上游开通时透传。
+type OptionMap map[string]string
+
+// Value 实现 driver.Valuer。
+func (o OptionMap) Value() (driver.Value, error) {
+	if len(o) == 0 {
+		return "{}", nil
+	}
+	raw, err := json.Marshal(map[string]string(o))
+	if err != nil {
+		return nil, err
+	}
+	return string(raw), nil
+}
+
+// Scan 实现 sql.Scanner，兼容 NULL 与空串。
+func (o *OptionMap) Scan(src any) error {
+	if src == nil {
+		*o = nil
+		return nil
+	}
+	var raw []byte
+	switch v := src.(type) {
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		return fmt.Errorf("model: 无法把 %T 解析为 OptionMap", src)
+	}
+	if len(raw) == 0 {
+		*o = nil
+		return nil
+	}
+	var out map[string]string
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return errors.New("model: 选配字段不是合法的 JSON 对象")
+	}
+	*o = out
+	return nil
+}
+
+// UpstreamInterface 是「接口管理」里的一条上游接口：同一个开通插件模块
+// 可以配置多个接口（不同的上游站点地址与密钥），商品选择接口即可开通。
+//
+// Config 以 JSON 存放该模块声明的配置项取值（如 api_url / api_key），
+// 经插件 RPC 的 interface_config 按请求透传，插件进程不持有全局配置。
+type UpstreamInterface struct {
+	Base
+	Name     string    `gorm:"size:128;not null" json:"name"`
+	PluginID string    `gorm:"size:64;not null" json:"plugin_id"`
+	Config   OptionMap `gorm:"type:text" json:"config"`
 }
 
 // CartItem 是购物车条目。同一用户、同一商品、同一计费周期唯一。
@@ -294,6 +417,8 @@ type OrderItem struct {
 	BillingCyc  string `gorm:"column:billing_cycle;size:16;not null" json:"billing_cycle"`
 	// DiscountPermille 是成交时的代理折扣快照（千分比，0 表示无折扣）。
 	DiscountPermille int `gorm:"not null;default:0" json:"discount_permille"`
+	// Options 是购买时的选配快照（弹性规格与系统镜像），成交后不再变化。
+	Options OptionMap `gorm:"type:text" json:"options"`
 }
 
 // 服务状态。
@@ -379,6 +504,7 @@ func AllModels() []any {
 		&Setting{},
 		&User{},
 		&ProductCategory{},
+		&UpstreamInterface{},
 		&AgentTier{},
 		&AgentTierDiscount{},
 		&AgentApplication{},

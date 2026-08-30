@@ -1,19 +1,18 @@
 package service
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/SakuraOpenSource/levis/internal/model"
 	"github.com/SakuraOpenSource/levis/internal/plugin"
-	pb "github.com/SakuraOpenSource/levis/pkg/plugin/proto"
 )
 
 // OrderService 处理下单与支付。
@@ -51,6 +50,10 @@ type OrderLine struct {
 	ProductID  uint   `json:"product_id"`
 	Quantity   int    `json:"quantity"`
 	BillingCyc string `json:"billing_cycle"`
+	// Options 是购买时的选配（弹性规格与系统镜像）。接口商品必填，
+	// 其余商品忽略。键约定：cpu / memory_mb / disk_gb / bandwidth_mbps /
+	// traffic_gb / image_id，值一律为字符串。
+	Options map[string]string `json:"options"`
 }
 
 // MaxOrderLines 是单笔订单的明细条数上限。
@@ -113,6 +116,16 @@ func buildOrderItems(tx *gorm.DB, userID uint, lines []OrderLine) ([]model.Order
 			}
 		}
 		total += unitPrice * int64(line.Quantity)
+		options := model.OptionMap(nil)
+		if product.InterfaceID != 0 {
+			// 接口商品必须带选配，且选配值须落在商品配置的区间内。
+			// 校验在这里做而不是开通时做：带着不合法的选配生成订单，
+			// 用户支付时才会失败的体验不可接受。
+			if err := validateProvisionOptions(product.ProvisionConfig, line.Options); err != nil {
+				return nil, 0, err
+			}
+			options = model.OptionMap(line.Options)
+		}
 		items = append(items, model.OrderItem{
 			// 冗余快照：商品日后改价或改名，历史订单仍显示成交时的值。
 			ProductID:   product.ID,
@@ -122,9 +135,49 @@ func buildOrderItems(tx *gorm.DB, userID uint, lines []OrderLine) ([]model.Order
 			BillingCyc:  cycle,
 
 			DiscountPermille: discountPermille,
+			Options:          options,
 		})
 	}
 	return items, total, nil
+}
+
+// validateProvisionOptions 校验接口商品的购买选配。
+//
+// 五项规格（CPU 核数、内存 MB、硬盘 GB、带宽 Mbps、流量 GB）都必须给出，
+// 且落在商品配置的区间内 —— 固定规格商品的区间退化为单点，等于必须一致；
+// 系统镜像必填。流量为 0 表示不限，是否允许 0 由区间决定。
+func validateProvisionOptions(cfg model.ProvisionSpec, options map[string]string) error {
+	if cfg.Driver == "" {
+		return nil
+	}
+	numeric := []struct {
+		key   string
+		rng   model.SpecRange
+		label string
+	}{
+		{"cpu", cfg.CPU, "CPU 核数"},
+		{"memory_mb", cfg.MemoryMB, "内存"},
+		{"disk_gb", cfg.DiskGB, "硬盘"},
+		{"bandwidth_mbps", cfg.BandwidthMbps, "带宽"},
+		{"traffic_gb", cfg.TrafficGB, "流量"},
+	}
+	for _, item := range numeric {
+		raw, ok := options[item.key]
+		if !ok || raw == "" {
+			return ErrBadRequest("请选择%s", item.label)
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 0 {
+			return ErrBadRequest("%s格式不正确", item.label)
+		}
+		if value < item.rng.Min || value > item.rng.Max {
+			return ErrBadRequest("%s超出可选范围（%d-%d）", item.label, item.rng.Min, item.rng.Max)
+		}
+	}
+	if options["image_id"] == "" {
+		return ErrBadRequest("请选择操作系统")
+	}
+	return nil
 }
 
 // CreateFromCart 用当前购物车创建待支付订单。
@@ -339,12 +392,13 @@ func (s *OrderService) payInTx(tx *gorm.DB, userID, orderID uint, debit bool) (*
 
 			// 上游对接商品：调用插件向上游下单并开通，把上游 host_id 存入服务。
 			// 上游下单失败则整体回滚，绝不允许「扣了钱却没在上游开通」。
-			if product.UpstreamPluginID != "" && product.UpstreamProductID != "" {
-				hostID, upstreamExpiry, err := s.provisionUpstream(tx, userID, &product, item.BillingCyc, order.OrderNo)
+			legacyUpstream := product.UpstreamPluginID != "" && product.UpstreamProductID != ""
+			if legacyUpstream || product.InterfaceID != 0 {
+				pluginID, hostID, upstreamExpiry, err := s.provisionUpstream(tx, userID, &product, item.BillingCyc, order.OrderNo, item.Options)
 				if err != nil {
 					return nil, err
 				}
-				service.UpstreamPluginID = product.UpstreamPluginID
+				service.UpstreamPluginID = pluginID
 				service.UpstreamHostID = hostID
 				// 上游返回了到期时间则以上游为准，保持两边一致。
 				if upstreamExpiry != nil {
@@ -386,51 +440,28 @@ func (s *OrderService) payInTx(tx *gorm.DB, userID, orderID uint, debit bool) (*
 	return &out, nil
 }
 
-// provisionUpstream 调用上游插件下单开通，返回上游服务实例 ID 与到期时间。
+// provisionUpstream 调用上游插件下单开通，返回插件 ID、上游服务实例 ID 与到期时间。
 //
-// 插件内部会完成上游的下单、结算与余额支付；返回的 upstream_order_id
-// 即上游服务实例 ID（如魔方财务 host_id），后续管理操作都凭它定位。
-// 开通成功后再调 GetHost 拉取到期时间，拉取失败不影响开通结果。
-func (s *OrderService) provisionUpstream(tx *gorm.DB, userID uint, product *model.Product, cycle, orderNo string) (string, *time.Time, error) {
-	if s.plugins == nil {
-		return "", nil, ErrBadRequest("上游插件不可用，无法开通该商品")
-	}
-
+// 实际下单逻辑在 createUpstreamOrder（与订单支付共用）；这里补齐用户邮箱
+// 与事务内上下文。接口商品会把接口配置与用户选配一并透传给插件。
+func (s *OrderService) provisionUpstream(tx *gorm.DB, userID uint, product *model.Product, cycle, orderNo string, options model.OptionMap) (string, string, *time.Time, error) {
 	// 上游可能用客户邮箱建账号，取下单用户的邮箱。
 	var user model.User
 	if err := tx.First(&user, userID).Error; err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 
-	reply, err := s.plugins.CreateOrder(context.Background(), product.UpstreamPluginID, &pb.CreateOrderRequest{
-		ProductId:    product.UpstreamProductID,
-		BillingCycle: cycle,
-		Quantity:     1,
-		ClientEmail:  user.Email,
-		Remark:       orderNo,
-	})
+	pluginID, _, err := resolvePluginForProduct(s.db, product)
 	if err != nil {
-		log.Printf("上游开通失败 plugin=%s product=%s order=%s: %v",
-			product.UpstreamPluginID, product.UpstreamProductID, orderNo, err)
-		return "", nil, ErrBadRequest("上游开通失败: %v", err)
+		return "", "", nil, err
 	}
 
-	hostID := reply.GetUpstreamOrderId()
-	if hostID == "" {
-		return "", nil, ErrBadRequest("上游开通失败: 未返回服务实例 ID")
+	hostID, expiry, err := createUpstreamOrder(s.plugins, s.db, product, cycle, orderNo, user.Email, map[string]string(options))
+	if err != nil {
+		log.Printf("上游开通失败 plugin=%s product=%d order=%s: %v", pluginID, product.ID, orderNo, err)
+		return "", "", nil, err
 	}
-
-	// 拉取上游服务信息，同步到期时间；失败不阻断开通。
-	var expiry *time.Time
-	if host, err := s.plugins.GetHost(context.Background(), product.UpstreamPluginID, &pb.GetHostRequest{HostId: hostID}); err == nil {
-		if e := host.GetHost().GetExpiry(); e != "" {
-			if t, err := time.Parse(time.RFC3339, e); err == nil {
-				expiry = &t
-			}
-		}
-	}
-
-	return hostID, expiry, nil
+	return pluginID, hostID, expiry, nil
 }
 
 // Cancel 取消待支付订单。

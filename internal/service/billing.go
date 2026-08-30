@@ -157,7 +157,6 @@ func (s *BillingService) renewInTx(tx *gorm.DB, userID, serviceID uint, debit bo
 		}
 		upstreamExpiry = expiry
 	}
-
 	now := time.Now().UTC()
 	// 从「现在」与「原到期时间」中取较晚者起算，剩余时长不缩水。
 	base := now
@@ -210,15 +209,20 @@ func (s *BillingService) renewInTx(tx *gorm.DB, userID, serviceID uint, debit bo
 }
 
 // renewUpstream 向上游插件发起续费，返回上游给出的新到期时间（可能为 nil）。
-// 插件内部会完成上游续费单的创建与余额支付。
+// 插件内部会完成上游续费单的创建与余额支付；接口商品透传接口配置。
 func (s *BillingService) renewUpstream(svc *model.Service) (*time.Time, error) {
 	if s.plugins == nil {
 		return nil, ErrBadRequest("上游插件不可用，无法续费该服务")
 	}
+	ifaceConfig, err := interfaceConfigForService(s.db, svc)
+	if err != nil {
+		return nil, err
+	}
 	reply, err := s.plugins.ManageHost(context.Background(), svc.UpstreamPluginID, &pb.ManageHostRequest{
-		HostId:       svc.UpstreamHostID,
-		Action:       pb.HostAction_HOST_ACTION_RENEW,
-		BillingCycle: svc.BillingCyc,
+		HostId:          svc.UpstreamHostID,
+		Action:          pb.HostAction_HOST_ACTION_RENEW,
+		BillingCycle:    svc.BillingCyc,
+		InterfaceConfig: ifaceConfig,
 	})
 	if err != nil {
 		return nil, ErrBadRequest("上游续费失败: %v", err)
@@ -276,10 +280,15 @@ func (s *BillingService) Power(userID, serviceID uint, action string, os string)
 	if s.plugins == nil {
 		return ErrBadRequest("上游插件不可用")
 	}
+	ifaceConfig, err := interfaceConfigForService(s.db, &svc)
+	if err != nil {
+		return err
+	}
 	reply, err := s.plugins.ManageHost(context.Background(), svc.UpstreamPluginID, &pb.ManageHostRequest{
-		HostId: svc.UpstreamHostID,
-		Action: pbAction,
-		Os:     os,
+		HostId:          svc.UpstreamHostID,
+		Action:          pbAction,
+		Os:              os,
+		InterfaceConfig: ifaceConfig,
 	})
 	if err != nil {
 		return ErrBadRequest("上游操作失败: %v", err)
@@ -305,7 +314,14 @@ func (s *BillingService) UpstreamInfo(userID, serviceID uint) (*pb.UpstreamHost,
 	if s.plugins == nil {
 		return nil, ErrBadRequest("上游插件不可用")
 	}
-	reply, err := s.plugins.GetHost(context.Background(), svc.UpstreamPluginID, &pb.GetHostRequest{HostId: svc.UpstreamHostID})
+	ifaceConfig, err := interfaceConfigForService(s.db, &svc)
+	if err != nil {
+		return nil, err
+	}
+	reply, err := s.plugins.GetHost(context.Background(), svc.UpstreamPluginID, &pb.GetHostRequest{
+		HostId:          svc.UpstreamHostID,
+		InterfaceConfig: ifaceConfig,
+	})
 	if err != nil {
 		return nil, ErrBadRequest("获取上游信息失败: %v", err)
 	}
@@ -330,7 +346,14 @@ func (s *BillingService) ListOS(userID, serviceID uint) ([]*pb.OSImage, error) {
 	if s.plugins == nil {
 		return nil, ErrBadRequest("上游插件不可用")
 	}
-	reply, err := s.plugins.ListHostOS(context.Background(), svc.UpstreamPluginID, &pb.ListHostOSRequest{HostId: svc.UpstreamHostID})
+	ifaceConfig, err := interfaceConfigForService(s.db, &svc)
+	if err != nil {
+		return nil, err
+	}
+	reply, err := s.plugins.ListHostOS(context.Background(), svc.UpstreamPluginID, &pb.ListHostOSRequest{
+		HostId:          svc.UpstreamHostID,
+		InterfaceConfig: ifaceConfig,
+	})
 	if err != nil {
 		return nil, ErrBadRequest("获取系统列表失败: %v", err)
 	}

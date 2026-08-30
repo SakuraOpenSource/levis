@@ -84,6 +84,7 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	catalog.GET("/categories", h.Categories)
 	catalog.GET("/products", h.Products)
 	catalog.GET("/products/:id", h.Product)
+	catalog.GET("/products/:id/os", h.ProductOS)
 
 	// 以下均需登录。
 	authed := guarded.Group("", middleware.RequireAuth(rt))
@@ -101,6 +102,7 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	orders := authed.Group("/orders")
 	orders.GET("", h.Orders)
 	orders.POST("", h.CreateOrder)
+	orders.POST("/direct", h.BuyNow)
 	orders.GET("/:id", h.Order)
 	orders.POST("/:id/pay", h.PayOrder)
 	orders.POST("/:id/cancel", h.CancelOrder)
@@ -167,6 +169,11 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	admin.GET("/provision-plugins", h.AdminProvisionPlugins)
 	admin.GET("/upstream-products", h.AdminUpstreamProducts)
 	admin.POST("/products/:id/sync-info", h.AdminSyncProductInfo)
+	admin.GET("/interfaces", h.AdminInterfaces)
+	admin.POST("/interfaces", h.AdminCreateInterface)
+	admin.PATCH("/interfaces/:id", h.AdminUpdateInterface)
+	admin.POST("/interfaces/:id/test", h.AdminTestInterface)
+	admin.DELETE("/interfaces/:id", h.AdminDeleteInterface)
 	admin.GET("/users/:id/services", h.AdminUserServices)
 	admin.POST("/users/:id/services", h.AdminCreateService)
 	admin.PATCH("/services/:id", h.AdminUpdateService)

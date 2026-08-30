@@ -605,8 +605,8 @@ func TestLoginWithWrongPassword(t *testing.T) {
 	}
 }
 
-// TestCategoryDepthLimited 确认分组层级被限制在两级。
-func TestCategoryDepthLimited(t *testing.T) {
+// TestCategoryNesting 确认分组支持嵌套，且超过防呆上限后被拒绝。
+func TestCategoryNesting(t *testing.T) {
 	db := newTestDB(t)
 	adminSvc := newTestAdminService(t, db)
 
@@ -618,9 +618,22 @@ func TestCategoryDepthLimited(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建小类失败: %v", err)
 	}
-	// 第三级必须被拒绝。
-	if _, err := adminSvc.CreateCategory(CategoryInput{Name: "HK1-A", ParentID: &child.ID}); err == nil {
-		t.Error("三级分组应被拒绝")
+	// 深层嵌套应被允许（无限分组）。
+	grandchild, err := adminSvc.CreateCategory(CategoryInput{Name: "HK1-A", ParentID: &child.ID})
+	if err != nil {
+		t.Fatalf("创建三级分组失败: %v", err)
+	}
+	// 建到防呆上限（maxCategoryDepth）为止，再深一层必须被拒绝。
+	parent := grandchild.ID
+	for i := 0; i < maxCategoryDepth-2; i++ {
+		node, err := adminSvc.CreateCategory(CategoryInput{Name: "深层", ParentID: &parent})
+		if err != nil {
+			t.Fatalf("第 %d 层分组创建失败: %v", i+4, err)
+		}
+		parent = node.ID
+	}
+	if _, err := adminSvc.CreateCategory(CategoryInput{Name: "超限", ParentID: &parent}); err == nil {
+		t.Error("超过深度上限的分组应被拒绝")
 	}
 
 	// 中文名称无法直接转 slug，应自动回退到可用值且不重复。
