@@ -866,9 +866,15 @@ func (s *AdminService) manageUpstream(svc *model.Service, action pb.HostAction) 
 	if s.plugins == nil {
 		return ErrBadRequest("上游插件不可用，无法操作该服务")
 	}
+	// 接口商品的凭据在接口配置里，须按请求透传给插件。
+	ifaceConfig, err := interfaceConfigForService(s.db, svc)
+	if err != nil {
+		return err
+	}
 	reply, err := s.plugins.ManageHost(context.Background(), svc.UpstreamPluginID, &pb.ManageHostRequest{
-		HostId: svc.UpstreamHostID,
-		Action: action,
+		HostId:          svc.UpstreamHostID,
+		Action:          action,
+		InterfaceConfig: ifaceConfig,
 	})
 	if err != nil {
 		return ErrBadRequest("上游操作失败: %v", err)
