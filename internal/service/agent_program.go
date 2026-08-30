@@ -42,6 +42,33 @@ func (s *AgentProgramService) SetEnabled(enabled bool) error {
 	return s.db.Save(&row).Error
 }
 
+// 代理升级模式。
+const (
+	AgentModeAuto   = "auto"
+	AgentModeManual = "manual"
+)
+
+// Mode 返回升级模式，缺省 auto。
+func (s *AgentProgramService) Mode() string {
+	var row model.Setting
+	if err := s.db.First(&row, "key = ?", model.SettingAgentProgramMode).Error; err != nil {
+		return AgentModeAuto
+	}
+	if strings.TrimSpace(row.Value) == AgentModeManual {
+		return AgentModeManual
+	}
+	return AgentModeAuto
+}
+
+// SetMode 设置升级模式。
+func (s *AgentProgramService) SetMode(mode string) error {
+	if mode != AgentModeAuto && mode != AgentModeManual {
+		return ErrBadRequest("无效的代理升级模式")
+	}
+	row := model.Setting{Key: model.SettingAgentProgramMode, Value: mode}
+	return s.db.Save(&row).Error
+}
+
 // TierWithDiscounts 是管理端读写的等级结构（含其分组折扣）。
 type TierWithDiscounts struct {
 	model.AgentTier
@@ -50,8 +77,10 @@ type TierWithDiscounts struct {
 
 // AgentProgramConfig 是代理加盟的整体配置（管理端一次读写）。
 type AgentProgramConfig struct {
-	Enabled bool                `json:"enabled"`
-	Tiers   []TierWithDiscounts `json:"tiers"`
+	Enabled bool `json:"enabled"`
+	// Mode：auto = 余额达标自动升级；manual = 管理员审核（申请需余额达标）。
+	Mode  string              `json:"mode"`
+	Tiers []TierWithDiscounts `json:"tiers"`
 }
 
 // Config 读取完整配置。
@@ -162,8 +191,9 @@ func (s *AgentProgramService) SetDiscount(in DiscountInput) error {
 	return s.db.Save(&row).Error
 }
 
-// TierForUser 判定用户的代理等级：管理员审核绑定的等级优先（预授权），
-// 未绑定时按当前余额自动判定。返回 (等级, 是否为绑定)。
+// TierForUser 判定用户的代理等级：管理员审核绑定的等级优先（预授权）。
+// auto 模式下未绑定时按当前余额自动判定；manual 模式只认绑定，
+// 否则审核就失去意义了。返回 (等级, 是否为绑定)。
 func (s *AgentProgramService) TierForUser(userID uint) (*model.AgentTier, bool) {
 	var user model.User
 	if err := s.db.First(&user, userID).Error; err != nil {
@@ -174,6 +204,9 @@ func (s *AgentProgramService) TierForUser(userID uint) (*model.AgentTier, bool) 
 		if err := s.db.First(&bound, *user.AgentTierID).Error; err == nil {
 			return &bound, true
 		}
+	}
+	if s.Mode() == AgentModeManual {
+		return nil, false
 	}
 	return s.TierForBalance(user.BalanceCents), false
 }
@@ -229,6 +262,8 @@ func (s *AgentProgramService) DiscountFor(tierID uint, categoryID uint) (int, bo
 // UserSummary 是用户侧的代理加盟信息。
 type UserSummary struct {
 	Enabled bool             `json:"enabled"`
+	// Mode：auto=自动升级 / manual=手动审核。
+	Mode string           `json:"mode"`
 	Tier    *model.AgentTier `json:"tier"`
 	Next    *model.AgentTier `json:"next_tier"`
 	// Bound 表示等级来自管理员审核绑定（预授权），而非余额达标。
@@ -243,7 +278,7 @@ type UserSummary struct {
 
 // Summary 返回用户视角的加盟信息（等级、距下一档差额、生效折扣）。
 func (s *AgentProgramService) Summary(userID uint) (*UserSummary, error) {
-	out := &UserSummary{Enabled: s.Enabled()}
+	out := &UserSummary{Enabled: s.Enabled(), Mode: s.Mode()}
 	if !out.Enabled {
 		return out, nil
 	}
@@ -304,6 +339,19 @@ func (s *AgentProgramService) Apply(userID uint, in ApplyInput) (*model.AgentApp
 			return nil, ErrNotFound("申请的等级不存在")
 		}
 		return nil, err
+	}
+	// 手动审核模式要求余额达标才能提交申请。
+	if s.Mode() == AgentModeManual {
+		var user model.User
+		if err := s.db.First(&user, userID).Error; err != nil {
+			return nil, err
+		}
+		if user.BalanceCents < tier.MinBalanceCents {
+			return nil, ErrBadRequest(
+				"申请「%s」需余额达到 ¥%.2f，当前 ¥%.2f",
+				tier.Name, float64(tier.MinBalanceCents)/100, float64(user.BalanceCents)/100,
+			)
+		}
 	}
 	var pending int64
 	if err := s.db.Model(&model.AgentApplication{}).

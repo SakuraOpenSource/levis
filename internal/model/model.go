@@ -96,6 +96,10 @@ const (
 
 	// SettingAgentProgramEnabled 是代理加盟开关："1"/"0"。
 	SettingAgentProgramEnabled = "agent_program_enabled"
+
+	// SettingAgentProgramMode 是代理升级模式："auto"（余额达标自动升级）
+	// 或 "manual"（管理员审核，申请需余额达标）。
+	SettingAgentProgramMode = "agent_program_mode"
 )
 
 // User 是系统用户。普通用户与管理员共用此表，由 Role 区分。
