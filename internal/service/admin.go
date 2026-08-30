@@ -727,11 +727,15 @@ func normalizeProvisionConfig(cfg *model.ProvisionSpec) error {
 		{"流量", &cfg.TrafficGB, 0},
 	}
 	for _, item := range ranges {
-		if item.rng.Min < item.minimum || item.rng.Max < item.rng.Min {
-			return ErrBadRequest("%s的取值范围不合法（最小 %d，且最小值不超过最大值）", item.name, item.minimum)
+		if item.rng.Min < item.minimum {
+			return ErrBadRequest("%s不能小于 %d", item.name, item.minimum)
 		}
 		if cfg.Mode == model.ProvisionModeFixed {
+			// 固定模式只有最小值有意义，最大值直接收敛，避免隐藏的
+			// 遗留值造成 min > max 的假错误。
 			*item.rng = model.Fixed(item.rng.Min)
+		} else if item.rng.Max < item.rng.Min {
+			return ErrBadRequest("%s的最大值不能小于最小值", item.name)
 		}
 	}
 	return nil
