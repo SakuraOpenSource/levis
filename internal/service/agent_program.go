@@ -261,11 +261,11 @@ func (s *AgentProgramService) DiscountFor(tierID uint, categoryID uint) (int, bo
 
 // UserSummary 是用户侧的代理加盟信息。
 type UserSummary struct {
-	Enabled bool             `json:"enabled"`
+	Enabled bool `json:"enabled"`
 	// Mode：auto=自动升级 / manual=手动审核。
 	Mode string           `json:"mode"`
-	Tier    *model.AgentTier `json:"tier"`
-	Next    *model.AgentTier `json:"next_tier"`
+	Tier *model.AgentTier `json:"tier"`
+	Next *model.AgentTier `json:"next_tier"`
 	// Bound 表示等级来自管理员审核绑定（预授权），而非余额达标。
 	Bound bool `json:"bound"`
 	// BalanceCents 是用户当前余额，供前端展示升级进度。
