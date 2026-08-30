@@ -107,7 +107,10 @@ type User struct {
 	PasswordHash string `gorm:"size:255;not null" json:"-"`
 	Role         string `gorm:"size:16;not null;default:user" json:"role"`
 	BalanceCents int64  `gorm:"not null;default:0" json:"balance_cents"`
-	Status       string `gorm:"size:16;not null;default:active" json:"status"`
+	// AgentTierID 是管理员审核代理申请后绑定的等级；非空时优先于余额
+	// 自动判定（支持预授权代理）。指向 agent_tiers.id。
+	AgentTierID *uint  `gorm:"index" json:"agent_tier_id"`
+	Status      string `gorm:"size:16;not null;default:active" json:"status"`
 }
 
 // IsAdmin 报告用户是否为管理员。
@@ -148,6 +151,28 @@ type AgentTierDiscount struct {
 	TierID           uint `gorm:"index:idx_tier_category,unique;not null" json:"tier_id"`
 	CategoryID       uint `gorm:"index:idx_tier_category,unique;not null" json:"category_id"`
 	DiscountPermille int  `gorm:"not null" json:"discount_permille"`
+}
+
+// 代理申请状态。
+const (
+	AgentApplyPending  = "pending"
+	AgentApplyApproved = "approved"
+	AgentApplyRejected = "rejected"
+)
+
+// AgentApplication 是用户的代理申请：选申请等级、留联系方式，管理员审核；
+// 通过后把申请人的 AgentTierID 绑到该等级（余额不足也生效，即预授权）。
+type AgentApplication struct {
+	Base
+	UserID       uint   `gorm:"index;not null" json:"user_id"`
+	TierID       uint   `gorm:"index;not null" json:"tier_id"`
+	Contact      string `gorm:"size:128" json:"contact"`
+	Remark       string `gorm:"type:text" json:"remark"`
+	Status       string `gorm:"size:16;not null;default:pending" json:"status"`
+	ReviewRemark string `gorm:"size:255" json:"review_remark"`
+	ReviewedBy   *uint  `json:"reviewed_by"`
+	// User 是审核列表展示用的关联，不持久化。
+	User *User `gorm:"foreignKey:UserID" json:"user,omitempty"`
 }
 
 // Spec 是商品的一条规格，如 {Label: "CPU", Value: "4 核"}。
@@ -352,6 +377,7 @@ func AllModels() []any {
 		&ProductCategory{},
 		&AgentTier{},
 		&AgentTierDiscount{},
+		&AgentApplication{},
 		&Product{},
 		&CartItem{},
 		&Order{},

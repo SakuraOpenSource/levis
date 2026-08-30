@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/SakuraOpenSource/levis/internal/httpx"
+	"github.com/SakuraOpenSource/levis/internal/model"
 	"github.com/SakuraOpenSource/levis/internal/service"
 )
 
@@ -153,4 +154,49 @@ func (h *Handler) CancelOrder(c *gin.Context) {
 func (h *Handler) AgentProgramSummary(c *gin.Context) {
 	summary, err := h.agentProgram().Summary(httpx.CurrentUserID(c))
 	respond(c, summary, err)
+}
+
+// AgentProgramApply 提交代理申请。
+func (h *Handler) AgentProgramApply(c *gin.Context) {
+	var in service.ApplyInput
+	if !bindJSON(c, &in) {
+		return
+	}
+	application, err := h.agentProgram().Apply(httpx.CurrentUserID(c), in)
+	respond(c, application, err)
+}
+
+// AgentProgramApplications 返回代理申请列表（管理端）。
+func (h *Handler) AgentProgramApplications(c *gin.Context) {
+	items, err := h.agentProgram().Applications(c.Query("status"))
+	respond(c, gin.H{"items": items}, err)
+}
+
+// AgentProgramReview 审核代理申请（管理端）。
+func (h *Handler) AgentProgramReview(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	var in service.ReviewInput
+	if !bindJSON(c, &in) {
+		return
+	}
+	application, err := h.agentProgram().Review(id, httpx.CurrentUserID(c), in)
+	respond(c, application, err)
+}
+
+// AgentProgramTiers 返回可申请的代理等级（用户端申请表单用）。
+func (h *Handler) AgentProgramTiers(c *gin.Context) {
+	svc := h.agentProgram()
+	if !svc.Enabled() {
+		respond(c, gin.H{"items": []any{}}, nil)
+		return
+	}
+	var tiers []model.AgentTier
+	if err := svc.DB().Order("sort ASC, min_balance_cents ASC").Find(&tiers).Error; err != nil {
+		respond(c, nil, err)
+		return
+	}
+	respond(c, gin.H{"items": tiers}, nil)
 }

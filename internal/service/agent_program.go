@@ -162,6 +162,22 @@ func (s *AgentProgramService) SetDiscount(in DiscountInput) error {
 	return s.db.Save(&row).Error
 }
 
+// TierForUser 判定用户的代理等级：管理员审核绑定的等级优先（预授权），
+// 未绑定时按当前余额自动判定。返回 (等级, 是否为绑定)。
+func (s *AgentProgramService) TierForUser(userID uint) (*model.AgentTier, bool) {
+	var user model.User
+	if err := s.db.First(&user, userID).Error; err != nil {
+		return nil, false
+	}
+	if user.AgentTierID != nil {
+		var bound model.AgentTier
+		if err := s.db.First(&bound, *user.AgentTierID).Error; err == nil {
+			return &bound, true
+		}
+	}
+	return s.TierForBalance(user.BalanceCents), false
+}
+
 // TierForBalance 按余额判定等级（达标最高档），无匹配返回 nil。
 func (s *AgentProgramService) TierForBalance(balanceCents int64) *model.AgentTier {
 	var tiers []model.AgentTier
@@ -215,6 +231,12 @@ type UserSummary struct {
 	Enabled bool             `json:"enabled"`
 	Tier    *model.AgentTier `json:"tier"`
 	Next    *model.AgentTier `json:"next_tier"`
+	// Bound 表示等级来自管理员审核绑定（预授权），而非余额达标。
+	Bound bool `json:"bound"`
+	// BalanceCents 是用户当前余额，供前端展示升级进度。
+	BalanceCents int64 `json:"balance_cents"`
+	// Application 是用户最近一次申请（无申请为 null）。
+	Application *model.AgentApplication `json:"application"`
 	// Discounts 是该等级生效的分组折扣（管理端配置原样展示）。
 	Discounts []model.AgentTierDiscount `json:"discounts"`
 }
@@ -229,7 +251,8 @@ func (s *AgentProgramService) Summary(userID uint) (*UserSummary, error) {
 	if err := s.db.First(&user, userID).Error; err != nil {
 		return nil, err
 	}
-	out.Tier = s.TierForBalance(user.BalanceCents)
+	out.BalanceCents = user.BalanceCents
+	out.Tier, out.Bound = s.TierForUser(userID)
 	var tiers []model.AgentTier
 	if err := s.db.Order("min_balance_cents ASC").Find(&tiers).Error; err != nil {
 		return nil, err
@@ -248,5 +271,131 @@ func (s *AgentProgramService) Summary(userID uint) (*UserSummary, error) {
 			return nil, err
 		}
 	}
+	var latest model.AgentApplication
+	if err := s.db.Where("user_id = ?", userID).
+		Order("id DESC").First(&latest).Error; err == nil {
+		out.Application = &latest
+	}
 	return out, nil
+}
+
+// ApplyInput 是代理申请入参。
+type ApplyInput struct {
+	TierID  uint   `json:"tier_id"`
+	Contact string `json:"contact"`
+	Remark  string `json:"remark"`
+}
+
+// Apply 提交代理申请。已有待审申请时拒绝重复提交。
+func (s *AgentProgramService) Apply(userID uint, in ApplyInput) (*model.AgentApplication, error) {
+	if !s.Enabled() {
+		return nil, ErrBadRequest("代理加盟未开放")
+	}
+	in.Contact = strings.TrimSpace(in.Contact)
+	if in.TierID == 0 {
+		return nil, ErrBadRequest("请选择申请的代理等级")
+	}
+	if in.Contact == "" {
+		return nil, ErrBadRequest("请填写联系方式")
+	}
+	var tier model.AgentTier
+	if err := s.db.First(&tier, in.TierID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("申请的等级不存在")
+		}
+		return nil, err
+	}
+	var pending int64
+	if err := s.db.Model(&model.AgentApplication{}).
+		Where("user_id = ? AND status = ?", userID, model.AgentApplyPending).
+		Count(&pending).Error; err != nil {
+		return nil, err
+	}
+	if pending > 0 {
+		return nil, ErrConflict("您已有一条待审核的申请")
+	}
+	application := model.AgentApplication{
+		UserID:  userID,
+		TierID:  in.TierID,
+		Contact: in.Contact,
+		Remark:  strings.TrimSpace(in.Remark),
+		Status:  model.AgentApplyPending,
+	}
+	if err := s.db.Create(&application).Error; err != nil {
+		return nil, err
+	}
+	return &application, nil
+}
+
+// ApplicationWithUser 是审核列表的一行。
+type ApplicationWithUser struct {
+	model.AgentApplication
+	Username     string `json:"username"`
+	Email        string `json:"email"`
+	BalanceCents int64  `json:"balance_cents"`
+	TierName     string `json:"tier_name"`
+}
+
+// Applications 返回申请列表（可按状态过滤，最新在前）。
+func (s *AgentProgramService) Applications(status string) ([]ApplicationWithUser, error) {
+	query := s.db.Model(&model.AgentApplication{})
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	var items []model.AgentApplication
+	if err := query.Order("id DESC").Limit(200).Find(&items).Error; err != nil {
+		return nil, err
+	}
+	out := make([]ApplicationWithUser, 0, len(items))
+	for _, item := range items {
+		row := ApplicationWithUser{AgentApplication: item}
+		var user model.User
+		if err := s.db.First(&user, item.UserID).Error; err == nil {
+			row.Username = user.Username
+			row.Email = user.Email
+			row.BalanceCents = user.BalanceCents
+		}
+		var tier model.AgentTier
+		if err := s.db.First(&tier, item.TierID).Error; err == nil {
+			row.TierName = tier.Name
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+// ReviewInput 是审核入参。
+type ReviewInput struct {
+	Approve      bool   `json:"approve"`
+	ReviewRemark string `json:"review_remark"`
+}
+
+// Review 审核代理申请：通过则把申请人绑到申请的等级（预授权，余额不足也生效）。
+func (s *AgentProgramService) Review(applicationID uint, reviewerID uint, in ReviewInput) (*model.AgentApplication, error) {
+	var application model.AgentApplication
+	if err := s.db.First(&application, applicationID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("申请不存在")
+		}
+		return nil, err
+	}
+	if application.Status != model.AgentApplyPending {
+		return nil, ErrConflict("该申请已处理")
+	}
+	application.Status = model.AgentApplyRejected
+	if in.Approve {
+		application.Status = model.AgentApplyApproved
+	}
+	application.ReviewRemark = strings.TrimSpace(in.ReviewRemark)
+	application.ReviewedBy = &reviewerID
+	if err := s.db.Save(&application).Error; err != nil {
+		return nil, err
+	}
+	if in.Approve {
+		if err := s.db.Model(&model.User{}).Where("id = ?", application.UserID).
+			Update("agent_tier_id", application.TierID).Error; err != nil {
+			return nil, err
+		}
+	}
+	return &application, nil
 }

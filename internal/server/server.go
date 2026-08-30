@@ -185,6 +185,12 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	admin.GET("/agent-program", h.AgentProgram)
 	admin.PUT("/agent-program", h.UpdateAgentProgram)
 	authed.GET("/agent-program/summary", h.AgentProgramSummary)
+	authed.POST("/agent-program/apply", h.AgentProgramApply)
+	authed.GET("/agent-program/tiers", h.AgentProgramTiers)
+
+	// 代理申请审核。
+	admin.GET("/agent-program/applications", h.AgentProgramApplications)
+	admin.POST("/agent-program/applications/:id/review", h.AgentProgramReview)
 	admin.PUT("/settings/kyc", h.AdminUpdateKYCSettings)
 	admin.GET("/tickets", h.AdminTickets)
 	admin.GET("/tickets/:id", h.AdminTicket)
