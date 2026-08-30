@@ -465,8 +465,12 @@ func (s *AdminService) DeleteCategory(id uint) error {
 	return nil
 }
 
-// validateParent 校验父分组：必须存在、不能是自己、且父级本身不能再有父级
-// （限制为两级结构）。
+// maxCategoryDepth 是分组嵌套深度上限（防呆：正常业务用不到这么深，
+// 主要防止意外成环拖垮树组装）。
+const maxCategoryDepth = 10
+
+// validateParent 校验父分组：必须存在、不能是自己或自己的子孙（防环），
+// 且链深不超过 maxCategoryDepth。
 func (s *AdminService) validateParent(parentID *uint, selfID uint) error {
 	if parentID == nil {
 		return nil
@@ -475,30 +479,31 @@ func (s *AdminService) validateParent(parentID *uint, selfID uint) error {
 		return ErrBadRequest("无效的父分组")
 	}
 	if selfID != 0 && *parentID == selfID {
-		return ErrBadRequest("分组不能以自己作为父分组")
+		return ErrBadRequest("分组不能以自己或自己的子孙作为父分组")
 	}
-	var parent model.ProductCategory
-	if err := s.db.First(&parent, *parentID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrBadRequest("父分组不存在")
-		}
-		return err
-	}
-	if parent.ParentID != nil {
-		return ErrBadRequest("分组层级最多两级")
-	}
-	// 自己若已有子分组，就不能再挂到别人下面，否则会变成三级。
-	if selfID != 0 {
-		var children int64
-		if err := s.db.Model(&model.ProductCategory{}).
-			Where("parent_id = ?", selfID).Count(&children).Error; err != nil {
+	// 沿父链向上走：遇到 selfID 说明会成环；超出深度上限则拒绝。
+	depth := 0
+	cursor := *parentID
+	for {
+		var node model.ProductCategory
+		if err := s.db.First(&node, cursor).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrBadRequest("父分组不存在")
+			}
 			return err
 		}
-		if children > 0 {
-			return ErrBadRequest("该分组下已有子分组，不能再设置父分组")
+		depth++
+		if depth > maxCategoryDepth {
+			return ErrBadRequest("分组嵌套层级过深（上限 %d 层）", maxCategoryDepth)
 		}
+		if selfID != 0 && node.ID == selfID {
+			return ErrBadRequest("分组不能以自己或自己的子孙作为父分组")
+		}
+		if node.ParentID == nil {
+			return nil
+		}
+		cursor = *node.ParentID
 	}
-	return nil
 }
 
 // uniqueSlug 生成不与他人冲突的 slug。

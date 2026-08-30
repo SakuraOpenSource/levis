@@ -39,25 +39,27 @@ func (s *CatalogService) Tree() ([]model.ProductCategory, error) {
 		byCategory[p.CategoryID] = append(byCategory[p.CategoryID], p)
 	}
 
-	// 先建索引，再按 ParentID 挂载，这样不依赖记录的返回顺序。
-	index := make(map[uint]*model.ProductCategory, len(categories))
+	// 先建父→子指针索引，再从每个根递归装配：先装满孩子的 Children，
+	// 再把整棵子树拷贝进父节点，任意深度都不会断链（旧实现按序拷贝，
+	// 只能正确组装两级）。
+	children := make(map[uint][]*model.ProductCategory, len(categories))
 	for i := range categories {
 		categories[i].Products = byCategory[categories[i].ID]
-		index[categories[i].ID] = &categories[i]
+		if pid := categories[i].ParentID; pid != nil {
+			children[*pid] = append(children[*pid], &categories[i])
+		}
 	}
-
+	var attach func(node *model.ProductCategory)
+	attach = func(node *model.ProductCategory) {
+		for _, child := range children[node.ID] {
+			attach(child)
+			node.Children = append(node.Children, *child)
+		}
+	}
 	var roots []model.ProductCategory
 	for i := range categories {
-		node := &categories[i]
-		if node.ParentID == nil {
-			continue
-		}
-		if parent, ok := index[*node.ParentID]; ok {
-			parent.Children = append(parent.Children, *node)
-		}
-	}
-	for i := range categories {
 		if categories[i].ParentID == nil {
+			attach(&categories[i])
 			roots = append(roots, categories[i])
 		}
 	}
