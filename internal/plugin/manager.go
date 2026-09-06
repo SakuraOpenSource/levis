@@ -560,6 +560,68 @@ func (m *Manager) VerifyPaymentCallback(ctx context.Context, id string, req *pb.
 }
 
 // ListHostOS 获取上游主机可用的重装系统列表。
+// GetHostMetrics 查询上游主机实时指标；插件未实现时返回 ErrUnavailable。
+func (m *Manager) GetHostMetrics(ctx context.Context, id string, req *pb.GetHostMetricsRequest) (*pb.GetHostMetricsReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.GetHostMetricsReply
+	err = c.call(ctx, provisionTimeout, func(ctx context.Context) error {
+		reply, err := client.GetHostMetrics(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.GetError() != "" {
+		return nil, fmt.Errorf("%s", out.GetError())
+	}
+	return out, nil
+}
+
+// GetHostAccess 查询上游主机网络与 SSH 访问信息。
+func (m *Manager) GetHostAccess(ctx context.Context, id string, req *pb.GetHostAccessRequest) (*pb.GetHostAccessReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.GetHostAccessReply
+	err = c.call(ctx, provisionTimeout, func(ctx context.Context) error {
+		reply, err := client.GetHostAccess(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.GetError() != "" {
+		return nil, fmt.Errorf("%s", out.GetError())
+	}
+	return out, nil
+}
+
 func (m *Manager) ListHostOS(ctx context.Context, id string, req *pb.ListHostOSRequest) (*pb.ListHostOSReply, error) {
 	inst, err := m.get(id)
 	if err != nil {

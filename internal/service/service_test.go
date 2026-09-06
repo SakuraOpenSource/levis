@@ -842,6 +842,97 @@ func TestProductSpecsNormalized(t *testing.T) {
 	}
 }
 
+func TestElasticProvisionPricingAndValidation(t *testing.T) {
+	db := newTestDB(t)
+	adminSvc := newTestAdminService(t, db)
+	category, err := adminSvc.CreateCategory(CategoryInput{Name: "弹性云"})
+	if err != nil {
+		t.Fatalf("创建分组失败: %v", err)
+	}
+	cfg := model.ProvisionSpec{
+		Driver:        "incus",
+		Mode:          model.ProvisionModeElastic,
+		CPU:           model.SpecRange{Min: 1, Max: 5, Step: 2, UnitPriceCents: 100},
+		MemoryMB:      model.SpecRange{Min: 512, Max: 1536, Step: 512, UnitPriceCents: 50},
+		DiskGB:        model.SpecRange{Min: 10, Max: 30, Step: 10, UnitPriceCents: 25},
+		BandwidthMbps: model.SpecRange{Min: 10, Max: 30, Step: 10, UnitPriceCents: 10},
+		TrafficGB:     model.SpecRange{Min: 0, Max: 100, Step: 50, UnitPriceCents: 5},
+	}
+	// 订单路径只需要接口商品快照；管理接口 ID 的存在性由其它测试覆盖，
+	// 这里直接写入商品以聚焦弹性规格定价。
+	product := &model.Product{
+		CategoryID: category.ID, Name: "弹性实例", PriceCents: 1000,
+		BillingCyc: model.CycleMonthly, Stock: -1, Status: model.ProductActive,
+		InterfaceID: 1, ProvisionConfig: cfg,
+	}
+	if err := db.Create(product).Error; err != nil {
+		t.Fatalf("创建弹性商品失败: %v", err)
+	}
+	options := map[string]string{
+		"cpu": "5", "memory_mb": "1536", "disk_gb": "30", "bandwidth_mbps": "30", "traffic_gb": "100", "image_id": "alpine",
+	}
+	items, total, err := buildOrderItems(db, 0, []OrderLine{{ProductID: product.ID, Quantity: 2, Options: options}})
+	if err != nil {
+		t.Fatalf("弹性商品下单失败: %v", err)
+	}
+	// 基础 1000 + CPU 2×100 + 内存 2×50 + 硬盘 2×25 + 带宽 2×10 + 流量 2×5 = 1380。
+	if total != 2760 || len(items) != 1 || items[0].PriceCents != 1380 {
+		t.Fatalf("弹性价格错误: total=%d items=%+v", total, items)
+	}
+
+	// 代理折扣应作用于基础价与弹性增量之和：1380 × 800‰ = 1104。
+	user := seedUser(t, db, "elastic-agent", 0)
+	agent := NewAgentProgramService(db)
+	if err := agent.SetEnabled(true); err != nil {
+		t.Fatalf("开启代理加盟失败: %v", err)
+	}
+	tier, err := agent.SaveTier(0, TierInput{Name: "标准代理", MinBalanceCents: 0})
+	if err != nil {
+		t.Fatalf("创建代理等级失败: %v", err)
+	}
+	if err := agent.SetDiscount(DiscountInput{TierID: tier.ID, CategoryID: category.ID, DiscountPermille: 800}); err != nil {
+		t.Fatalf("设置代理折扣失败: %v", err)
+	}
+	discounted, total, err := buildOrderItems(db, user.ID, []OrderLine{{ProductID: product.ID, Quantity: 1, Options: options}})
+	if err != nil {
+		t.Fatalf("代理弹性商品下单失败: %v", err)
+	}
+	if total != 1104 || discounted[0].PriceCents != 1104 {
+		t.Fatalf("代理折扣未作用于弹性总价: total=%d items=%+v", total, discounted)
+	}
+
+	options["cpu"] = "2"
+	if _, _, err := buildOrderItems(db, 0, []OrderLine{{ProductID: product.ID, Quantity: 1, Options: options}}); err == nil {
+		t.Error("未按 CPU 步长选择应拒绝")
+	}
+	cfg.CPU.Max = 4
+	if err := normalizeProvisionConfig(&cfg); err == nil {
+		t.Error("范围未按步长对齐应拒绝")
+	}
+	cfg.CPU.Max = 5
+	cfg.CPU.UnitPriceCents = -1
+	if err := normalizeProvisionConfig(&cfg); err == nil {
+		t.Error("负的每步加价应拒绝")
+	}
+
+	fixed := model.ProvisionSpec{
+		Driver: "qemu", Mode: model.ProvisionModeFixed,
+		CPU:           model.SpecRange{Min: 2, Max: 99, Step: 2, UnitPriceCents: 300},
+		MemoryMB:      model.SpecRange{Min: 1024, Max: 2048, Step: 512, UnitPriceCents: 80},
+		DiskGB:        model.SpecRange{Min: 20, Max: 100, Step: 10, UnitPriceCents: 20},
+		BandwidthMbps: model.SpecRange{Min: 20, Max: 100, Step: 10, UnitPriceCents: 20},
+		TrafficGB:     model.SpecRange{Min: 0, Max: 100, Step: 10, UnitPriceCents: 20},
+	}
+	if err := normalizeProvisionConfig(&fixed); err != nil {
+		t.Fatalf("固定配置归一失败: %v", err)
+	}
+	for _, item := range []model.SpecRange{fixed.CPU, fixed.MemoryMB, fixed.DiskGB, fixed.BandwidthMbps, fixed.TrafficGB} {
+		if item.Step != 0 || item.UnitPriceCents != 0 || item.Min != item.Max {
+			t.Errorf("固定配置应归一为单点并清零计价字段: %+v", item)
+		}
+	}
+}
+
 // TestRenewExtendsServiceAndKeepsLedger 确认续费扣款、顺延到期并留下账单流水。
 func TestRenewExtendsServiceAndKeepsLedger(t *testing.T) {
 	db := newTestDB(t)

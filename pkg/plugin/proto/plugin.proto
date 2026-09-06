@@ -86,6 +86,12 @@ service Plugin {
   // 需声明 CAPABILITY_PROVISION_PRODUCT。
   rpc ListProductOS(ListProductOSRequest) returns (ListHostOSReply);
 
+  // GetHostMetrics 获取服务实例的实时监控数据。未实现的插件返回 UNIMPLEMENTED。
+  rpc GetHostMetrics(GetHostMetricsRequest) returns (GetHostMetricsReply);
+
+  // GetHostAccess 获取服务实例的网络与 SSH 访问信息。未实现的插件返回 UNIMPLEMENTED。
+  rpc GetHostAccess(GetHostAccessRequest) returns (GetHostAccessReply);
+
   // StartKYC 发起实名认证并返回认证跳转地址/HTML。
   // 需声明 CAPABILITY_KYC。
   rpc StartKYC(StartKYCRequest) returns (StartKYCReply);
@@ -401,6 +407,12 @@ enum HostAction {
   HOST_ACTION_REBOOT = 7;
   // HOST_ACTION_REINSTALL 重装系统。
   HOST_ACTION_REINSTALL = 8;
+  // HOST_ACTION_HARD_BOOT 强制开机（绕过来宾系统电源协作）。
+  HOST_ACTION_HARD_BOOT = 9;
+  // HOST_ACTION_HARD_STOP 强制断电。
+  HOST_ACTION_HARD_STOP = 10;
+  // HOST_ACTION_HARD_RESTART 强制重启。
+  HOST_ACTION_HARD_RESTART = 11;
 }
 
 message ManageHostRequest {
@@ -440,6 +452,88 @@ message UpstreamHost {
   string upstream_order_id = 7;
   // actions 是上游支持的操作列表，如 on/off/reboot/reinstall。
   repeated string actions = 8;
+  // resources 是上游返回的可分配资源；缺失或未知的值保持为零。
+  HostResources resources = 9;
+  // network 是上游返回的地址与网络信息。
+  HostNetwork network = 10;
+  // ssh 是上游返回的 SSH 连接信息。password 仅在上游明确提供时返回。
+  HostSSH ssh = 11;
+  // 以下顶层字段是早期插件/客户端易用别名，与嵌套消息保持一致；新代码优先
+  // 读取 resources/network/ssh。字段只增不改，便于旧客户端逐步迁移。
+  int32 cpu = 12;
+  int64 memory_mb = 13;
+  int64 disk_gb = 14;
+  int64 bandwidth_mbps = 15;
+  string ipv4 = 16;
+  string ssh_host = 17;
+  int32 ssh_port = 18;
+  string ssh_username = 19;
+  string ssh_password = 20;
+  bool ssh_ready = 21;
+}
+
+// HostResources 是服务实例的资源配置。
+message HostResources {
+  int32 cpu = 1;
+  int64 memory_mb = 2;
+  int64 disk_gb = 3;
+  int64 bandwidth_mbps = 4;
+  int64 traffic_gb = 5;
+}
+
+// HostNetwork 是服务实例的网络配置与观测结果。
+message HostNetwork {
+  string mode = 1;
+  string ipv4 = 2;
+  repeated string ipv4_addresses = 3;
+  repeated string ipv6_addresses = 4;
+  string mac = 5;
+  string gateway = 6;
+  repeated string dns = 7;
+  bool reachable = 8;
+  double latency_ms = 9;
+}
+
+// HostSSH 是服务实例的 SSH 访问信息。
+message HostSSH {
+  string host = 1;
+  int32 port = 2;
+  string username = 3;
+  string password = 4;
+  bool ready = 5;
+}
+
+// HostMetrics 是可选的实例监控数据，插件不支持时返回 UNIMPLEMENTED。
+message HostMetrics {
+  double cpu_percent = 1;
+  int64 memory_used_mb = 2;
+  int64 memory_total_mb = 3;
+  uint64 network_rx_bytes = 4;
+  uint64 network_tx_bytes = 5;
+  double bandwidth_rx_bps = 6;
+  double bandwidth_tx_bps = 7;
+  string collected_at = 8;
+}
+
+message GetHostMetricsRequest {
+  string host_id = 1;
+  map<string, string> interface_config = 2;
+}
+
+message GetHostMetricsReply {
+  HostMetrics metrics = 1;
+  string error = 2;
+}
+
+message GetHostAccessRequest {
+  string host_id = 1;
+  map<string, string> interface_config = 2;
+}
+
+message GetHostAccessReply {
+  HostNetwork network = 1;
+  HostSSH ssh = 2;
+  string error = 3;
 }
 
 message GetHostReply {

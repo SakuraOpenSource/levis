@@ -108,22 +108,24 @@ func buildOrderItems(tx *gorm.DB, userID uint, lines []OrderLine) ([]model.Order
 		}
 
 		unitPrice := product.PriceCents
+		if product.InterfaceID != 0 {
+			// 接口商品的选配价格以商品基础价为底，再叠加每项资源的弹性加价。
+			// 先校验选配，避免对越界或未对齐的值计价。
+			if err := validateProvisionOptions(product.ProvisionConfig, line.Options); err != nil {
+				return nil, 0, err
+			}
+			unitPrice += provisionOptionPrice(product.ProvisionConfig, line.Options)
+		}
 		discountPermille := 0
 		if agents != nil && tier != nil {
 			if permille, ok := agents.DiscountFor(tier.ID, product.CategoryID); ok && permille > 0 && permille < 1000 {
 				discountPermille = permille
-				unitPrice = product.PriceCents * int64(permille) / 1000
+				unitPrice = unitPrice * int64(permille) / 1000
 			}
 		}
 		total += unitPrice * int64(line.Quantity)
 		options := model.OptionMap(nil)
 		if product.InterfaceID != 0 {
-			// 接口商品必须带选配，且选配值须落在商品配置的区间内。
-			// 校验在这里做而不是开通时做：带着不合法的选配生成订单，
-			// 用户支付时才会失败的体验不可接受。
-			if err := validateProvisionOptions(product.ProvisionConfig, line.Options); err != nil {
-				return nil, 0, err
-			}
 			options = model.OptionMap(line.Options)
 		}
 		items = append(items, model.OrderItem{
@@ -173,11 +175,48 @@ func validateProvisionOptions(cfg model.ProvisionSpec, options map[string]string
 		if value < item.rng.Min || value > item.rng.Max {
 			return ErrBadRequest("%s超出可选范围（%d-%d）", item.label, item.rng.Min, item.rng.Max)
 		}
+		step := item.rng.Step
+		if step <= 0 {
+			// 历史弹性配置没有 Step 字段，按 1 兼容读取；新配置由
+			// normalizeProvisionConfig 保证步长必须显式大于 0。
+			step = 1
+		}
+		if (value-item.rng.Min)%step != 0 {
+			return ErrBadRequest("%s必须按 %d 的步长选择", item.label, step)
+		}
 	}
 	if options["image_id"] == "" {
 		return ErrBadRequest("请选择操作系统")
 	}
 	return nil
+}
+
+// provisionOptionPrice 返回接口商品选配相对基础规格的加价。
+// 缺失的历史 Step/UnitPriceCents 按 1/0 处理，确保旧商品仍可购买。
+func provisionOptionPrice(cfg model.ProvisionSpec, options map[string]string) int64 {
+	numeric := []struct {
+		key string
+		rng model.SpecRange
+	}{
+		{"cpu", cfg.CPU},
+		{"memory_mb", cfg.MemoryMB},
+		{"disk_gb", cfg.DiskGB},
+		{"bandwidth_mbps", cfg.BandwidthMbps},
+		{"traffic_gb", cfg.TrafficGB},
+	}
+	var extra int64
+	for _, item := range numeric {
+		value, err := strconv.Atoi(options[item.key])
+		if err != nil {
+			continue
+		}
+		step := item.rng.Step
+		if step <= 0 {
+			step = 1
+		}
+		extra += int64((value-item.rng.Min)/step) * item.rng.UnitPriceCents
+	}
+	return extra
 }
 
 // CreateFromCart 用当前购物车创建待支付订单。

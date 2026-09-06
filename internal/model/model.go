@@ -265,16 +265,20 @@ const (
 	ProvisionModeElastic = "elastic"
 )
 
-// SpecRange 是一项规格的取值区间。固定配置时 Min == Max。
+// SpecRange 是一项规格的取值区间。
+//
+// 弹性配置使用 Step 和 UnitPriceCents 表示从 Min 起每增加一个步长的加价；
+// 固定配置会在归一时把这两个字段清零。
 type SpecRange struct {
-	Min int `json:"min"`
-	Max int `json:"max"`
+	Min            int   `json:"min"`
+	Max            int   `json:"max"`
+	Step           int   `json:"step"`
+	UnitPriceCents int64 `json:"unit_price_cents"`
 }
 
 // ProvisionSpec 是接口商品的开通配置：驱动 + 各规格的区间或固定值。
 //
-// 流量以 GB 为单位入库（管理员可用 TB 录入，前端负责换算）；
-// Min/Max 为 0 表示不限流量。
+// 流量统一以 GB 为单位入库与展示；Min/Max 为 0 表示不限流量。
 type ProvisionSpec struct {
 	Driver        string    `json:"driver"` // incus / qemu
 	Mode          string    `json:"mode"`   // fixed / elastic

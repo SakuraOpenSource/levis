@@ -240,10 +240,13 @@ func (s *BillingService) renewUpstream(svc *model.Service) (*time.Time, error) {
 
 // 电源操作动作名，与前端约定一致。
 const (
-	PowerBoot      = "boot"
-	PowerShutdown  = "shutdown"
-	PowerReboot    = "reboot"
-	PowerReinstall = "reinstall"
+	PowerBoot        = "boot"
+	PowerShutdown    = "shutdown"
+	PowerReboot      = "reboot"
+	PowerHardBoot    = "hard_boot"
+	PowerHardStop    = "hard_stop"
+	PowerHardRestart = "hard_restart"
+	PowerReinstall   = "reinstall"
 )
 
 // Power 对上游服务执行电源操作（开机/关机/重启/重装系统）。
@@ -271,6 +274,12 @@ func (s *BillingService) Power(userID, serviceID uint, action string, os string)
 		pbAction = pb.HostAction_HOST_ACTION_SHUTDOWN
 	case PowerReboot:
 		pbAction = pb.HostAction_HOST_ACTION_REBOOT
+	case PowerHardBoot:
+		pbAction = pb.HostAction_HOST_ACTION_HARD_BOOT
+	case PowerHardStop:
+		pbAction = pb.HostAction_HOST_ACTION_HARD_STOP
+	case PowerHardRestart:
+		pbAction = pb.HostAction_HOST_ACTION_HARD_RESTART
 	case PowerReinstall:
 		pbAction = pb.HostAction_HOST_ACTION_REINSTALL
 	default:

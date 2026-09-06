@@ -71,7 +71,7 @@ func (h *Handler) RenewService(c *gin.Context) {
 
 // ServicePowerRequest 是电源操作入参。
 type ServicePowerRequest struct {
-	// Action 取值：boot / shutdown / reboot / reinstall。
+	// Action 取值：boot / shutdown / reboot / hard_boot / hard_stop / hard_restart / reinstall。
 	Action string `json:"action"`
 	OS     string `json:"os"`
 }

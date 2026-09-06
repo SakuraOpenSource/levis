@@ -705,7 +705,8 @@ func (s *AdminService) validateProduct(in *ProductInput) error {
 
 // normalizeProvisionConfig 校验并归一接口商品的开通配置。
 //
-// 固定模式把每个区间收敛为单点（Min = Max = Min），弹性模式要求 Min <= Max；
+// 固定模式把每个区间收敛为单点（Min = Max = Min），并清零步长与加价；
+// 弹性模式要求 Min <= Max、步长为正、范围按步长对齐且每步加价非负。
 // 流量为 0 表示不限。CPU / 内存 / 硬盘在任何模式下都必须为正数。
 func normalizeProvisionConfig(cfg *model.ProvisionSpec) error {
 	cfg.Driver = strings.ToLower(strings.TrimSpace(cfg.Driver))
@@ -734,8 +735,23 @@ func normalizeProvisionConfig(cfg *model.ProvisionSpec) error {
 			// 固定模式只有最小值有意义，最大值直接收敛，避免隐藏的
 			// 遗留值造成 min > max 的假错误。
 			*item.rng = model.Fixed(item.rng.Min)
-		} else if item.rng.Max < item.rng.Min {
-			return ErrBadRequest("%s的最大值不能小于最小值", item.name)
+		} else {
+			if item.rng.Max < item.rng.Min {
+				return ErrBadRequest("%s的最大值不能小于最小值", item.name)
+			}
+			// 旧配置没有 Step 字段，缺省按 1 兼容读取；归一后的配置始终满足 step > 0。
+			if item.rng.Step == 0 {
+				item.rng.Step = 1
+			}
+			if item.rng.Step < 0 {
+				return ErrBadRequest("%s的步长必须大于 0", item.name)
+			}
+			if (item.rng.Max-item.rng.Min)%item.rng.Step != 0 {
+				return ErrBadRequest("%s的范围必须按步长对齐", item.name)
+			}
+			if item.rng.UnitPriceCents < 0 {
+				return ErrBadRequest("%s每步加价不能为负", item.name)
+			}
 		}
 	}
 	return nil
