@@ -191,6 +191,7 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	admin.GET("/articles/:id", h.AdminArticle)
 	admin.PATCH("/articles/:id", h.AdminUpdateArticle)
 	admin.DELETE("/articles/:id", h.AdminDeleteArticle)
+	admin.GET("/payment-plugins", h.AdminPaymentPlugins)
 	admin.GET("/payment-methods", h.AdminPaymentMethods)
 	admin.POST("/payment-methods", h.AdminCreatePaymentMethod)
 	admin.PATCH("/payment-methods/:id", h.AdminUpdatePaymentMethod)
