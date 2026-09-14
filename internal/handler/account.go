@@ -134,3 +134,13 @@ func (h *Handler) Invoice(c *gin.Context) {
 	item, err := h.billing().Invoice(httpx.CurrentUserID(c), id)
 	respond(c, item, err)
 }
+
+// RetryService 重试单个开通失败或待开通服务的上游开通。
+func (h *Handler) RetryService(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	item, err := h.orders().RetryProvision(httpx.CurrentUserID(c), id)
+	respond(c, item, err)
+}

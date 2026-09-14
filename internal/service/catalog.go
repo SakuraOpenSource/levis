@@ -119,6 +119,8 @@ type ProductInput struct {
 	// 接口优先。
 	InterfaceID     uint                `json:"interface_id"`
 	ProvisionConfig model.ProvisionSpec `json:"provision_config"`
+	// AgreementArticleID 指向知识库文章，非空表示购买前必须同意该协议。
+	AgreementArticleID *uint `json:"agreement_article_id"`
 }
 
 // slugPattern 之外的字符会被替换成短横线。

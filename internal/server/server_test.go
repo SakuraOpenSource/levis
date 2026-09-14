@@ -39,7 +39,16 @@ func newTestServer(t *testing.T) (*runtime.Runtime, http.Handler) {
 	t.Helper()
 	rt := runtime.New(t.TempDir())
 	engine, close := New(rt, nil, false)
-	t.Cleanup(close)
+	t.Cleanup(func() {
+		close()
+		// Windows 下 sqlite 文件被占用时 TempDir 删不掉：先关库连接再删目录。
+		// Linux 上这只是多余但无害的一步。
+		if db := rt.DB(); db != nil {
+			if sqlDB, err := db.DB(); err == nil {
+				_ = sqlDB.Close()
+			}
+		}
+	})
 	return rt, engine
 }
 

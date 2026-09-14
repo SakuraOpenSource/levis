@@ -257,6 +257,9 @@ type Product struct {
 	InterfaceID uint `gorm:"index;not null;default:0" json:"interface_id"`
 	// ProvisionConfig 是接口商品的开通配置（驱动 + 弹性/固定规格）。
 	ProvisionConfig ProvisionSpec `gorm:"type:text" json:"provision_config"`
+	// AgreementArticleID 指向知识库文章：非空表示购买该商品前必须阅读并同意该协议。
+	// 为空（NULL）表示无需同意。
+	AgreementArticleID *uint `gorm:"index" json:"agreement_article_id"`
 }
 
 // 接口商品的开通配置模式与驱动。
@@ -425,12 +428,13 @@ type OrderItem struct {
 	Options OptionMap `gorm:"type:text" json:"options"`
 }
 
-// 服务状态。
+// 服务状态：pending=已付款待开通，failed=开通失败可重试。
 const (
 	ServicePending    = "pending"
 	ServiceActive     = "active"
 	ServiceSuspended  = "suspended"
 	ServiceTerminated = "terminated"
+	ServiceFailed     = "failed"
 )
 
 // Service 是用户已购买并开通的服务实例。
@@ -447,9 +451,10 @@ type Service struct {
 	ExpiresAt  *time.Time `json:"expires_at"`
 	// UpstreamPluginID 非空表示该服务由上游插件开通，值为插件 ID。
 	UpstreamPluginID string `gorm:"size:64;default:''" json:"upstream_plugin_id"`
-	// UpstreamHostID 是上游开通后返回的服务实例 ID（如魔方财务 host_id），
-	// 续费、暂停、电源操作都用它定位上游资源。
+	// UpstreamHostID 是上游开通后返回的服务实例 ID，续费等操作用它定位上游资源。
 	UpstreamHostID string `gorm:"size:64;default:''" json:"upstream_host_id"`
+	// ProvisionError 记录最近一次上游开通失败的原因，可重试。
+	ProvisionError string `gorm:"size:500;default:''" json:"provision_error"`
 }
 
 // 账单状态。
@@ -502,6 +507,22 @@ type Transaction struct {
 	Note              string `gorm:"size:255" json:"note"`
 }
 
+// 文章状态。
+const (
+	ArticleDraft     = "draft"
+	ArticlePublished = "published"
+)
+
+// Article 是知识库文章，可被商品引用为购买协议。
+type Article struct {
+	Base
+	Slug      string `gorm:"uniqueIndex;size:64;not null" json:"slug"`
+	Title     string `gorm:"size:128;not null" json:"title"`
+	ContentMD string `gorm:"type:text" json:"content_md"`
+	Status    string `gorm:"size:16;not null;default:draft" json:"status"`
+	SortOrder int    `gorm:"not null;default:0" json:"sort_order"`
+}
+
 // AllModels 返回需要迁移的全部模型，供 AutoMigrate 使用。
 func AllModels() []any {
 	return []any{
@@ -531,5 +552,6 @@ func AllModels() []any {
 		&PluginPayment{},
 		&ExternalPayment{},
 		&PaymentMethod{},
+		&Article{},
 	}
 }

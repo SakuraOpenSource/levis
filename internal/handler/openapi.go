@@ -42,6 +42,7 @@ func (h *Handler) OpenProducts(c *gin.Context) {
 // OpenCreateOrderRequest 是直接下单的入参。
 type OpenCreateOrderRequest struct {
 	Items []service.OrderLine `json:"items"`
+	Agree bool                `json:"agree"`
 }
 
 // OpenCreateOrder 按明细直接创建订单，不经过购物车。
@@ -53,7 +54,7 @@ func (h *Handler) OpenCreateOrder(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
-	order, err := h.orders().CreateDirect(httpx.CurrentUserID(c), req.Items)
+	order, err := h.orders().CreateDirect(httpx.CurrentUserID(c), req.Items, req.Agree)
 	respond(c, order, err)
 }
 

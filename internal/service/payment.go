@@ -262,7 +262,8 @@ func (s *PaymentService) FinalizeCallback(ctx context.Context, pluginID, externa
 }
 
 func (s *PaymentService) finalize(item *model.ExternalPayment, paidAmount int64, now time.Time) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	var pending *PayResult
+	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var current model.ExternalPayment
 		if err := tx.First(&current, item.ID).Error; err != nil {
 			return err
@@ -279,25 +280,24 @@ func (s *PaymentService) finalize(item *model.ExternalPayment, paidAmount int64,
 		if paidAmount != current.AmountCents {
 			return ErrConflict("支付金额与订单金额不一致")
 		}
-		claim := tx.Model(&model.ExternalPayment{}).
-			Where("id = ? AND status = ?", current.ID, model.ExternalPaymentPending).
-			Update("status", model.ExternalPaymentProcessing)
+		claim := tx.Model(&model.ExternalPayment{}).Where("id = ? AND status = ?", current.ID, model.ExternalPaymentPending).Update("status", model.ExternalPaymentProcessing)
 		if claim.Error != nil {
 			return claim.Error
 		}
 		if claim.RowsAffected != 1 {
 			return ErrConflict("支付状态已变更")
 		}
-
 		switch current.Purpose {
 		case model.ExternalPaymentPurposeRecharge:
 			if _, err := s.wallet.adjustBalance(tx, current.UserID, current.AmountCents, model.TxRecharge, "external_payment", current.ID, fmt.Sprintf("插件支付充值 %d", current.ID)); err != nil {
 				return err
 			}
 		case model.ExternalPaymentPurposeOrder:
-			if _, err := s.orders.payInTx(tx, current.UserID, current.TargetID, false); err != nil {
+			res, err := s.orders.payInTx(tx, current.UserID, current.TargetID, false)
+			if err != nil {
 				return err
 			}
+			pending = res
 		case model.ExternalPaymentPurposeRenewal:
 			if _, err := s.billing.renewInTx(tx, current.UserID, current.TargetID, false); err != nil {
 				return err
@@ -310,9 +310,7 @@ func (s *PaymentService) finalize(item *model.ExternalPayment, paidAmount int64,
 			if invoice.Status != model.InvoiceUnpaid {
 				return ErrConflict("账单当前无需支付")
 			}
-			result := tx.Model(&model.Invoice{}).
-				Where("id = ? AND user_id = ? AND status = ?", invoice.ID, current.UserID, model.InvoiceUnpaid).
-				Updates(map[string]any{"status": model.InvoicePaid, "paid_at": now})
+			result := tx.Model(&model.Invoice{}).Where("id = ? AND user_id = ? AND status = ?", invoice.ID, current.UserID, model.InvoiceUnpaid).Updates(map[string]any{"status": model.InvoicePaid, "paid_at": now})
 			if result.Error != nil {
 				return result.Error
 			}
@@ -324,4 +322,12 @@ func (s *PaymentService) finalize(item *model.ExternalPayment, paidAmount int64,
 		}
 		return tx.Model(&current).Updates(map[string]any{"status": model.ExternalPaymentPaid, "paid_amount_cents": paidAmount, "paid_at": now}).Error
 	})
+	if err != nil {
+		return err
+	}
+	// 阶段二：事务已提交，再逐个开通，失败只记 failed，不影响已结算的支付。
+	if pending != nil {
+		s.orders.provisionPending(pending)
+	}
+	return nil
 }

@@ -44,9 +44,10 @@ func (h *Handler) ProductOS(c *gin.Context) {
 }
 
 // BuyNowRequest 是「立即购买」的入参：绕过购物车直接生成待支付订单。
-// 接口商品的选配（规格与系统）必须随单提交。
+// 接口商品的选配（规格与系统）必须随单提交，agree 表示已同意购买协议。
 type BuyNowRequest struct {
 	service.OrderLine
+	Agree bool `json:"agree"`
 }
 
 // BuyNow 为当前用户创建一笔单明细的直购订单，返回后前端跳转支付。
@@ -55,7 +56,7 @@ func (h *Handler) BuyNow(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
-	order, err := h.orders().CreateDirect(httpx.CurrentUserID(c), []service.OrderLine{req.OrderLine})
+	order, err := h.orders().CreateDirect(httpx.CurrentUserID(c), []service.OrderLine{req.OrderLine}, req.Agree)
 	respond(c, order, err)
 }
 
@@ -119,9 +120,16 @@ func (h *Handler) RemoveCartItem(c *gin.Context) {
 	respond(c, view, err)
 }
 
+// CreateOrderRequest 是购物车下单的入参，agree 表示已同意购买协议。
+type CreateOrderRequest struct {
+	Agree bool `json:"agree"`
+}
+
 // CreateOrder 用当前购物车创建待支付订单。
 func (h *Handler) CreateOrder(c *gin.Context) {
-	order, err := h.orders().CreateFromCart(httpx.CurrentUserID(c))
+	var req CreateOrderRequest
+	_ = c.ShouldBindJSON(&req)
+	order, err := h.orders().CreateFromCart(httpx.CurrentUserID(c), req.Agree)
 	respond(c, order, err)
 }
 

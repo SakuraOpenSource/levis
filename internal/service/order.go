@@ -24,7 +24,7 @@ type OrderService struct {
 }
 
 // NewOrderService 构造 OrderService。plugins 可为 nil（测试或无插件场景），
-// 此时上游商品仅本地开通，不会向上游下单。
+// 此时上游商品先建待开通服务，实际开通时再报插件不可用。
 func NewOrderService(db *gorm.DB, cart *CartService, wallet *WalletService, plugins *plugin.Manager) *OrderService {
 	return &OrderService{db: db, cart: cart, wallet: wallet, plugins: plugins}
 }
@@ -219,10 +219,46 @@ func provisionOptionPrice(cfg model.ProvisionSpec, options map[string]string) in
 	return extra
 }
 
-// CreateFromCart 用当前购物车创建待支付订单。
+// checkAgreement 校验购买协议：商品绑定了协议文章时必须传 agree=true。
+func checkAgreement(tx *gorm.DB, lines []OrderLine, agree bool) error {
+	if agree {
+		return nil
+	}
+	for _, line := range lines {
+		var product model.Product
+		if err := tx.First(&product, line.ProductID).Error; err != nil {
+			continue
+		}
+		if product.AgreementArticleID != nil {
+			return ErrBadRequest("请先阅读并同意商品协议后再下单")
+		}
+	}
+	return nil
+}
+
+// isUpstreamProduct 报告商品是否为上游对接商品。
+func isUpstreamProduct(product *model.Product) bool {
+	if product.InterfaceID != 0 {
+		return true
+	}
+	return product.UpstreamPluginID != "" && product.UpstreamProductID != ""
+}
+
+// truncateProvisionError 把上游错误截断到服务表的字段长度。
+func truncateProvisionError(s string) string {
+	r := []rune(s)
+	if len(r) > 500 {
+		return string(r[:500])
+	}
+	return s
+}
+
+// CreateFromCart 用当前购物车创建待支付订单，同时建出待付账单。
 //
-// 全程在一个事务内完成：读购物车 → 建订单与明细 → 清空购物车。
-func (s *OrderService) CreateFromCart(userID uint) (*model.Order, error) {
+// 全程在一个事务内完成：读购物车 → 建订单与明细 → 建待付账单 → 清空购物车。
+// agree 为 true 表示用户已同意商品绑定的购买协议。
+func (s *OrderService) CreateFromCart(userID uint, agree ...bool) (*model.Order, error) {
+	agreed := len(agree) > 0 && agree[0]
 	var order model.Order
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var items []model.CartItem
@@ -241,7 +277,7 @@ func (s *OrderService) CreateFromCart(userID uint) (*model.Order, error) {
 				BillingCyc: item.BillingCyc,
 			})
 		}
-		if err := s.create(tx, userID, lines, &order); err != nil {
+		if err := s.create(tx, userID, lines, agreed, &order); err != nil {
 			return err
 		}
 		return s.cart.Clear(tx, userID)
@@ -252,21 +288,22 @@ func (s *OrderService) CreateFromCart(userID uint) (*model.Order, error) {
 	return &order, nil
 }
 
-// CreateDirect 按给定明细直接创建订单，不经过购物车。
+// CreateDirect 按给定明细直接创建订单，不经过购物车，同时建出待付账单。
 //
 // 开放接口用它下单：机器调用与用户浏览器里的购物车是两回事，共用一个购物车
 // 会让 API 下单把用户正在挑的东西一并结掉。
-func (s *OrderService) CreateDirect(userID uint, lines []OrderLine) (*model.Order, error) {
+func (s *OrderService) CreateDirect(userID uint, lines []OrderLine, agree ...bool) (*model.Order, error) {
 	if len(lines) == 0 {
 		return nil, ErrBadRequest("请至少提供一条商品明细")
 	}
 	if len(lines) > MaxOrderLines {
 		return nil, ErrBadRequest("单笔订单最多 %d 条明细", MaxOrderLines)
 	}
+	agreed := len(agree) > 0 && agree[0]
 
 	var order model.Order
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		return s.create(tx, userID, lines, &order)
+		return s.create(tx, userID, lines, agreed, &order)
 	})
 	if err != nil {
 		return nil, err
@@ -274,10 +311,22 @@ func (s *OrderService) CreateDirect(userID uint, lines []OrderLine) (*model.Orde
 	return &order, nil
 }
 
-// create 在事务内写入订单与明细。
-func (s *OrderService) create(tx *gorm.DB, userID uint, lines []OrderLine, out *model.Order) error {
+// create 在事务内写入订单、明细与待付账单。
+//
+// 账单在下单时即建（unpaid），支付时只标记已付：外部支付已收钱后本地必须有
+// 对应的待付账单可结算，否则会出现「钱已收、账对不上」的悬空。
+func (s *OrderService) create(tx *gorm.DB, userID uint, lines []OrderLine, agree bool, out *model.Order) error {
+	if len(lines) == 0 {
+		return ErrBadRequest("请至少提供一条商品明细")
+	}
+	if len(lines) > MaxOrderLines {
+		return ErrBadRequest("单笔订单最多 %d 条明细", MaxOrderLines)
+	}
 	orderItems, total, err := buildOrderItems(tx, userID, lines)
 	if err != nil {
+		return err
+	}
+	if err := checkAgreement(tx, lines, agree); err != nil {
 		return err
 	}
 
@@ -300,6 +349,39 @@ func (s *OrderService) create(tx *gorm.DB, userID uint, lines []OrderLine, out *
 	if err := tx.Create(&orderItems).Error; err != nil {
 		return err
 	}
+
+	// 下单即建待付账单，明细按商品快照逐份展开，此时不关联服务。
+	now := time.Now().UTC()
+	invoiceNo, err := serialNo("INV")
+	if err != nil {
+		return err
+	}
+	invoice := model.Invoice{
+		InvoiceNo:  invoiceNo,
+		UserID:     userID,
+		OrderID:    &order.ID,
+		Status:     model.InvoiceUnpaid,
+		TotalCents: total,
+		DueAt:      &now,
+	}
+	if err := tx.Create(&invoice).Error; err != nil {
+		return err
+	}
+	invoiceItems := make([]model.InvoiceItem, 0, len(orderItems))
+	for _, item := range orderItems {
+		for i := 0; i < item.Quantity; i++ {
+			invoiceItems = append(invoiceItems, model.InvoiceItem{
+				InvoiceID:   invoice.ID,
+				Description: fmt.Sprintf("%s（%s）", item.ProductName, item.BillingCyc),
+				AmountCents: item.PriceCents,
+			})
+		}
+	}
+	if len(invoiceItems) > 0 {
+		if err := tx.Create(&invoiceItems).Error; err != nil {
+			return err
+		}
+	}
 	order.Items = orderItems
 	*out = order
 	return nil
@@ -312,11 +394,11 @@ type PayResult struct {
 	Services []model.Service `json:"services"`
 }
 
-// Pay 用余额支付订单（当前为假支付，等待接入真实支付渠道）。
+// Pay 用余额支付订单并开通服务。
 //
-// 事务内依次完成：锁定订单 → 扣减余额并记流水 → 标记订单已付 → 开通服务 →
-// 生成已付账单 → 扣减库存。任一步失败整体回滚，绝不会出现「扣了钱没开服务」
-// 或「开了服务没扣钱」的中间态。
+// 两阶段提交：事务内只做钱与记录（扣款→订单已付→账单已付→建服务，其中上游
+// 商品只建 pending 待开通），事务提交后再逐个向上游开通。开通失败只把服务
+// 置为 failed 并记录原因，钱不退，可重试。
 func (s *OrderService) Pay(userID, orderID uint) (*PayResult, error) {
 	return s.pay(userID, orderID, true)
 }
@@ -336,11 +418,13 @@ func (s *OrderService) pay(userID, orderID uint, debit bool) (*PayResult, error)
 	if err != nil {
 		return nil, err
 	}
+	s.provisionPending(out)
 	return out, nil
 }
 
 // payInTx settles an order using the caller's transaction. External payment
 // finalization uses this helper so intent status and provisioning commit together.
+// 本方法只做阶段一（钱与记录）：上游商品建 pending 服务，开通放到提交后。
 func (s *OrderService) payInTx(tx *gorm.DB, userID, orderID uint, debit bool) (*PayResult, error) {
 	var out PayResult
 	var order model.Order
@@ -386,25 +470,55 @@ func (s *OrderService) payInTx(tx *gorm.DB, userID, orderID uint, debit bool) (*
 	order.Status = model.OrderPaid
 	order.PaidAt = &now
 
-	invoiceNo, err := serialNo("INV")
-	if err != nil {
-		return nil, err
-	}
-	invoice := model.Invoice{
-		InvoiceNo:  invoiceNo,
-		UserID:     userID,
-		OrderID:    &order.ID,
-		Status:     model.InvoicePaid,
-		TotalCents: order.TotalCents,
-		DueAt:      &now,
-		PaidAt:     &now,
-	}
-	if err := tx.Create(&invoice).Error; err != nil {
-		return nil, err
+	// 下单时已建待付账单，这里只标记已付；兼容历史订单（无账单时新建）。
+	var invoice model.Invoice
+	if err := tx.Where("order_id = ?", order.ID).First(&invoice).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		invoiceNo, err := serialNo("INV")
+		if err != nil {
+			return nil, err
+		}
+		invoice = model.Invoice{
+			InvoiceNo:  invoiceNo,
+			UserID:     userID,
+			OrderID:    &order.ID,
+			Status:     model.InvoicePaid,
+			TotalCents: order.TotalCents,
+			DueAt:      &now,
+			PaidAt:     &now,
+		}
+		if err := tx.Create(&invoice).Error; err != nil {
+			return nil, err
+		}
+	} else {
+		if invoice.Status == model.InvoicePaid {
+			return nil, ErrConflict("账单已支付")
+		}
+		if invoice.Status != model.InvoiceUnpaid {
+			return nil, ErrConflict("账单状态已变更，请刷新后重试")
+		}
+		res := tx.Model(&model.Invoice{}).
+			Where("id = ? AND status = ?", invoice.ID, model.InvoiceUnpaid).
+			Updates(map[string]any{"status": model.InvoicePaid, "paid_at": now})
+		if res.Error != nil {
+			return nil, res.Error
+		}
+		if res.RowsAffected == 0 {
+			return nil, ErrConflict("账单状态已变更，请刷新后重试")
+		}
+		invoice.Status = model.InvoicePaid
+		invoice.PaidAt = &now
 	}
 
 	services := make([]model.Service, 0, len(order.Items))
-	invoiceItems := make([]model.InvoiceItem, 0, len(order.Items))
+	needsLink := true
+	var existingItems []model.InvoiceItem
+	if invoice.ID != 0 {
+		_ = tx.Where("invoice_id = ?", invoice.ID).Order("id ASC").Find(&existingItems).Error
+	}
+
 	for _, item := range order.Items {
 		// 读取商品以判断是否为上游对接商品。
 		var product model.Product
@@ -429,20 +543,16 @@ func (s *OrderService) payInTx(tx *gorm.DB, userID, orderID uint, debit bool) (*
 				service.ExpiresAt = &next
 			}
 
-			// 上游对接商品：调用插件向上游下单并开通，把上游 host_id 存入服务。
-			// 上游下单失败则整体回滚，绝不允许「扣了钱却没在上游开通」。
-			legacyUpstream := product.UpstreamPluginID != "" && product.UpstreamProductID != ""
-			if legacyUpstream || product.InterfaceID != 0 {
-				pluginID, hostID, upstreamExpiry, err := s.provisionUpstream(tx, userID, &product, item.BillingCyc, order.OrderNo, item.Options)
+			if isUpstreamProduct(&product) {
+				// 阶段一不调上游：只建 pending 服务并记下插件，提交后再开通。
+				pluginID, _, err := resolvePluginForProduct(tx, &product)
 				if err != nil {
-					return nil, err
-				}
-				service.UpstreamPluginID = pluginID
-				service.UpstreamHostID = hostID
-				// 上游返回了到期时间则以上游为准，保持两边一致。
-				if upstreamExpiry != nil {
-					service.NextDueAt = upstreamExpiry
-					service.ExpiresAt = upstreamExpiry
+					service.Status = model.ServiceFailed
+					service.ProvisionError = truncateProvisionError(err.Error())
+					log.Printf("上游开通预检失败 product=%d order=%s: %v", product.ID, order.OrderNo, err)
+				} else {
+					service.Status = model.ServicePending
+					service.UpstreamPluginID = pluginID
 				}
 			}
 
@@ -450,14 +560,6 @@ func (s *OrderService) payInTx(tx *gorm.DB, userID, orderID uint, debit bool) (*
 				return nil, err
 			}
 			services = append(services, service)
-
-			serviceID := service.ID
-			invoiceItems = append(invoiceItems, model.InvoiceItem{
-				InvoiceID:   invoice.ID,
-				ServiceID:   &serviceID,
-				Description: fmt.Sprintf("%s（%s）", item.ProductName, item.BillingCyc),
-				AmountCents: item.PriceCents,
-			})
 		}
 
 		// 库存为负表示不限量，跳过扣减。
@@ -470,13 +572,187 @@ func (s *OrderService) payInTx(tx *gorm.DB, userID, orderID uint, debit bool) (*
 			}
 		}
 	}
-	if err := tx.Create(&invoiceItems).Error; err != nil {
-		return nil, err
+	// 把下单时建的待付账单明细关联到新服务；数量对不上时只关联能对上的。
+	if needsLink && len(existingItems) > 0 && len(existingItems) == len(services) {
+		for i := range services {
+			sid := services[i].ID
+			if err := tx.Model(&model.InvoiceItem{}).Where("id = ?", existingItems[i].ID).Update("service_id", sid).Error; err != nil {
+				return nil, err
+			}
+			existingItems[i].ServiceID = &sid
+		}
+		invoice.Items = existingItems
+	} else if len(existingItems) == 0 {
+		invoiceItems := make([]model.InvoiceItem, 0, len(services))
+		for _, svc := range services {
+			sid := svc.ID
+			invoiceItems = append(invoiceItems, model.InvoiceItem{
+				InvoiceID:   invoice.ID,
+				ServiceID:   &sid,
+				Description: fmt.Sprintf("%s", svc.Name),
+				AmountCents: svc.PriceCents,
+			})
+		}
+		if len(invoiceItems) > 0 {
+			if err := tx.Create(&invoiceItems).Error; err != nil {
+				return nil, err
+			}
+		}
+		invoice.Items = invoiceItems
+	} else {
+		// 数量不一致时尽量回填，避免悬空。
+		n := len(existingItems)
+		if len(services) < n {
+			n = len(services)
+		}
+		for i := 0; i < n; i++ {
+			sid := services[i].ID
+			if err := tx.Model(&model.InvoiceItem{}).Where("id = ?", existingItems[i].ID).Update("service_id", sid).Error; err != nil {
+				return nil, err
+			}
+			existingItems[i].ServiceID = &sid
+		}
+		invoice.Items = existingItems
 	}
-	invoice.Items = invoiceItems
 
 	out = PayResult{Order: &order, Invoice: &invoice, Services: services}
 	return &out, nil
+}
+
+// provisionPending 在事务提交后对 pending 服务逐个开通。
+// 成功置为 active 并回填上游信息，失败置为 failed 并记录原因，钱不退。
+func (s *OrderService) provisionPending(out *PayResult) {
+	if out == nil {
+		return
+	}
+	for i := range out.Services {
+		if out.Services[i].Status != model.ServicePending {
+			continue
+		}
+		updated, err := s.provisionOne(out.Services[i].ID)
+		if err != nil {
+			if updated != nil {
+				out.Services[i] = *updated
+			} else {
+				var cur model.Service
+				if e := s.db.First(&cur, out.Services[i].ID).Error; e == nil {
+					out.Services[i] = cur
+				}
+			}
+			continue
+		}
+		out.Services[i] = *updated
+	}
+}
+
+// provisionOne 对单个待开通或开通失败的服务发起上游开通。
+func (s *OrderService) provisionOne(serviceID uint) (*model.Service, error) {
+	var svc model.Service
+	if err := s.db.First(&svc, serviceID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("服务不存在")
+		}
+		return nil, err
+	}
+	if svc.Status != model.ServicePending && svc.Status != model.ServiceFailed {
+		return &svc, ErrConflict("服务当前无需重试")
+	}
+	var product model.Product
+	if err := s.db.First(&product, svc.ProductID).Error; err != nil {
+		msg := truncateProvisionError("商品不存在，无法开通")
+		_ = s.db.Model(&svc).Updates(map[string]any{"status": model.ServiceFailed, "provision_error": msg}).Error
+		svc.Status = model.ServiceFailed
+		svc.ProvisionError = msg
+		log.Printf("上游开通失败 service=%d product=%d: 商品不存在", svc.ID, svc.ProductID)
+		return &svc, ErrBadRequest("商品不存在，无法开通")
+	}
+	pluginID, _, err := resolvePluginForProduct(s.db, &product)
+	if err != nil {
+		msg := truncateProvisionError(err.Error())
+		_ = s.db.Model(&svc).Updates(map[string]any{"status": model.ServiceFailed, "provision_error": msg}).Error
+		svc.Status = model.ServiceFailed
+		svc.ProvisionError = msg
+		log.Printf("上游开通失败 service=%d product=%d: %v", svc.ID, product.ID, err)
+		return &svc, err
+	}
+	var user model.User
+	if err := s.db.First(&user, svc.UserID).Error; err != nil {
+		return nil, err
+	}
+	orderNo := fmt.Sprintf("service-%d", svc.ID)
+	opts := map[string]string{}
+	if svc.OrderID != 0 {
+		var order model.Order
+		if err := s.db.Preload("Items").First(&order, svc.OrderID).Error; err == nil {
+			orderNo = order.OrderNo
+			for _, it := range order.Items {
+				if it.ProductID == product.ID {
+					opts = map[string]string(it.Options)
+					break
+				}
+			}
+		}
+		if product.InterfaceID == 0 && len(opts) == 0 {
+			opts = map[string]string{}
+		}
+	} else if product.InterfaceID != 0 {
+		opts = defaultProvisionOptions(product.ProvisionConfig)
+	}
+	hostID, expiry, err := createUpstreamOrder(s.plugins, s.db, &product, svc.BillingCyc, orderNo, user.Email, opts)
+	if err != nil {
+		msg := truncateProvisionError(err.Error())
+		_ = s.db.Model(&svc).Updates(map[string]any{"status": model.ServiceFailed, "provision_error": msg, "upstream_plugin_id": pluginID}).Error
+		svc.Status = model.ServiceFailed
+		svc.ProvisionError = msg
+		svc.UpstreamPluginID = pluginID
+		log.Printf("上游开通失败 service=%d product=%d order=%s: %v", svc.ID, product.ID, orderNo, err)
+		return &svc, err
+	}
+	updates := map[string]any{"status": model.ServiceActive, "upstream_plugin_id": pluginID, "upstream_host_id": hostID, "provision_error": ""}
+	if expiry != nil {
+		updates["next_due_at"] = *expiry
+		updates["expires_at"] = *expiry
+		svc.NextDueAt = expiry
+		svc.ExpiresAt = expiry
+	}
+	if err := s.db.Model(&svc).Updates(updates).Error; err != nil {
+		return nil, err
+	}
+	svc.Status = model.ServiceActive
+	svc.UpstreamPluginID = pluginID
+	svc.UpstreamHostID = hostID
+	svc.ProvisionError = ""
+	return &svc, nil
+}
+
+// RetryProvision 重试单个服务的上游开通，仅限 failed/pending 且属于该用户。
+func (s *OrderService) RetryProvision(userID, serviceID uint) (*model.Service, error) {
+	var svc model.Service
+	if err := s.db.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("服务不存在")
+		}
+		return nil, err
+	}
+	if svc.Status != model.ServicePending && svc.Status != model.ServiceFailed {
+		return nil, ErrConflict("服务当前无需重试")
+	}
+	return s.provisionOne(svc.ID)
+}
+
+// AdminRetryProvision 以管理员身份重试任意用户的服务开通。
+func (s *OrderService) AdminRetryProvision(serviceID uint) (*model.Service, error) {
+	var svc model.Service
+	if err := s.db.First(&svc, serviceID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("服务不存在")
+		}
+		return nil, err
+	}
+	if svc.Status != model.ServicePending && svc.Status != model.ServiceFailed {
+		return nil, ErrConflict("服务当前无需重试")
+	}
+	return s.provisionOne(svc.ID)
 }
 
 // provisionUpstream 调用上游插件下单开通，返回插件 ID、上游服务实例 ID 与到期时间。
@@ -503,18 +779,25 @@ func (s *OrderService) provisionUpstream(tx *gorm.DB, userID uint, product *mode
 	return pluginID, hostID, expiry, nil
 }
 
-// Cancel 取消待支付订单。
+// Cancel 取消待支付订单，并同步取消其未付账单。
 func (s *OrderService) Cancel(userID, orderID uint) error {
-	result := s.db.Model(&model.Order{}).
-		Where("id = ? AND user_id = ? AND status = ?", orderID, userID, model.OrderPending).
-		Update("status", model.OrderCancelled)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return ErrConflict("订单不存在或状态不允许取消")
-	}
-	return nil
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.Order{}).
+			Where("id = ? AND user_id = ? AND status = ?", orderID, userID, model.OrderPending).
+			Update("status", model.OrderCancelled)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrConflict("订单不存在或状态不允许取消")
+		}
+		if err := tx.Model(&model.Invoice{}).
+			Where("order_id = ? AND status = ?", orderID, model.InvoiceUnpaid).
+			Updates(map[string]any{"status": model.InvoiceCancelled}).Error; err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // List 分页返回用户订单。

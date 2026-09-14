@@ -1,163 +1,164 @@
 # Levis
 
-Levis 是一个轻量、简洁的业务管理系统。
+Levis is a lightweight, streamlined business management system.
 
-## 特性
+## Features
 
-- [ ] 站点主页
-- [x] 商店
-  - [x] 列表视图
-  - [x] 分组视图
-- [x] 购物车
-- [x] 用户中心
-  - [x] 主页
-  - [x] 业务管理
-   - [x] 已购买的产品
-     - [ ] 产品分组
- - [x] 财务
-   - [x] 钱包
-   - [x] 账单
- - [x] 支持
-   - [x] 工单系统
- - [x] 安全中心
-   - [x] 实名认证
-     - [ ] 接入 API
-   - [x] 账户安全设置
-   - [x] API Key 管理
-- [x] 管理后台
+- [ ] Site homepage
+- [x] Store
+  - [x] List view
+  - [x] Grouped view
+- [x] Shopping cart
+- [x] User center
+  - [x] Homepage
+  - [x] Business management
+    - [x] Purchased products
+      - [ ] Product groups
+- [x] Finance
+  - [x] Wallet
+  - [x] Billing
+- [x] Support
+  - [x] Ticket system
+- [x] Security center
+  - [x] Identity verification
+    - [ ] External API
+  - [x] Account security settings
+  - [x] API key management
+- [x] Admin panel
 
-## 快速开始
+## Quick start
 
-从 [Releases](https://github.com/SakuraOpenSource/levis/releases) 下载对应平台的产物，然后：
+Download the binary for your platform from [Releases](https://github.com/SakuraOpenSource/levis/releases), then:
 
 ```bash
 chmod +x levis-os-arch
 ./levis-os-arch
 ```
 
-浏览器打开 <http://localhost:8080> 即可进行安装。
+Open <http://localhost:8080> in your browser to run the installer.
 
-### 命令行参数
+### CLI flags
 
-| 参数 | 默认值 | 说明 |
+| Flag | Default | Description |
 |---|---|---|
-| `-data` | `data` | 数据目录，存放 `config.json` 与本地数据库文件 |
-| `-listen` | 配置文件中的值（初始 `:8080`） | 监听地址，覆盖配置 |
-| `-debug` | `false` | 调试模式（打印路由与请求日志） |
-| `-version` | | 打印版本号后退出 |
+| `-data` | `data` | Data directory holding `config.json` and the local database file |
+| `-listen` | Value from the config file (initially `:8080`) | Listen address, overrides the config |
+| `-debug` | `false` | Debug mode (prints routes and request logs) |
+| `-version` | | Print the version and exit |
 
-### 数据目录
+### Data directory
 
-安装完成后将自动在 `data/` 生成以下文件：
+After installation, `data/` contains:
 
-- `config.json` —— 配置文件
-- `levis.db` —— SQLite 数据库（仅 SQLite 模式下存在）
+- `config.json` — configuration file
+- `levis.db` — SQLite database (SQLite mode only)
 
-删掉 `config.json` 会让程序回到未安装状态（数据库里的数据仍在）。
+Deleting `config.json` returns the program to the uninstalled state (data in the database is kept).
 
-## 从源码构建
+## Building from source
 
-### 环境要求
+### Requirements
+
 - Go 1.26+
 - Node 24+
 - pnpm 11+
 
-### 仓库结构
+### Repository layout
 
 ```
 Levis-Project/
-├── levis/            # 本仓库
+├── levis/            # this repository
 └── levis-frontend/
 ```
 
-### 构建流程
+### Build
 
 ```bash
 git clone https://github.com/SakuraOpenSource/levis.git
 git clone https://github.com/SakuraOpenSource/levis-frontend.git
 cd levis
-make build        # 构建前端 => 拷入 internal/web/dist => 编译二进制
+make build        # build frontend => copy into internal/web/dist => compile binary
 ./bin/levis
 ```
 
-前端不在同级目录时可使用 `make build FRONTEND=/path/to/levis-frontend`。
+If the frontend checkout lives somewhere else, use `make build FRONTEND=/path/to/levis-frontend`.
 
-| 目标 | 说明 |
+| Target | Description |
 |---|---|
-| `make build` | 前端 + 后端，产出 `bin/levis` |
-| `make backend` | 只编译后端，复用 `internal/web/dist` 中已有产物 |
-| `make frontend` | 只构建前端并拷入 `internal/web/dist` |
-| `make release` | 交叉编译多平台产物到 `bin/release` |
-| `make test` / `make vet` / `make fmt` | 测试、静态检查、格式化 |
-| `make dev-backend` / `make dev-frontend` | 分别起后端（`:8080`）与 Vite 开发服务器（`:5173`，已代理 `/api`） |
+| `make build` | Frontend + backend, produces `bin/levis` |
+| `make backend` | Backend only, reuses the existing `internal/web/dist` assets |
+| `make frontend` | Builds the frontend and copies it into `internal/web/dist` |
+| `make release` | Cross-compiles multi-platform binaries into `bin/release` |
+| `make test` / `make vet` / `make fmt` | Tests, static checks, formatting |
+| `make dev-backend` / `make dev-frontend` | Start the backend (`:8080`) and the Vite dev server (`:5173`, proxies `/api`) respectively |
 
-后端可脱离前端运行，但会提示：前端未构建。
+The backend can run without a frontend build, but it reports: frontend not built.
 
-## 开发
+## Development
 
 ```bash
-make dev-backend     # 终端 1
-make dev-frontend    # 终端 2，访问 http://localhost:5173
+make dev-backend     # terminal 1
+make dev-frontend    # terminal 2, visit http://localhost:5173
 ```
 
-## 架构
+## Architecture
 
-### 目录结构
+### Directory layout
 
 ```
-cmd/levis/            入口：flag 解析、加载配置、起 HTTP server
+cmd/levis/            entrypoint: flag parsing, config loading, HTTP server startup
 internal/
-  config/             config.json 读写、DSN 组装
-  database/           三驱动 Open + AutoMigrate
-  runtime/            运行时容器（安装后热替换）
-  model/              GORM 模型
-  service/            业务逻辑
-  handler/            HTTP handler（薄层，只做绑定与响应）
+  config/             config.json read/write, DSN assembly
+  database/           three-driver Open + AutoMigrate
+  runtime/            runtime container (hot-swapped after installation)
+  model/              GORM models
+  service/            business logic
+  handler/            HTTP handlers (thin layer: binding and responses only)
   middleware/         auth / admin / installed / csrf / recover / logger
-  httpx/              请求响应工具（叶子包，避免 handler ↔ middleware 循环导入）
-  server/             路由装配
+  httpx/              request/response helpers (leaf package, avoids handler <-> middleware import cycles)
+  server/             route assembly
   web/                go:embed + SPA fallback
 ```
 
-### 认证与安全
+### Authentication & security
 
-- 登录下发两个 cookie：`levis_token`（JWT HS256，httpOnly、SameSite=Lax）与 `levis_csrf`（可被 JS 读取）
-- CSRF 双提交：前端拦截器把 `levis_csrf` 复制到 `X-CSRF-Token`，中间件对所有非 GET/HEAD/OPTIONS 请求比对。GET 请求负责播种 token，否则新访客连安装页都过不去
-- 注册接口固定 `role=user`，用独立 DTO 接参，客户端传 `role` / `balance_cents` 一律无效
-- 密码 bcrypt cost 12；`config.json` 权限 `0600`
+- Login issues two cookies: `levis_token` (JWT HS256, httpOnly, SameSite=Lax) and `levis_csrf` (readable by JS)
+- CSRF double-submit: the frontend interceptor copies `levis_csrf` into `X-CSRF-Token`, and the middleware compares it on every non-GET/HEAD/OPTIONS request. GET requests seed the token — without that, new visitors could not get past the installer page
+- Registration always creates `role=user` through a dedicated DTO; client-supplied `role` / `balance_cents` are always ignored
+- Passwords use bcrypt cost 12; `config.json` has permission `0600`
 
 ## API
 
-统一前缀 `/api`。成功直接返回数据，失败返会 `{"code":"...","message":"..."}` + 对应状态码。分页用 `?page=&page_size=`（默认 20，最大 100），返回 `{items,total,page,page_size}`。
+Common prefix `/api`. Success returns the payload directly; failure returns `{"code":"...","message":"..."}` with the matching status code. Pagination uses `?page=&page_size=` (default 20, max 100) and returns `{items,total,page,page_size}`.
 
-**公开**
+**Public**
 
 ```
-GET  /bootstrap                 安装状态、站点基础信息
-POST /install/test-db           测试数据库连接
-POST /install                   执行安装
+GET  /bootstrap                 installation status, basic site info
+POST /install/test-db           test database connection
+POST /install                   run installation
 POST /auth/register|login|logout
-GET  /catalog/categories        两级分组（含嵌套商品）
+GET  /catalog/categories        two-level groups (with nested products)
 GET  /catalog/products?category_id=
 GET  /catalog/products/:id
 ```
 
-**需登录**
+**Authenticated**
 
 ```
 GET   /me                       PATCH /me/email    POST /me/password
 GET   /cart/items               POST /cart/items
 PATCH /cart/items/:id           DELETE /cart/items/:id
-POST  /orders                   购物车结账下单
+POST  /orders                   check out the cart
 GET   /orders                   GET /orders/:id
-POST  /orders/:id/pay           财务处理（付款 => 开通服务 => 生成账单）
+POST  /orders/:id/pay           finance flow (pay => provision service => generate bill)
 POST  /orders/:id/cancel
 GET   /services                 GET /services/:id
 GET   /wallet                   GET /wallet/transactions   POST /wallet/recharge
 GET   /invoices                 GET /invoices/:id
 ```
 
-**需管理员**
+**Admin only**
 
 ```
 GET|POST /admin/users           PATCH|DELETE /admin/users/:id
@@ -166,28 +167,28 @@ GET|POST /admin/products        PATCH|DELETE /admin/products/:id
 GET      /admin/stats
 ```
 
-`PATCH /admin/users/:id` 的 `balance_cents` 是**目标余额**。
+`balance_cents` in `PATCH /admin/users/:id` is the **target balance**.
 
-`POST /wallet/recharge` 与 `POST /orders/:id/pay` 目前为模拟充值，后续将接入真实接口。
+`POST /wallet/recharge` and `POST /orders/:id/pay` are currently simulated recharges; real payment gateways will be integrated later.
 
-## 测试
+## Tests
 
 ```bash
 make test
 ```
 
-## 赞助
+## Sponsor
 
-如果可以的话来支持一下开发者喵。
+If you can, please support the developer, meow.
 
-微信
+WeChat
 
-![微信](https://github.com/RoyOfficial233/RoyOfficial233/blob/main/images/wechat.png?raw=true)
+![WeChat](https://github.com/RoyOfficial233/RoyOfficial233/blob/main/images/wechat.png?raw=true)
 
-支付宝
+Alipay
 
-![支付宝](https://github.com/RoyOfficial233/RoyOfficial233/blob/main/images/alipay.png?raw=true)
+![Alipay](https://github.com/RoyOfficial233/RoyOfficial233/blob/main/images/alipay.png?raw=true)
 
 ## License
 
-本项目遵循 GPL-v3 开源协议。
+This project is licensed under GPL-v3.

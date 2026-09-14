@@ -255,8 +255,8 @@ func TestRegisterRejectsDuplicate(t *testing.T) {
 	}
 }
 
-// TestPayInsufficientBalanceRollsBack 是最关键的一条：余额不足时整个支付必须
-// 完整回滚，不能留下已开通的服务、账单或流水。
+// TestPayInsufficientBalanceRollsBack 是最关键的一条：余额不足时支付必须
+// 失败，余额、服务与流水都不变；下单时已建的待付账单保留待付，订单仍为待付。
 func TestPayInsufficientBalanceRollsBack(t *testing.T) {
 	db := newTestDB(t)
 	user := seedUser(t, db, "carol", 500) // 余额 5 元
@@ -287,7 +287,6 @@ func TestPayInsufficientBalanceRollsBack(t *testing.T) {
 		model any
 	}{
 		{"服务", &model.Service{}},
-		{"账单", &model.Invoice{}},
 		{"流水", &model.Transaction{}},
 	} {
 		var count int64
@@ -297,6 +296,18 @@ func TestPayInsufficientBalanceRollsBack(t *testing.T) {
 		if count != 0 {
 			t.Errorf("支付失败后不应留下%s记录，实际有 %d 条", check.name, count)
 		}
+	}
+
+	// 下单即建待付账单：支付失败后账单仍为待付且金额正确。
+	var invoice model.Invoice
+	if err := db.Where("order_id = ?", order.ID).First(&invoice).Error; err != nil {
+		t.Fatalf("下单时应已创建待付账单: %v", err)
+	}
+	if invoice.Status != model.InvoiceUnpaid {
+		t.Errorf("支付失败后账单应仍为 %q，实际为 %q", model.InvoiceUnpaid, invoice.Status)
+	}
+	if invoice.TotalCents != order.TotalCents {
+		t.Errorf("账单金额 %d 应与订单 %d 一致", invoice.TotalCents, order.TotalCents)
 	}
 
 	var reloaded model.Order
