@@ -100,7 +100,15 @@ func (h *Handler) ServiceUpstream(c *gin.Context) {
 	respond(c, info, err)
 }
 
-// ServiceOS 返回上游主机可用的重装系统列表。
+// ServiceMetrics 返回上游主机的实时监控数据（CPU、内存、带宽）。
+func (h *Handler) ServiceMetrics(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	metrics, err := h.billing().ServiceMetrics(httpx.CurrentUserID(c), id)
+	respond(c, metrics, err)
+}
 func (h *Handler) ServiceOS(c *gin.Context) {
 	id, ok := IDParam(c, "id")
 	if !ok {

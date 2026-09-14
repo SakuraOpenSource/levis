@@ -340,6 +340,38 @@ func (s *BillingService) UpstreamInfo(userID, serviceID uint) (*pb.UpstreamHost,
 	return reply.GetHost(), nil
 }
 
+// ServiceMetrics 返回上游主机的实时监控数据（CPU、内存、带宽）。
+func (s *BillingService) ServiceMetrics(userID, serviceID uint) (*pb.HostMetrics, error) {
+	var svc model.Service
+	if err := s.db.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("服务不存在")
+		}
+		return nil, err
+	}
+	if svc.UpstreamPluginID == "" || svc.UpstreamHostID == "" {
+		return nil, ErrBadRequest("该服务未绑定上游")
+	}
+	if s.plugins == nil {
+		return nil, ErrBadRequest("上游插件不可用")
+	}
+	ifaceConfig, err := interfaceConfigForService(s.db, &svc)
+	if err != nil {
+		return nil, err
+	}
+	reply, err := s.plugins.GetHostMetrics(context.Background(), svc.UpstreamPluginID, &pb.GetHostMetricsRequest{
+		HostId:          svc.UpstreamHostID,
+		InterfaceConfig: ifaceConfig,
+	})
+	if err != nil {
+		return nil, ErrBadRequest("获取实时监控失败: %v", err)
+	}
+	if reply.GetMetrics() == nil {
+		return nil, ErrBadRequest("上游未返回监控数据")
+	}
+	return reply.GetMetrics(), nil
+}
+
 // ListOS 返回上游主机可用的重装系统列表。
 func (s *BillingService) ListOS(userID, serviceID uint) ([]*pb.OSImage, error) {
 	var svc model.Service

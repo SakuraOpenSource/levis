@@ -115,6 +115,7 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	services.POST("/:id/retry", h.RetryService)
 	services.POST("/:id/power", h.ServicePower)
 	services.GET("/:id/upstream", h.ServiceUpstream)
+	services.GET("/:id/metrics", h.ServiceMetrics)
 	services.GET("/:id/os", h.ServiceOS)
 	payments := authed.Group("/payments")
 	payments.GET("/methods", h.PaymentMethods)
