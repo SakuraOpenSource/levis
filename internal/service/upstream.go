@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 
 	"github.com/SakuraOpenSource/levis/internal/model"
@@ -197,6 +199,13 @@ func (s *UpstreamService) ProductOS(productID uint) ([]*pb.OSImage, error) {
 		Options:         map[string]string{"driver": product.ProvisionConfig.Driver},
 	})
 	if err != nil {
+		// 老插件未实现该方法时返回空列表，购买页隐藏系统选择器而不是 400。
+		if status.Code(err) == codes.Unimplemented {
+			return []*pb.OSImage{}, nil
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "unimplemented") {
+			return []*pb.OSImage{}, nil
+		}
 		return nil, ErrBadRequest("获取系统列表失败: %v", err)
 	}
 	if reply.GetError() != "" {

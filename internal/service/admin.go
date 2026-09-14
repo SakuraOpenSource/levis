@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -577,6 +578,7 @@ func (s *AdminService) CreateProduct(in ProductInput) (*model.Product, error) {
 		InterfaceID:        in.InterfaceID,
 		ProvisionConfig:    in.ProvisionConfig,
 		AgreementArticleID: in.AgreementArticleID,
+		Region:             in.Region,
 	}
 	if err := s.db.Create(&item).Error; err != nil {
 		return nil, err
@@ -611,6 +613,7 @@ func (s *AdminService) UpdateProduct(id uint, in ProductInput) (*model.Product, 
 		"interface_id":         in.InterfaceID,
 		"provision_config":     in.ProvisionConfig,
 		"agreement_article_id": in.AgreementArticleID,
+		"region":               in.Region,
 	}
 	if err := s.db.Model(&item).Updates(updates).Error; err != nil {
 		return nil, err
@@ -701,6 +704,11 @@ func (s *AdminService) validateProduct(in *ProductInput) error {
 		}
 	} else {
 		in.ProvisionConfig = model.ProvisionSpec{}
+	}
+	// 地域：只做归一化（小写去空格、限长），展示映射由前端 REGIONS 负责。
+	in.Region = strings.ToLower(strings.TrimSpace(in.Region))
+	if len(in.Region) > 16 {
+		return ErrBadRequest("地域代码过长")
 	}
 	// 购买协议：引用文章必须存在。
 	if in.AgreementArticleID != nil {
@@ -925,6 +933,8 @@ type PaymentMethodInput struct {
 	Config   map[string]string `json:"config"`
 	Enabled  *bool             `json:"enabled"`
 	Sort     int               `json:"sort_order"`
+	// Icon 是支付图标键，空表示默认图标。
+	Icon string `json:"icon"`
 }
 
 type PaymentPluginField struct {
@@ -1035,7 +1045,11 @@ func (s *AdminService) CreatePaymentMethod(in PaymentMethodInput) (*model.Paymen
 	if in.Enabled != nil {
 		enabled = *in.Enabled
 	}
-	item := &model.PaymentMethod{Name: name, PluginID: pluginID, Config: configJSON, Enabled: enabled, SortOrder: in.Sort}
+	icon := strings.ToLower(strings.TrimSpace(in.Icon))
+	if len(icon) > 32 {
+		return nil, ErrBadRequest("图标标识过长")
+	}
+	item := &model.PaymentMethod{Name: name, PluginID: pluginID, Config: configJSON, Enabled: enabled, SortOrder: in.Sort, Icon: icon}
 	if err := s.db.Create(item).Error; err != nil {
 		return nil, err
 	}
@@ -1085,6 +1099,11 @@ func (s *AdminService) UpdatePaymentMethod(id uint, in PaymentMethodInput) (*mod
 	if in.Enabled != nil {
 		updates["enabled"] = *in.Enabled
 	}
+	icon := strings.ToLower(strings.TrimSpace(in.Icon))
+	if len(icon) > 32 {
+		return nil, ErrBadRequest("图标标识过长")
+	}
+	updates["icon"] = icon
 	updates["sort_order"] = in.Sort
 	if len(updates) > 0 {
 		if err := s.db.Model(&item).Updates(updates).Error; err != nil {
@@ -1297,4 +1316,258 @@ func (s *AdminService) Stats() (*Stats, error) {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// ---------- 批量操作 ----------
+
+// maxBatchIDs 是单次批量操作允许的最大条目数，避免一次提交拖垮上游或长时间锁表。
+const maxBatchIDs = 100
+
+// BatchItemFailure 是批量操作中单个条目的失败原因。
+type BatchItemFailure struct {
+	ID     uint   `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// BatchResult 是批量操作的结果：成功的 ID 与逐条失败原因。
+// 单个条目失败只记入 Failed，绝不让整个批次失败。
+type BatchResult struct {
+	OK     []uint             `json:"ok"`
+	Failed []BatchItemFailure `json:"failed"`
+}
+
+// newBatchResult 构造空结果，保证序列化时是 [] 而不是 null，前端可直接遍历。
+func newBatchResult() *BatchResult {
+	return &BatchResult{OK: []uint{}, Failed: []BatchItemFailure{}}
+}
+
+// checkBatchIDs 校验批量 ID 列表：先去重保序，再校验非空、合法性与上限。
+// 先去重再限流，避免调用方用重复 ID 绕过上限；id==0 直接拒绝，防止误操作。
+func checkBatchIDs(ids []uint) ([]uint, error) {
+	seen := make(map[uint]struct{}, len(ids))
+	unique := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return nil, ErrBadRequest("请选择要操作的对象")
+	}
+	for _, id := range unique {
+		if id == 0 {
+			return nil, ErrBadRequest("存在无效的 ID")
+		}
+	}
+	if len(unique) > maxBatchIDs {
+		return nil, ErrBadRequest("一次最多操作 %d 条", maxBatchIDs)
+	}
+	return unique, nil
+}
+
+// batchReason 把单条失败的错误收敛为面向管理员的中文原因。
+// 业务错误直接透出中文信息；内部错误只记日志，前端看到统一提示，不外泄实现细节。
+func batchReason(op string, id uint, err error) string {
+	if bizErr, ok := AsError(err); ok {
+		return bizErr.Message
+	}
+	log.Printf("admin batch %s failed: id=%d err=%v", op, id, err)
+	return "服务器内部错误"
+}
+
+// BatchSetProductStatus 批量上架（active）/下架（hidden）商品。
+// 状态值校验与 UpdateProduct 共用同一枚举；不存在的商品记为单条失败。
+func (s *AdminService) BatchSetProductStatus(ids []uint, status string) (*BatchResult, error) {
+	if status != model.ProductActive && status != model.ProductHidden {
+		return nil, ErrBadRequest("无效的商品状态")
+	}
+	unique, err := checkBatchIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	result := newBatchResult()
+	for _, id := range unique {
+		var item model.Product
+		if err := s.db.First(&item, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: "商品不存在"})
+			} else {
+				result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: batchReason("set-product-status", id, err)})
+			}
+			continue
+		}
+		if item.Status == status {
+			result.OK = append(result.OK, id)
+			continue
+		}
+		if err := s.db.Model(&model.Product{}).Where("id = ?", id).Update("status", status).Error; err != nil {
+			result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: batchReason("set-product-status", id, err)})
+			continue
+		}
+		result.OK = append(result.OK, id)
+	}
+	return result, nil
+}
+
+// BatchDeleteProducts 批量删除商品，逐条复用 DeleteProduct —— 已有服务引用的
+// 商品会被挡下并记为单条失败，不影响同批其他商品。
+func (s *AdminService) BatchDeleteProducts(ids []uint) (*BatchResult, error) {
+	unique, err := checkBatchIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	result := newBatchResult()
+	for _, id := range unique {
+		if err := s.DeleteProduct(id); err != nil {
+			result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: batchReason("delete-product", id, err)})
+			continue
+		}
+		result.OK = append(result.OK, id)
+	}
+	return result, nil
+}
+
+// BatchSetUserStatus 批量启用（active）/禁用（disabled）用户。
+// 逐条复用 UpdateUser，继承其校验：自我禁用会被挡下并记为单条失败，不中断整批。
+func (s *AdminService) BatchSetUserStatus(operatorID uint, ids []uint, status string) (*BatchResult, error) {
+	if status != model.UserActive && status != model.UserDisabled {
+		return nil, ErrBadRequest("无效的状态")
+	}
+	unique, err := checkBatchIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	result := newBatchResult()
+	for _, id := range unique {
+		st := status
+		if _, err := s.UpdateUser(operatorID, id, UpdateUserRequest{Status: &st}); err != nil {
+			result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: batchReason("set-user-status", id, err)})
+			continue
+		}
+		result.OK = append(result.OK, id)
+	}
+	return result, nil
+}
+
+// BatchDeleteUsers 批量删除用户，逐条先终止上游服务再删用户。
+// 单条 DeleteUser 直接 SQL 级联删服务行，不会向上游发起终止；批量这里先把
+// 有上游背书（upstream_plugin_id/upstream_host_id 均非空，与 DeleteService
+// 的判断一致）的服务逐个走 DeleteService（内含上游 TERMINATE），任一终止
+// 失败就记该用户单条失败并保留用户，不影响同批其他用户。
+// 为避免上游已删、用户却因自删/最后一个管理员等校验删不掉，先做与 DeleteUser
+// 相同的前置校验（自删、存在性、保留管理员），校验不过直接记失败、不碰上游。
+// 自删与删掉最后一个可用管理员都会被挡下并记为单条失败 —— 逐条顺序执行，
+// 后删的管理员能看到前面已删的，整批删光管理员的企图必然在某一条上失败。
+func (s *AdminService) BatchDeleteUsers(operatorID uint, ids []uint) (*BatchResult, error) {
+	unique, err := checkBatchIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	result := newBatchResult()
+	for _, id := range unique {
+		// 前置校验与 DeleteUser 保持一致：校验不过直接记失败，不碰上游服务。
+		var user model.User
+		if err := s.db.First(&user, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: "用户不存在"})
+			} else {
+				result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: batchReason("delete-user", id, err)})
+			}
+			continue
+		}
+		if operatorID == id {
+			result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: batchReason("delete-user", id, ErrBadRequest("不能删除自己的账号"))})
+			continue
+		}
+		if user.IsAdmin() {
+			if err := s.ensureAnotherAdmin(id); err != nil {
+				result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: batchReason("delete-user", id, err)})
+				continue
+			}
+		}
+		// 有上游背书的服务先逐个走 DeleteService（内含上游 TERMINATE 与本地删除），
+		// 任一失败就保留该用户， DeleteUser 的级联只负责剩下的本地服务行。
+		var upstreamServices []model.Service
+		if err := s.db.Where("user_id = ?", id).Where("upstream_plugin_id <> '' AND upstream_host_id <> ''").Find(&upstreamServices).Error; err != nil {
+			result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: batchReason("delete-user", id, err)})
+			continue
+		}
+		terminated := true
+		for _, svc := range upstreamServices {
+			if err := s.DeleteService(svc.ID); err != nil {
+				result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: batchReason("delete-user", id, err)})
+				terminated = false
+				break
+			}
+		}
+		if !terminated {
+			continue
+		}
+		if err := s.DeleteUser(operatorID, id); err != nil {
+			result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: batchReason("delete-user", id, err)})
+			continue
+		}
+		result.OK = append(result.OK, id)
+	}
+	return result, nil
+}
+
+// BatchSetServiceStatus 批量暂停（suspended）/恢复（active）服务。
+// 只允许使用中与暂停之间切换：已终止的服务绝不在这里复活，
+// 待开通/开通失败的服务请走单条重试，其余状态记为单条失败。
+// 上游同步失败同样只记单条，本地不变更。
+func (s *AdminService) BatchSetServiceStatus(ids []uint, status string) (*BatchResult, error) {
+	if status != model.ServiceActive && status != model.ServiceSuspended {
+		return nil, ErrBadRequest("无效的服务状态")
+	}
+	unique, err := checkBatchIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	result := newBatchResult()
+	for _, id := range unique {
+		var item model.Service
+		if err := s.db.First(&item, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: "服务不存在"})
+			} else {
+				result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: batchReason("set-service-status", id, err)})
+			}
+			continue
+		}
+		if item.Status != model.ServiceActive && item.Status != model.ServiceSuspended {
+			reason := "该状态的服务不支持批量变更"
+			if item.Status == model.ServiceTerminated {
+				reason = "已终止的服务无法恢复"
+			}
+			result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: reason})
+			continue
+		}
+		if _, err := s.SetServiceStatus(id, status); err != nil {
+			result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: batchReason("set-service-status", id, err)})
+			continue
+		}
+		result.OK = append(result.OK, id)
+	}
+	return result, nil
+}
+
+// BatchDeleteServices 批量删除服务，逐条复用 DeleteService —— 上游终止失败
+// 的服务会被保留并记为单条失败，不影响同批其他服务。
+func (s *AdminService) BatchDeleteServices(ids []uint) (*BatchResult, error) {
+	unique, err := checkBatchIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	result := newBatchResult()
+	for _, id := range unique {
+		if err := s.DeleteService(id); err != nil {
+			result.Failed = append(result.Failed, BatchItemFailure{ID: id, Reason: batchReason("delete-service", id, err)})
+			continue
+		}
+		result.OK = append(result.OK, id)
+	}
+	return result, nil
 }

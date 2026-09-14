@@ -120,6 +120,9 @@ type PaymentMethod struct {
 	// ConfigMap 是 Config 的内存解析视图，不落库。
 	Enabled   bool `gorm:"not null;default:true" json:"enabled"`
 	SortOrder int  `gorm:"not null;default:0" json:"sort_order"`
+	// Icon 是支付图标键（alipay/wechat/qq/unionpay/visa/mastercard/stripe/
+	// bank/credit/wallet/cash…），空表示用默认图标，前端按 PAYMENT_ICONS 渲染。
+	Icon string `gorm:"size:32;not null;default:''" json:"icon"`
 }
 
 type ExternalPayment struct {
@@ -141,6 +144,9 @@ type ExternalPayment struct {
 	PaidAt          *time.Time `json:"paid_at"`
 	// PaymentMethodID 关联到创建该支付时所用的支付方式，可为空（兼容旧数据）。
 	PaymentMethodID *uint `gorm:"index" json:"payment_method_id"`
+	// BalanceCents 是创建意图时同步抵扣的余额（分）。外部渠道只收
+	// AmountCents，结算时不再另行扣余额；意图取消时按此金额原路退回余额。
+	BalanceCents int64 `gorm:"not null;default:0" json:"balance_cents"`
 }
 
 // PluginPayment 记录插件报上来的每一笔到账，唯一索引即幂等键。

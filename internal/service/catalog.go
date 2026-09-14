@@ -121,6 +121,8 @@ type ProductInput struct {
 	ProvisionConfig model.ProvisionSpec `json:"provision_config"`
 	// AgreementArticleID 指向知识库文章，非空表示购买前必须同意该协议。
 	AgreementArticleID *uint `json:"agreement_article_id"`
+	// Region 是商品地域代码（cn/hk/tw/mo/jp/kr/sg/us/de/uk/fr/nl/au/ca/ru/global），空表示未设置。
+	Region string `json:"region"`
 }
 
 // slugPattern 之外的字符会被替换成短横线。

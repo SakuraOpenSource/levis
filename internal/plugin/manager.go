@@ -500,6 +500,37 @@ func (m *Manager) GetHost(ctx context.Context, id string, req *pb.GetHostRequest
 	return out, nil
 }
 
+// GetHostVNC 获取上游服务实例的 VNC 接入信息；插件未实现时返回 ErrUnavailable。
+func (m *Manager) GetHostVNC(ctx context.Context, id string, req *pb.GetHostVNCRequest) (*pb.GetHostVNCReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.GetHostVNCReply
+	err = c.call(ctx, provisionTimeout, func(ctx context.Context) error {
+		reply, err := client.GetHostVNC(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.GetError() != "" {
+		return nil, fmt.Errorf("%s", out.GetError())
+	}
+	return out, nil
+}
+
 // ManageHost 对上游服务实例执行管理操作（续费、暂停、恢复、删除、电源操作）。
 func (m *Manager) ManageHost(ctx context.Context, id string, req *pb.ManageHostRequest) (*pb.ManageHostReply, error) {
 	inst, err := m.get(id)

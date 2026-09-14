@@ -31,6 +31,8 @@ type PaymentCreateRequest struct {
 	TargetID    uint   `json:"target_id"`
 	PluginID    string `json:"plugin_id"`
 	AmountCents int64  `json:"amount_cents"`
+	// BalanceCents 是本次同步抵扣的余额（分），仅订单/账单用途有效。
+	BalanceCents int64 `json:"balance_cents"`
 }
 
 func (h *Handler) PaymentMethods(c *gin.Context) {
@@ -47,7 +49,17 @@ func (h *Handler) CreatePayment(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
-	item, err := h.payments().Create(c.Request.Context(), httpx.CurrentUserID(c), c.ClientIP(), service.PaymentCreateInput{Purpose: req.Purpose, TargetID: req.TargetID, PluginID: req.PluginID, AmountCents: req.AmountCents})
+	item, err := h.payments().Create(c.Request.Context(), httpx.CurrentUserID(c), c.ClientIP(), service.PaymentCreateInput{Purpose: req.Purpose, TargetID: req.TargetID, PluginID: req.PluginID, AmountCents: req.AmountCents, BalanceCents: req.BalanceCents})
+	respond(c, item, err)
+}
+
+// CancelPayment 取消一笔待支付意图，已抵扣的余额原路退回。
+func (h *Handler) CancelPayment(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	item, err := h.payments().Cancel(httpx.CurrentUserID(c), id)
 	respond(c, item, err)
 }
 

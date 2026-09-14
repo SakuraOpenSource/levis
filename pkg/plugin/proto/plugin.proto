@@ -92,6 +92,10 @@ service Plugin {
   // GetHostAccess 获取服务实例的网络与 SSH 访问信息。未实现的插件返回 UNIMPLEMENTED。
   rpc GetHostAccess(GetHostAccessRequest) returns (GetHostAccessReply);
 
+  // GetHostVNC 获取服务实例的 VNC 控制台接入信息。未实现的插件返回 UNIMPLEMENTED。
+  // 需声明 CAPABILITY_PROVISION_PRODUCT。
+  rpc GetHostVNC(GetHostVNCRequest) returns (GetHostVNCReply);
+
   // StartKYC 发起实名认证并返回认证跳转地址/HTML。
   // 需声明 CAPABILITY_KYC。
   rpc StartKYC(StartKYCRequest) returns (StartKYCReply);
@@ -534,6 +538,26 @@ message GetHostAccessReply {
   HostNetwork network = 1;
   HostSSH ssh = 2;
   string error = 3;
+}
+
+// HostVNC 是 VNC 控制台的接入信息。ws_url 由调用方（主程序代理或浏览器）
+// 直连，ticket 为主控签发的一次性短效凭证，随 ws 握手提交。
+message HostVNC {
+  bool available = 1;
+  string ws_url = 2;
+  string ticket = 3;
+  string expires_at = 4;
+  string message = 5;
+}
+
+message GetHostVNCRequest {
+  string host_id = 1;
+  map<string, string> interface_config = 2;
+}
+
+message GetHostVNCReply {
+  HostVNC vnc = 1;
+  string error = 2;
 }
 
 message GetHostReply {

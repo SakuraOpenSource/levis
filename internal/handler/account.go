@@ -109,6 +109,27 @@ func (h *Handler) ServiceMetrics(c *gin.Context) {
 	metrics, err := h.billing().ServiceMetrics(httpx.CurrentUserID(c), id)
 	respond(c, metrics, err)
 }
+
+// PayInvoice 用余额全额结清一张待付账单（订单账单走开通，续费账单顺延到期）。
+func (h *Handler) PayInvoice(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	item, err := h.payments().SettleInvoice(httpx.CurrentUserID(c), id)
+	respond(c, item, err)
+}
+
+// RenewInvoice 为服务创建一张待付续费账单，支付环节走统一收银台。
+func (h *Handler) RenewInvoice(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	item, err := h.billing().CreateRenewalInvoice(httpx.CurrentUserID(c), id)
+	respond(c, item, err)
+}
+
 func (h *Handler) ServiceOS(c *gin.Context) {
 	id, ok := IDParam(c, "id")
 	if !ok {

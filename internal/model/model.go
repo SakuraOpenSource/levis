@@ -260,6 +260,9 @@ type Product struct {
 	// AgreementArticleID 指向知识库文章：非空表示购买该商品前必须阅读并同意该协议。
 	// 为空（NULL）表示无需同意。
 	AgreementArticleID *uint `gorm:"index" json:"agreement_article_id"`
+	// Region 是商品地域代码（cn/hk/tw/mo/jp/kr/sg/us/de/uk/fr/nl/au/ca/ru/global…
+	// …），空表示未设置。前端按 REGIONS 映射展示名称与旗帜（台湾展示中国国旗）。
+	Region string `gorm:"size:16;not null;default:''" json:"region"`
 }
 
 // 接口商品的开通配置模式与驱动。
@@ -467,9 +470,12 @@ const (
 // Invoice 是账单。
 type Invoice struct {
 	Base
-	InvoiceNo  string        `gorm:"uniqueIndex;size:32;not null" json:"invoice_no"`
-	UserID     uint          `gorm:"index;not null" json:"user_id"`
-	OrderID    *uint         `gorm:"index" json:"order_id"`
+	InvoiceNo string `gorm:"uniqueIndex;size:32;not null" json:"invoice_no"`
+	UserID    uint   `gorm:"index;not null" json:"user_id"`
+	OrderID   *uint  `gorm:"index" json:"order_id"`
+	// ServiceID 非空表示这是一张续费账单：结清时顺延该服务的到期时间，
+	// 而不是开通新服务。订单账单此字段为空。
+	ServiceID  *uint         `gorm:"index" json:"service_id"`
 	Status     string        `gorm:"size:16;not null;default:unpaid" json:"status"`
 	TotalCents int64         `gorm:"not null;default:0" json:"total_cents"`
 	DueAt      *time.Time    `json:"due_at"`

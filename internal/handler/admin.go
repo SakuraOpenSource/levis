@@ -605,3 +605,76 @@ func (h *Handler) UpdateAgentProgram(c *gin.Context) {
 	cfg, err := svc.Config()
 	respond(c, cfg, err)
 }
+
+// ---------- 批量操作 ----------
+
+// batchStatusRequest 是批量启停的请求体：POST 传参，不用 DELETE 带 body。
+type batchStatusRequest struct {
+	IDs    []uint `json:"ids"`
+	Status string `json:"status"`
+}
+
+// batchDeleteRequest 是批量删除的请求体。
+type batchDeleteRequest struct {
+	IDs []uint `json:"ids"`
+}
+
+// AdminBatchProductsStatus 批量上架/下架商品。
+func (h *Handler) AdminBatchProductsStatus(c *gin.Context) {
+	var req batchStatusRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	result, err := h.admin().BatchSetProductStatus(req.IDs, req.Status)
+	respond(c, result, err)
+}
+
+// AdminBatchDeleteProducts 批量删除商品。
+func (h *Handler) AdminBatchDeleteProducts(c *gin.Context) {
+	var req batchDeleteRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	result, err := h.admin().BatchDeleteProducts(req.IDs)
+	respond(c, result, err)
+}
+
+// AdminBatchUsersStatus 批量启用/禁用用户。
+func (h *Handler) AdminBatchUsersStatus(c *gin.Context) {
+	var req batchStatusRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	result, err := h.admin().BatchSetUserStatus(httpx.CurrentUserID(c), req.IDs, req.Status)
+	respond(c, result, err)
+}
+
+// AdminBatchDeleteUsers 批量删除用户。
+func (h *Handler) AdminBatchDeleteUsers(c *gin.Context) {
+	var req batchDeleteRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	result, err := h.admin().BatchDeleteUsers(httpx.CurrentUserID(c), req.IDs)
+	respond(c, result, err)
+}
+
+// AdminBatchServicesStatus 批量暂停/恢复服务。
+func (h *Handler) AdminBatchServicesStatus(c *gin.Context) {
+	var req batchStatusRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	result, err := h.admin().BatchSetServiceStatus(req.IDs, req.Status)
+	respond(c, result, err)
+}
+
+// AdminBatchDeleteServices 批量删除服务。
+func (h *Handler) AdminBatchDeleteServices(c *gin.Context) {
+	var req batchDeleteRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	result, err := h.admin().BatchDeleteServices(req.IDs)
+	respond(c, result, err)
+}
