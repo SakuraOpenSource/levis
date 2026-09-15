@@ -474,6 +474,8 @@ message UpstreamHost {
   string ssh_username = 19;
   string ssh_password = 20;
   bool ssh_ready = 21;
+  // cpu_milli 顶层别名，与 resources.cpu_milli 一致，便于旧客户端读取。
+  int32 cpu_milli = 22;
 }
 
 // HostResources 是服务实例的资源配置。
@@ -483,6 +485,9 @@ message HostResources {
   int64 disk_gb = 3;
   int64 bandwidth_mbps = 4;
   int64 traffic_gb = 5;
+  // cpu_milli 是毫核表示的 CPU 配额（500 = 0.5 核），仅当实例配置了
+  // 小数核时非零；此时 cpu 字段为向上取整的整核数，用于旧客户端兼容。
+  int32 cpu_milli = 6;
 }
 
 // HostNetwork 是服务实例的网络配置与观测结果。

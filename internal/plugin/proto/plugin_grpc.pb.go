@@ -46,6 +46,7 @@ const (
 	Plugin_ListProductOS_FullMethodName         = "/levis.plugin.v1.Plugin/ListProductOS"
 	Plugin_GetHostMetrics_FullMethodName        = "/levis.plugin.v1.Plugin/GetHostMetrics"
 	Plugin_GetHostAccess_FullMethodName         = "/levis.plugin.v1.Plugin/GetHostAccess"
+	Plugin_GetHostVNC_FullMethodName            = "/levis.plugin.v1.Plugin/GetHostVNC"
 	Plugin_StartKYC_FullMethodName              = "/levis.plugin.v1.Plugin/StartKYC"
 	Plugin_QueryKYC_FullMethodName              = "/levis.plugin.v1.Plugin/QueryKYC"
 )
@@ -116,6 +117,9 @@ type PluginClient interface {
 	GetHostMetrics(ctx context.Context, in *GetHostMetricsRequest, opts ...grpc.CallOption) (*GetHostMetricsReply, error)
 	// GetHostAccess 获取服务实例的网络与 SSH 访问信息。未实现的插件返回 UNIMPLEMENTED。
 	GetHostAccess(ctx context.Context, in *GetHostAccessRequest, opts ...grpc.CallOption) (*GetHostAccessReply, error)
+	// GetHostVNC 获取服务实例的 VNC 控制台接入信息。未实现的插件返回 UNIMPLEMENTED。
+	// 需声明 CAPABILITY_PROVISION_PRODUCT。
+	GetHostVNC(ctx context.Context, in *GetHostVNCRequest, opts ...grpc.CallOption) (*GetHostVNCReply, error)
 	// StartKYC 发起实名认证并返回认证跳转地址/HTML。
 	// 需声明 CAPABILITY_KYC。
 	StartKYC(ctx context.Context, in *StartKYCRequest, opts ...grpc.CallOption) (*StartKYCReply, error)
@@ -312,6 +316,16 @@ func (c *pluginClient) GetHostAccess(ctx context.Context, in *GetHostAccessReque
 	return out, nil
 }
 
+func (c *pluginClient) GetHostVNC(ctx context.Context, in *GetHostVNCRequest, opts ...grpc.CallOption) (*GetHostVNCReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetHostVNCReply)
+	err := c.cc.Invoke(ctx, Plugin_GetHostVNC_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *pluginClient) StartKYC(ctx context.Context, in *StartKYCRequest, opts ...grpc.CallOption) (*StartKYCReply, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StartKYCReply)
@@ -398,6 +412,9 @@ type PluginServer interface {
 	GetHostMetrics(context.Context, *GetHostMetricsRequest) (*GetHostMetricsReply, error)
 	// GetHostAccess 获取服务实例的网络与 SSH 访问信息。未实现的插件返回 UNIMPLEMENTED。
 	GetHostAccess(context.Context, *GetHostAccessRequest) (*GetHostAccessReply, error)
+	// GetHostVNC 获取服务实例的 VNC 控制台接入信息。未实现的插件返回 UNIMPLEMENTED。
+	// 需声明 CAPABILITY_PROVISION_PRODUCT。
+	GetHostVNC(context.Context, *GetHostVNCRequest) (*GetHostVNCReply, error)
 	// StartKYC 发起实名认证并返回认证跳转地址/HTML。
 	// 需声明 CAPABILITY_KYC。
 	StartKYC(context.Context, *StartKYCRequest) (*StartKYCReply, error)
@@ -467,6 +484,9 @@ func (UnimplementedPluginServer) GetHostMetrics(context.Context, *GetHostMetrics
 }
 func (UnimplementedPluginServer) GetHostAccess(context.Context, *GetHostAccessRequest) (*GetHostAccessReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetHostAccess not implemented")
+}
+func (UnimplementedPluginServer) GetHostVNC(context.Context, *GetHostVNCRequest) (*GetHostVNCReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetHostVNC not implemented")
 }
 func (UnimplementedPluginServer) StartKYC(context.Context, *StartKYCRequest) (*StartKYCReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method StartKYC not implemented")
@@ -819,6 +839,24 @@ func _Plugin_GetHostAccess_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Plugin_GetHostVNC_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetHostVNCRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServer).GetHostVNC(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Plugin_GetHostVNC_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServer).GetHostVNC(ctx, req.(*GetHostVNCRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Plugin_StartKYC_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(StartKYCRequest)
 	if err := dec(in); err != nil {
@@ -933,6 +971,10 @@ var Plugin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetHostAccess",
 			Handler:    _Plugin_GetHostAccess_Handler,
+		},
+		{
+			MethodName: "GetHostVNC",
+			Handler:    _Plugin_GetHostVNC_Handler,
 		},
 		{
 			MethodName: "StartKYC",

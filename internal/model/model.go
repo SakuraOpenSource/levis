@@ -283,11 +283,14 @@ const (
 //
 // 弹性配置使用 Step 和 UnitPriceCents 表示从 Min 起每增加一个步长的加价；
 // 固定配置会在归一时把这两个字段清零。
+//
+// CPU 维度现在支持小数（0.25/0.4/0.5 核），因此 Min/Max/Step 改为 float64；
+// JSON 兼容旧整数数据 —— 历史行里存的整数字面量反序列化后就是整数值的 float64。
 type SpecRange struct {
-	Min            int   `json:"min"`
-	Max            int   `json:"max"`
-	Step           int   `json:"step"`
-	UnitPriceCents int64 `json:"unit_price_cents"`
+	Min            float64 `json:"min"`
+	Max            float64 `json:"max"`
+	Step           float64 `json:"step"`
+	UnitPriceCents int64   `json:"unit_price_cents"`
 }
 
 // ProvisionSpec 是接口商品的开通配置：驱动 + 各规格的区间或固定值。
@@ -304,7 +307,7 @@ type ProvisionSpec struct {
 }
 
 // Fixed 把一项规格归一为固定值。
-func Fixed(v int) SpecRange { return SpecRange{Min: v, Max: v} }
+func Fixed(v float64) SpecRange { return SpecRange{Min: v, Max: v} }
 
 // Value 实现 driver.Valuer：开通配置以 JSON 文本入库。
 func (p ProvisionSpec) Value() (driver.Value, error) {

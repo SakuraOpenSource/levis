@@ -92,6 +92,10 @@ service Plugin {
   // GetHostAccess 获取服务实例的网络与 SSH 访问信息。未实现的插件返回 UNIMPLEMENTED。
   rpc GetHostAccess(GetHostAccessRequest) returns (GetHostAccessReply);
 
+  // GetHostVNC 获取服务实例的 VNC 控制台接入信息。未实现的插件返回 UNIMPLEMENTED。
+  // 需声明 CAPABILITY_PROVISION_PRODUCT。
+  rpc GetHostVNC(GetHostVNCRequest) returns (GetHostVNCReply);
+
   // StartKYC 发起实名认证并返回认证跳转地址/HTML。
   // 需声明 CAPABILITY_KYC。
   rpc StartKYC(StartKYCRequest) returns (StartKYCReply);
@@ -470,6 +474,8 @@ message UpstreamHost {
   string ssh_username = 19;
   string ssh_password = 20;
   bool ssh_ready = 21;
+  // cpu_milli 顶层别名，与 resources.cpu_milli 一致，便于旧客户端读取。
+  int32 cpu_milli = 22;
 }
 
 // HostResources 是服务实例的资源配置。
@@ -479,6 +485,9 @@ message HostResources {
   int64 disk_gb = 3;
   int64 bandwidth_mbps = 4;
   int64 traffic_gb = 5;
+  // cpu_milli 是毫核表示的 CPU 配额（500 = 0.5 核），仅当实例配置了
+   // 小数核时非零；此时 cpu 字段为向上取整的整核数，用于旧客户端兼容。
+  int32 cpu_milli = 6;
 }
 
 // HostNetwork 是服务实例的网络配置与观测结果。
@@ -534,6 +543,29 @@ message GetHostAccessReply {
   HostNetwork network = 1;
   HostSSH ssh = 2;
   string error = 3;
+}
+
+ // HostVNC 是 VNC 控制台的接入信息。ws_url 由调用方（主程序代理或浏览器）
+ // 直连，ticket 为主控签发的一次性短效凭证，随 ws 握手提交。
+ message HostVNC {
+   bool available = 1;
+   string ws_url = 2;
+   string ticket = 3;
+   string expires_at = 4;
+   string message = 5;
+   // viewer_url 是上游的页面控制台地址（如魔方财务的 viewer 页），浏览器
+   // 新窗口打开；与 ws_url 二选一：有 ws_url 走站内 RFB 中继，否则走此外链。
+   string viewer_url = 6;
+ }
+
+message GetHostVNCRequest {
+  string host_id = 1;
+  map<string, string> interface_config = 2;
+}
+
+message GetHostVNCReply {
+  HostVNC vnc = 1;
+  string error = 2;
 }
 
 message GetHostReply {

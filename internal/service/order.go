@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"time"
 
@@ -148,32 +149,40 @@ func buildOrderItems(tx *gorm.DB, userID uint, lines []OrderLine) ([]model.Order
 // 五项规格（CPU 核数、内存 MB、硬盘 GB、带宽 Mbps、流量 GB）都必须给出，
 // 且落在商品配置的区间内 —— 固定规格商品的区间退化为单点，等于必须一致；
 // 系统镜像必填。流量为 0 表示不限，是否允许 0 由区间决定。
+//
+// CPU 支持小数核数（0.25/0.4/0.5 等），按浮点解析并按步长对齐；
+// 其余维度仍保持整数语义（"1.5" 这类小数一律按格式错误拒绝）。
 func validateProvisionOptions(cfg model.ProvisionSpec, options map[string]string) error {
 	if cfg.Driver == "" {
 		return nil
 	}
 	numeric := []struct {
-		key   string
-		rng   model.SpecRange
-		label string
+		key      string
+		rng      model.SpecRange
+		label    string
+		fraction bool // 仅 CPU 允许小数
 	}{
-		{"cpu", cfg.CPU, "CPU 核数"},
-		{"memory_mb", cfg.MemoryMB, "内存"},
-		{"disk_gb", cfg.DiskGB, "硬盘"},
-		{"bandwidth_mbps", cfg.BandwidthMbps, "带宽"},
-		{"traffic_gb", cfg.TrafficGB, "流量"},
+		{"cpu", cfg.CPU, "CPU 核数", true},
+		{"memory_mb", cfg.MemoryMB, "内存", false},
+		{"disk_gb", cfg.DiskGB, "硬盘", false},
+		{"bandwidth_mbps", cfg.BandwidthMbps, "带宽", false},
+		{"traffic_gb", cfg.TrafficGB, "流量", false},
 	}
 	for _, item := range numeric {
 		raw, ok := options[item.key]
 		if !ok || raw == "" {
 			return ErrBadRequest("请选择%s", item.label)
 		}
-		value, err := strconv.Atoi(raw)
+		value, err := strconv.ParseFloat(raw, 64)
 		if err != nil || value < 0 {
 			return ErrBadRequest("%s格式不正确", item.label)
 		}
+		if !item.fraction && value != math.Trunc(value) {
+			return ErrBadRequest("%s格式不正确", item.label)
+		}
 		if value < item.rng.Min || value > item.rng.Max {
-			return ErrBadRequest("%s超出可选范围（%d-%d）", item.label, item.rng.Min, item.rng.Max)
+			return ErrBadRequest("%s超出可选范围（%s-%s）", item.label,
+				formatSpecNumber(item.rng.Min), formatSpecNumber(item.rng.Max))
 		}
 		step := item.rng.Step
 		if step <= 0 {
@@ -181,8 +190,11 @@ func validateProvisionOptions(cfg model.ProvisionSpec, options map[string]string
 			// normalizeProvisionConfig 保证步长必须显式大于 0。
 			step = 1
 		}
-		if (value-item.rng.Min)%step != 0 {
-			return ErrBadRequest("%s必须按 %d 的步长选择", item.label, step)
+		// 步长对齐：(value-Min)/Step 必须接近整数步数；浮点比较留容差，
+		// 避免 0.4-0.1=0.30000000000000004 这类二进制精度尘埃误判。
+		steps := (value - item.rng.Min) / step
+		if math.Abs(steps-math.Round(steps)) > stepAlignEpsilon {
+			return ErrBadRequest("%s必须按 %s 的步长选择", item.label, formatSpecNumber(step))
 		}
 	}
 	if options["image_id"] == "" {
@@ -193,6 +205,7 @@ func validateProvisionOptions(cfg model.ProvisionSpec, options map[string]string
 
 // provisionOptionPrice 返回接口商品选配相对基础规格的加价。
 // 缺失的历史 Step/UnitPriceCents 按 1/0 处理，确保旧商品仍可购买。
+// CPU 支持小数，统一走浮点计算步数后取整，金额仍以分为单位保持整数。
 func provisionOptionPrice(cfg model.ProvisionSpec, options map[string]string) int64 {
 	numeric := []struct {
 		key string
@@ -206,7 +219,7 @@ func provisionOptionPrice(cfg model.ProvisionSpec, options map[string]string) in
 	}
 	var extra int64
 	for _, item := range numeric {
-		value, err := strconv.Atoi(options[item.key])
+		value, err := strconv.ParseFloat(options[item.key], 64)
 		if err != nil {
 			continue
 		}
@@ -214,9 +227,19 @@ func provisionOptionPrice(cfg model.ProvisionSpec, options map[string]string) in
 		if step <= 0 {
 			step = 1
 		}
-		extra += int64((value-item.rng.Min)/step) * item.rng.UnitPriceCents
+		extra += int64(math.Round((value-item.rng.Min)/step)) * item.rng.UnitPriceCents
 	}
 	return extra
+}
+
+// stepAlignEpsilon 是步长对齐判断的容差：步数 (value-min)/step 与最近
+// 整数的偏差小于它才视为对齐，用于吸收浮点除法误差。
+const stepAlignEpsilon = 1e-6
+
+// formatSpecNumber 把规格数值格式化为最短十进制表示，不带多余尾零：
+// 0.25 → "0.25"、0.050000 → "0.05"、2 → "2"，用于错误提示与展示。
+func formatSpecNumber(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
 // checkAgreement 校验购买协议：商品绑定了协议文章时必须传 agree=true。

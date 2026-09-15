@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -650,7 +651,7 @@ func (s *BillingService) trafficUnitPrice(product *model.Product) (unitPriceCent
 // 读到与写入同一快照的价格（防下单后改价导致的 stale-price 结算）。
 func trafficUnitPrice(db *gorm.DB, product *model.Product) (unitPriceCents int64, step int, err error) {
 	if product != nil && product.ProvisionConfig.TrafficGB.UnitPriceCents > 0 {
-		step = product.ProvisionConfig.TrafficGB.Step
+		step = int(math.Round(product.ProvisionConfig.TrafficGB.Step))
 		if step <= 0 {
 			step = 1
 		}

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -723,11 +725,17 @@ func (s *AdminService) validateProduct(in *ProductInput) error {
 	return nil
 }
 
+// stepEpsilon 是开通配置浮点校验的容差（绝对偏差）：
+// 判断范围是否按步长对齐、步长是否为正时用它吸收二进制精度尘埃。
+const stepEpsilon = 1e-9
+
 // normalizeProvisionConfig 校验并归一接口商品的开通配置。
 //
 // 固定模式把每个区间收敛为单点（Min = Max = Min），并清零步长与加价；
 // 弹性模式要求 Min <= Max、步长为正、范围按步长对齐且每步加价非负。
 // 流量为 0 表示不限。CPU / 内存 / 硬盘在任何模式下都必须为正数。
+// CPU 支持小数核数（下限 0.1），其余维度仍按整数语义校验；
+// 区间与步长比较统一走浮点并留 1e-9 容差，避免二进制精度误判。
 func normalizeProvisionConfig(cfg *model.ProvisionSpec) error {
 	cfg.Driver = strings.ToLower(strings.TrimSpace(cfg.Driver))
 	if cfg.Driver != "incus" && cfg.Driver != "qemu" {
@@ -739,17 +747,18 @@ func normalizeProvisionConfig(cfg *model.ProvisionSpec) error {
 	ranges := []struct {
 		name    string
 		rng     *model.SpecRange
-		minimum int
+		minimum float64
 	}{
-		{"CPU", &cfg.CPU, 1},
+		{"CPU", &cfg.CPU, 0.1},
 		{"内存", &cfg.MemoryMB, 16},
 		{"硬盘", &cfg.DiskGB, 1},
 		{"带宽", &cfg.BandwidthMbps, 0},
 		{"流量", &cfg.TrafficGB, 0},
 	}
 	for _, item := range ranges {
+		// FormatFloat(-1) 输出不带多余尾零的最短表示：0.1 → "0.1"、16 → "16"。
 		if item.rng.Min < item.minimum {
-			return ErrBadRequest("%s不能小于 %d", item.name, item.minimum)
+			return ErrBadRequest("%s不能小于 %s", item.name, strconv.FormatFloat(item.minimum, 'f', -1, 64))
 		}
 		if cfg.Mode == model.ProvisionModeFixed {
 			// 固定模式只有最小值有意义，最大值直接收敛，避免隐藏的
@@ -763,10 +772,14 @@ func normalizeProvisionConfig(cfg *model.ProvisionSpec) error {
 			if item.rng.Step == 0 {
 				item.rng.Step = 1
 			}
-			if item.rng.Step < 0 {
+			if item.rng.Step <= stepEpsilon {
 				return ErrBadRequest("%s的步长必须大于 0", item.name)
 			}
-			if (item.rng.Max-item.rng.Min)%item.rng.Step != 0 {
+			// 范围必须按步长对齐：用最接近的整数步数反推端点，
+			// 偏差超过容差（如 0.1-0.4 步长 0.25）才判为不对齐。
+			span := item.rng.Max - item.rng.Min
+			steps := math.Round(span / item.rng.Step)
+			if math.Abs(span-steps*item.rng.Step) > stepEpsilon {
 				return ErrBadRequest("%s的范围必须按步长对齐", item.name)
 			}
 			if item.rng.UnitPriceCents < 0 {

@@ -944,6 +944,65 @@ func TestElasticProvisionPricingAndValidation(t *testing.T) {
 	}
 }
 
+// TestFractionalCPUProvisionOptions 验证 CPU 选配支持小数核数：
+// 步长内的小数值可通过校验且按步数计价，未对齐的小数与其它维度的小数
+// 仍被拒绝；CPU 下限 0.1 生效；管理员代开的默认选配按最短十进制输出。
+func TestFractionalCPUProvisionOptions(t *testing.T) {
+	cfg := model.ProvisionSpec{
+		Driver: "incus", Mode: model.ProvisionModeElastic,
+		CPU:           model.SpecRange{Min: 0.2, Max: 2, Step: 0.2, UnitPriceCents: 100},
+		MemoryMB:      model.SpecRange{Min: 512, Max: 1536, Step: 512, UnitPriceCents: 50},
+		DiskGB:        model.SpecRange{Min: 10, Max: 30, Step: 10, UnitPriceCents: 25},
+		BandwidthMbps: model.SpecRange{Min: 10, Max: 30, Step: 10, UnitPriceCents: 10},
+		TrafficGB:     model.SpecRange{Min: 0, Max: 100, Step: 50, UnitPriceCents: 5},
+	}
+	if err := normalizeProvisionConfig(&cfg); err != nil {
+		t.Fatalf("小数 CPU 配置归一失败: %v", err)
+	}
+	options := map[string]string{
+		"cpu": "0.4", "memory_mb": "512", "disk_gb": "10", "bandwidth_mbps": "10", "traffic_gb": "0", "image_id": "alpine",
+	}
+	if err := validateProvisionOptions(cfg, options); err != nil {
+		t.Fatalf("小数 CPU 选配应通过校验: %v", err)
+	}
+	// CPU 0.4 比下限 0.2 高一个步长：加价 1 × 100 = 100。
+	if extra := provisionOptionPrice(cfg, options); extra != 100 {
+		t.Fatalf("小数 CPU 计价错误: extra=%d", extra)
+	}
+	// 未按步长对齐（0.2 + 半步）应拒绝。
+	options["cpu"] = "0.3"
+	if err := validateProvisionOptions(cfg, options); err == nil {
+		t.Error("未按 CPU 步长选择应拒绝")
+	}
+	// 其它维度保持整数语义，"512.5" 一类的小数应拒绝。
+	options["cpu"] = "0.4"
+	options["memory_mb"] = "512.5"
+	if err := validateProvisionOptions(cfg, options); err == nil {
+		t.Error("内存传小数应拒绝")
+	}
+	options["memory_mb"] = "512"
+
+	// CPU 最小值低于 0.1 应在归一时拒绝。
+	toolow := cfg
+	toolow.CPU = model.SpecRange{Min: 0.05, Max: 2, Step: 0.05, UnitPriceCents: 100}
+	if err := normalizeProvisionConfig(&toolow); err == nil {
+		t.Error("CPU 最小值低于 0.1 应拒绝")
+	}
+
+	// 管理员代开的默认选配：整数核输出整数串，小数核输出最短十进制。
+	if got := defaultProvisionOptions(cfg)["cpu"]; got != "0.2" {
+		t.Fatalf("默认 CPU 选配应为 0.2: %q", got)
+	}
+	fixed := cfg
+	fixed.Mode = model.ProvisionModeFixed
+	if err := normalizeProvisionConfig(&fixed); err != nil {
+		t.Fatalf("固定配置归一失败: %v", err)
+	}
+	if got := defaultProvisionOptions(fixed)["cpu"]; got != "0.2" {
+		t.Fatalf("固定配置默认 CPU 应为 0.2: %q", got)
+	}
+}
+
 // TestRenewExtendsServiceAndKeepsLedger 确认续费扣款、顺延到期并留下账单流水。
 func TestRenewExtendsServiceAndKeepsLedger(t *testing.T) {
 	db := newTestDB(t)

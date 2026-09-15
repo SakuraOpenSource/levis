@@ -79,24 +79,27 @@ func createUpstreamOrder(plugins *plugin.Manager, db *gorm.DB, product *model.Pr
 
 // defaultProvisionOptions 为没有用户选配的场景（管理员代开）推导开通选配：
 // 弹性规格取下限，固定规格取固定值。系统镜像由插件按驱动自选。
+// CPU 支持小数核数：按最短十进制输出，整数核数仍是 "2" 这种整数字符串，
+// 小数核数则为 "0.4"；其余维度保持整数语义。
 func defaultProvisionOptions(cfg model.ProvisionSpec) map[string]string {
 	options := map[string]string{
 		"driver":    cfg.Driver,
-		"cpu":       strconv.Itoa(specValue(cfg.CPU)),
-		"memory_mb": strconv.Itoa(specValue(cfg.MemoryMB)),
-		"disk_gb":   strconv.Itoa(specValue(cfg.DiskGB)),
+		"cpu":       formatSpecNumber(specValue(cfg.CPU)),
+		"memory_mb": strconv.Itoa(int(specValue(cfg.MemoryMB))),
+		"disk_gb":   strconv.Itoa(int(specValue(cfg.DiskGB))),
 	}
 	if v := specValue(cfg.BandwidthMbps); v > 0 {
-		options["bandwidth_mbps"] = strconv.Itoa(v)
+		options["bandwidth_mbps"] = strconv.Itoa(int(v))
 	}
 	if v := specValue(cfg.TrafficGB); v > 0 {
-		options["traffic_gb"] = strconv.Itoa(v)
+		options["traffic_gb"] = strconv.Itoa(int(v))
 	}
 	return options
 }
 
 // specValue 取规格值：固定取 Min，弹性取下限。
-func specValue(r model.SpecRange) int {
+// CPU 维度支持小数（SpecRange 已改 float64），其余维度由调用方取整使用。
+func specValue(r model.SpecRange) float64 {
 	if r.Min > 0 {
 		return r.Min
 	}

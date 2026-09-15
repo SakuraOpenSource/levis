@@ -2349,6 +2349,8 @@ type UpstreamHost struct {
 	SshUsername   string `protobuf:"bytes,19,opt,name=ssh_username,json=sshUsername,proto3" json:"ssh_username,omitempty"`
 	SshPassword   string `protobuf:"bytes,20,opt,name=ssh_password,json=sshPassword,proto3" json:"ssh_password,omitempty"`
 	SshReady      bool   `protobuf:"varint,21,opt,name=ssh_ready,json=sshReady,proto3" json:"ssh_ready,omitempty"`
+	// cpu_milli 顶层别名，与 resources.cpu_milli 一致，便于旧客户端读取。
+	CpuMilli      int32 `protobuf:"varint,22,opt,name=cpu_milli,json=cpuMilli,proto3" json:"cpu_milli,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2530,6 +2532,13 @@ func (x *UpstreamHost) GetSshReady() bool {
 	return false
 }
 
+func (x *UpstreamHost) GetCpuMilli() int32 {
+	if x != nil {
+		return x.CpuMilli
+	}
+	return 0
+}
+
 // HostResources 是服务实例的资源配置。
 type HostResources struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -2538,6 +2547,9 @@ type HostResources struct {
 	DiskGb        int64                  `protobuf:"varint,3,opt,name=disk_gb,json=diskGb,proto3" json:"disk_gb,omitempty"`
 	BandwidthMbps int64                  `protobuf:"varint,4,opt,name=bandwidth_mbps,json=bandwidthMbps,proto3" json:"bandwidth_mbps,omitempty"`
 	TrafficGb     int64                  `protobuf:"varint,5,opt,name=traffic_gb,json=trafficGb,proto3" json:"traffic_gb,omitempty"`
+	// cpu_milli 是毫核表示的 CPU 配额（500 = 0.5 核），仅当实例配置了
+	// 小数核时非零；此时 cpu 字段为向上取整的整核数，用于旧客户端兼容。
+	CpuMilli      int32 `protobuf:"varint,6,opt,name=cpu_milli,json=cpuMilli,proto3" json:"cpu_milli,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2603,6 +2615,13 @@ func (x *HostResources) GetBandwidthMbps() int64 {
 func (x *HostResources) GetTrafficGb() int64 {
 	if x != nil {
 		return x.TrafficGb
+	}
+	return 0
+}
+
+func (x *HostResources) GetCpuMilli() int32 {
+	if x != nil {
+		return x.CpuMilli
 	}
 	return 0
 }
@@ -4021,7 +4040,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\x10interface_config\x18\x02 \x03(\v24.levis.plugin.v1.GetHostRequest.InterfaceConfigEntryR\x0finterfaceConfig\x1aB\n" +
 	"\x14InterfaceConfigEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb9\x05\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd6\x05\n" +
 	"\fUpstreamHost\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -4045,14 +4064,16 @@ const file_plugin_proto_rawDesc = "" +
 	"\bssh_port\x18\x12 \x01(\x05R\asshPort\x12!\n" +
 	"\fssh_username\x18\x13 \x01(\tR\vsshUsername\x12!\n" +
 	"\fssh_password\x18\x14 \x01(\tR\vsshPassword\x12\x1b\n" +
-	"\tssh_ready\x18\x15 \x01(\bR\bsshReady\"\x9d\x01\n" +
+	"\tssh_ready\x18\x15 \x01(\bR\bsshReady\x12\x1b\n" +
+	"\tcpu_milli\x18\x16 \x01(\x05R\bcpuMilli\"\xba\x01\n" +
 	"\rHostResources\x12\x10\n" +
 	"\x03cpu\x18\x01 \x01(\x05R\x03cpu\x12\x1b\n" +
 	"\tmemory_mb\x18\x02 \x01(\x03R\bmemoryMb\x12\x17\n" +
 	"\adisk_gb\x18\x03 \x01(\x03R\x06diskGb\x12%\n" +
 	"\x0ebandwidth_mbps\x18\x04 \x01(\x03R\rbandwidthMbps\x12\x1d\n" +
 	"\n" +
-	"traffic_gb\x18\x05 \x01(\x03R\ttrafficGb\"\xfe\x01\n" +
+	"traffic_gb\x18\x05 \x01(\x03R\ttrafficGb\x12\x1b\n" +
+	"\tcpu_milli\x18\x06 \x01(\x05R\bcpuMilli\"\xfe\x01\n" +
 	"\vHostNetwork\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x12\n" +
 	"\x04ipv4\x18\x02 \x01(\tR\x04ipv4\x12%\n" +
