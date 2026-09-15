@@ -217,7 +217,10 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	admin.GET("/settings/captcha", h.AdminCaptchaSettings)
 	admin.PUT("/settings/captcha", h.AdminUpdateCaptchaSettings)
 	admin.GET("/settings/kyc", h.AdminKYCSettings)
-
+	admin.GET("/settings/site", h.AdminSiteSettings)
+	admin.PUT("/settings/site", h.AdminUpdateSiteSettings)
+	admin.GET("/settings/home", h.AdminHomeConfig)
+	admin.PUT("/settings/home", h.AdminUpdateHomeConfig)
 	// 代理加盟：管理端整体读写，用户端只读摘要。
 	admin.GET("/agent-program", h.AgentProgram)
 	admin.PUT("/agent-program", h.UpdateAgentProgram)

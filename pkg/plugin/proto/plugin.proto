@@ -540,15 +540,18 @@ message GetHostAccessReply {
   string error = 3;
 }
 
-// HostVNC 是 VNC 控制台的接入信息。ws_url 由调用方（主程序代理或浏览器）
-// 直连，ticket 为主控签发的一次性短效凭证，随 ws 握手提交。
-message HostVNC {
-  bool available = 1;
-  string ws_url = 2;
-  string ticket = 3;
-  string expires_at = 4;
-  string message = 5;
-}
+ // HostVNC 是 VNC 控制台的接入信息。ws_url 由调用方（主程序代理或浏览器）
+ // 直连，ticket 为主控签发的一次性短效凭证，随 ws 握手提交。
+ message HostVNC {
+   bool available = 1;
+   string ws_url = 2;
+   string ticket = 3;
+   string expires_at = 4;
+   string message = 5;
+   // viewer_url 是上游的页面控制台地址（如魔方财务的 viewer 页），浏览器
+   // 新窗口打开；与 ws_url 二选一：有 ws_url 走站内 RFB 中继，否则走此外链。
+   string viewer_url = 6;
+ }
 
 message GetHostVNCRequest {
   string host_id = 1;

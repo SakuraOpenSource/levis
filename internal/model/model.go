@@ -105,6 +105,9 @@ const (
 	// 服务关联商品的 provision_config.traffic_gb 未定价（固定规格或
 	// unit_price_cents 为 0）时，流量加购按此单价计费；未配置则拒绝加购。
 	SettingTrafficPricePerGB = "traffic_price_per_gb_cents"
+	// SettingHomeConfig 是公开主页的 JSON 配置，结构见 service.HomeConfig。
+	// 未配置或关闭时公开 bootstrap 不下发 home 字段。
+	SettingHomeConfig = "home_config"
 )
 
 // User 是系统用户。普通用户与管理员共用此表，由 Role 区分。

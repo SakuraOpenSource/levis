@@ -3113,12 +3113,15 @@ func (x *GetHostAccessReply) GetError() string {
 // HostVNC 是 VNC 控制台的接入信息。ws_url 由调用方（主程序代理或浏览器）
 // 直连，ticket 为主控签发的一次性短效凭证，随 ws 握手提交。
 type HostVNC struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Available     bool                   `protobuf:"varint,1,opt,name=available,proto3" json:"available,omitempty"`
-	WsUrl         string                 `protobuf:"bytes,2,opt,name=ws_url,json=wsUrl,proto3" json:"ws_url,omitempty"`
-	Ticket        string                 `protobuf:"bytes,3,opt,name=ticket,proto3" json:"ticket,omitempty"`
-	ExpiresAt     string                 `protobuf:"bytes,4,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
-	Message       string                 `protobuf:"bytes,5,opt,name=message,proto3" json:"message,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Available bool                   `protobuf:"varint,1,opt,name=available,proto3" json:"available,omitempty"`
+	WsUrl     string                 `protobuf:"bytes,2,opt,name=ws_url,json=wsUrl,proto3" json:"ws_url,omitempty"`
+	Ticket    string                 `protobuf:"bytes,3,opt,name=ticket,proto3" json:"ticket,omitempty"`
+	ExpiresAt string                 `protobuf:"bytes,4,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	Message   string                 `protobuf:"bytes,5,opt,name=message,proto3" json:"message,omitempty"`
+	// viewer_url 是上游的页面控制台地址（如魔方财务的 viewer 页），浏览器
+	// 新窗口打开；与 ws_url 二选一：有 ws_url 走站内 RFB 中继，否则走此外链。
+	ViewerUrl     string `protobuf:"bytes,6,opt,name=viewer_url,json=viewerUrl,proto3" json:"viewer_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3184,6 +3187,13 @@ func (x *HostVNC) GetExpiresAt() string {
 func (x *HostVNC) GetMessage() string {
 	if x != nil {
 		return x.Message
+	}
+	return ""
+}
+
+func (x *HostVNC) GetViewerUrl() string {
+	if x != nil {
+		return x.ViewerUrl
 	}
 	return ""
 }
@@ -4088,14 +4098,16 @@ const file_plugin_proto_rawDesc = "" +
 	"\x12GetHostAccessReply\x126\n" +
 	"\anetwork\x18\x01 \x01(\v2\x1c.levis.plugin.v1.HostNetworkR\anetwork\x12*\n" +
 	"\x03ssh\x18\x02 \x01(\v2\x18.levis.plugin.v1.HostSSHR\x03ssh\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"\x8f\x01\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\xae\x01\n" +
 	"\aHostVNC\x12\x1c\n" +
 	"\tavailable\x18\x01 \x01(\bR\tavailable\x12\x15\n" +
 	"\x06ws_url\x18\x02 \x01(\tR\x05wsUrl\x12\x16\n" +
 	"\x06ticket\x18\x03 \x01(\tR\x06ticket\x12\x1d\n" +
 	"\n" +
 	"expires_at\x18\x04 \x01(\tR\texpiresAt\x12\x18\n" +
-	"\amessage\x18\x05 \x01(\tR\amessage\"\xd4\x01\n" +
+	"\amessage\x18\x05 \x01(\tR\amessage\x12\x1d\n" +
+	"\n" +
+	"viewer_url\x18\x06 \x01(\tR\tviewerUrl\"\xd4\x01\n" +
 	"\x11GetHostVNCRequest\x12\x17\n" +
 	"\ahost_id\x18\x01 \x01(\tR\x06hostId\x12b\n" +
 	"\x10interface_config\x18\x02 \x03(\v27.levis.plugin.v1.GetHostVNCRequest.InterfaceConfigEntryR\x0finterfaceConfig\x1aB\n" +

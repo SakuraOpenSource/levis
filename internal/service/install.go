@@ -180,6 +180,8 @@ type Bootstrap struct {
 	SiteName        string        `json:"site_name"`
 	SiteDescription string        `json:"site_description"`
 	Captcha         CaptchaScenes `json:"captcha"`
+	// Home 为 nil 表示主页未启用，前端根路由应回落到商店。
+	Home *HomeConfig `json:"home,omitempty"`
 }
 
 // Bootstrap 返回安装状态与站点信息，供前端路由守卫使用。
@@ -188,7 +190,8 @@ func (s *InstallService) Bootstrap() Bootstrap {
 	if !out.Installed {
 		return out
 	}
-	captchaCfg := NewSettingService(s.rt.DB()).Captcha()
+	settingSvc := NewSettingService(s.rt.DB())
+	captchaCfg := settingSvc.Captcha()
 	out.Captcha = CaptchaScenes{
 		Login:    captchaCfg.LoginEnabled,
 		Register: captchaCfg.RegisterEnabled,
@@ -205,6 +208,10 @@ func (s *InstallService) Bootstrap() Bootstrap {
 		case model.SettingSiteDescription:
 			out.SiteDescription = item.Value
 		}
+	}
+	// 主页关闭时不下发 home 字段，前端据此把根路由回落到商店。
+	if home := settingSvc.GetHomeConfig(); home.Enabled {
+		out.Home = &home
 	}
 	return out
 }

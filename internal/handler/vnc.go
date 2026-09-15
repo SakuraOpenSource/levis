@@ -49,6 +49,8 @@ var vncUpgrader = websocket.Upgrader{
 // ServiceVNC 返回上游主机的 VNC 接入信息（是否可用）。
 // 真正的屏幕通道走同源的 ServiceVNCWebSocket 代理，避免浏览器直连上游
 // 时的跨域与混合内容问题。
+// 部分上游（如魔方财务）只给页面控制台地址 viewer_url：此时同样 available，
+// 前端新窗口打开外链，不走 ws 中继（见 ServiceVNCWebSocket 的 400 分支）。
 func (h *Handler) ServiceVNC(c *gin.Context) {
 	id, ok := IDParam(c, "id")
 	if !ok {
@@ -59,7 +61,7 @@ func (h *Handler) ServiceVNC(c *gin.Context) {
 		respond(c, nil, err)
 		return
 	}
-	OK(c, gin.H{"available": vnc.GetAvailable(), "message": vnc.GetMessage()})
+	OK(c, gin.H{"available": vnc.GetAvailable(), "message": vnc.GetMessage(), "viewer_url": vnc.GetViewerUrl()})
 }
 
 // ServiceVNCWebSocket 把浏览器的 noVNC 连接经主程序中继到上游。
@@ -77,6 +79,12 @@ func (h *Handler) ServiceVNCWebSocket(c *gin.Context) {
 		return
 	}
 	if vnc.GetWsUrl() == "" {
+		// 页面控制台型上游（如魔方财务）没有可中继的 ws 通道：明确告诉调用方
+		// 用外链打开，而不是去拨一个空地址。
+		if vnc.GetViewerUrl() != "" {
+			BadRequest(c, "上游 VNC 为页面控制台，请使用外部链接打开")
+			return
+		}
 		Internal(c, "上游未返回 VNC 通道地址")
 		return
 	}
