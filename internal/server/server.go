@@ -124,6 +124,10 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	services.GET("/:id/vnc", h.ServiceVNC)
 	services.GET("/:id/vnc/ws", h.ServiceVNCWebSocket)
 	services.GET("/:id/os", h.ServiceOS)
+	// NAT 端口映射：列表/新增走 /nat，删除按上游映射 ID 走 /nat/:mid。
+	services.GET("/:id/nat", h.ServiceNATMappings)
+	services.POST("/:id/nat", h.ServiceCreateNAT)
+	services.DELETE("/:id/nat/:mid", h.ServiceDeleteNAT)
 	payments := authed.Group("/payments")
 	payments.GET("/methods", h.PaymentMethods)
 	payments.POST("", h.CreatePayment)

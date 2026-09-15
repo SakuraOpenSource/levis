@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 
@@ -550,6 +551,123 @@ func (s *BillingService) ServiceVNC(userID, serviceID uint) (*pb.HostVNC, error)
 		return nil, ErrBadRequest("%s", msg)
 	}
 	return reply.GetVnc(), nil
+}
+
+// NAT 端口映射（上游对接服务）：宿主端口转发到实例内端口，host_port 为 0
+// 表示由上游自动分配。归属与上游校验同 ServiceVNC。
+
+// ServiceNATMappings 返回上游主机的 NAT 端口映射列表。
+func (s *BillingService) ServiceNATMappings(userID, serviceID uint) ([]*pb.HostNATMapping, error) {
+	var svc model.Service
+	if err := s.db.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("服务不存在")
+		}
+		return nil, err
+	}
+	if svc.UpstreamPluginID == "" || svc.UpstreamHostID == "" {
+		return nil, ErrBadRequest("该服务未绑定上游")
+	}
+	if s.plugins == nil {
+		return nil, ErrBadRequest("上游插件不可用")
+	}
+	ifaceConfig, err := interfaceConfigForService(s.db, &svc)
+	if err != nil {
+		return nil, err
+	}
+	reply, err := s.plugins.ListHostNATMappings(context.Background(), svc.UpstreamPluginID, &pb.ListHostNATRequest{
+		HostId:          svc.UpstreamHostID,
+		InterfaceConfig: ifaceConfig,
+	})
+	if err != nil {
+		return nil, ErrBadRequest("获取 NAT 映射列表失败: %v", err)
+	}
+	return reply.GetMappings(), nil
+}
+
+// ServiceCreateNAT 为上游主机新增一条 NAT 端口映射，返回创建后的映射
+// （host_port 传 0 时由上游自动分配，以返回值为准）。
+func (s *BillingService) ServiceCreateNAT(userID, serviceID uint, protocol string, hostPort, guestPort int32, remark string) (*pb.HostNATMapping, error) {
+	var svc model.Service
+	if err := s.db.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("服务不存在")
+		}
+		return nil, err
+	}
+	if svc.UpstreamPluginID == "" || svc.UpstreamHostID == "" {
+		return nil, ErrBadRequest("该服务未绑定上游")
+	}
+	if s.plugins == nil {
+		return nil, ErrBadRequest("上游插件不可用")
+	}
+	// 端口与协议先在本地校验，明显非法的请求不打到上游。
+	if guestPort < 1 || guestPort > 65535 {
+		return nil, ErrBadRequest("实例端口需在 1-65535 之间")
+	}
+	if hostPort < 0 || hostPort > 65535 {
+		return nil, ErrBadRequest("宿主端口需为 0（自动分配）或 1-65535")
+	}
+	switch protocol = strings.ToLower(strings.TrimSpace(protocol)); protocol {
+	case "":
+		protocol = "tcp"
+	case "tcp", "udp":
+	default:
+		return nil, ErrBadRequest("协议仅支持 tcp 或 udp")
+	}
+	remark = strings.TrimSpace(remark)
+	if utf8.RuneCountInString(remark) > 100 {
+		return nil, ErrBadRequest("备注最多 100 个字符")
+	}
+	ifaceConfig, err := interfaceConfigForService(s.db, &svc)
+	if err != nil {
+		return nil, err
+	}
+	reply, err := s.plugins.CreateHostNATMapping(context.Background(), svc.UpstreamPluginID, &pb.CreateHostNATRequest{
+		HostId:          svc.UpstreamHostID,
+		Protocol:        protocol,
+		HostPort:        hostPort,
+		GuestPort:       guestPort,
+		Remark:          remark,
+		InterfaceConfig: ifaceConfig,
+	})
+	if err != nil {
+		return nil, ErrBadRequest("创建 NAT 映射失败: %v", err)
+	}
+	if reply.GetMapping() == nil {
+		return nil, ErrBadRequest("上游未返回映射信息")
+	}
+	return reply.GetMapping(), nil
+}
+
+// ServiceDeleteNAT 删除上游主机的一条 NAT 端口映射，mappingID 为列表接口
+// 返回的 mapping_id。
+func (s *BillingService) ServiceDeleteNAT(userID, serviceID uint, mappingID uint64) error {
+	var svc model.Service
+	if err := s.db.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound("服务不存在")
+		}
+		return err
+	}
+	if svc.UpstreamPluginID == "" || svc.UpstreamHostID == "" {
+		return ErrBadRequest("该服务未绑定上游")
+	}
+	if s.plugins == nil {
+		return ErrBadRequest("上游插件不可用")
+	}
+	ifaceConfig, err := interfaceConfigForService(s.db, &svc)
+	if err != nil {
+		return err
+	}
+	if _, err := s.plugins.DeleteHostNATMapping(context.Background(), svc.UpstreamPluginID, &pb.DeleteHostNATRequest{
+		HostId:          svc.UpstreamHostID,
+		MappingId:       mappingID,
+		InterfaceConfig: ifaceConfig,
+	}); err != nil {
+		return ErrBadRequest("删除 NAT 映射失败: %v", err)
+	}
+	return nil
 }
 
 // ListOS 返回上游主机可用的重装系统列表。

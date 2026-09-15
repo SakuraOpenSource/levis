@@ -653,6 +653,101 @@ func (m *Manager) GetHostAccess(ctx context.Context, id string, req *pb.GetHostA
 	return out, nil
 }
 
+// ListHostNATMappings 列出上游主机的 NAT 端口映射；插件未实现时返回 ErrUnavailable。
+func (m *Manager) ListHostNATMappings(ctx context.Context, id string, req *pb.ListHostNATRequest) (*pb.ListHostNATReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.ListHostNATReply
+	err = c.call(ctx, provisionTimeout, func(ctx context.Context) error {
+		reply, err := client.ListHostNATMappings(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.GetError() != "" {
+		return nil, fmt.Errorf("%s", out.GetError())
+	}
+	return out, nil
+}
+
+// CreateHostNATMapping 为上游主机新增一条 NAT 端口映射（host_port 为 0 表示
+// 由上游自动分配）；插件未实现时返回 ErrUnavailable。
+func (m *Manager) CreateHostNATMapping(ctx context.Context, id string, req *pb.CreateHostNATRequest) (*pb.CreateHostNATReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.CreateHostNATReply
+	err = c.call(ctx, provisionTimeout, func(ctx context.Context) error {
+		reply, err := client.CreateHostNATMapping(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.GetError() != "" {
+		return nil, fmt.Errorf("%s", out.GetError())
+	}
+	return out, nil
+}
+
+// DeleteHostNATMapping 删除上游主机的一条 NAT 端口映射；插件未实现时返回
+// ErrUnavailable。
+func (m *Manager) DeleteHostNATMapping(ctx context.Context, id string, req *pb.DeleteHostNATRequest) (*pb.DeleteHostNATReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.DeleteHostNATReply
+	err = c.call(ctx, provisionTimeout, func(ctx context.Context) error {
+		reply, err := client.DeleteHostNATMapping(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.GetError() != "" {
+		return nil, fmt.Errorf("%s", out.GetError())
+	}
+	return out, nil
+}
+
 func (m *Manager) ListHostOS(ctx context.Context, id string, req *pb.ListHostOSRequest) (*pb.ListHostOSReply, error) {
 	inst, err := m.get(id)
 	if err != nil {
