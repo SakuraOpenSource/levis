@@ -96,6 +96,18 @@ service Plugin {
   // 需声明 CAPABILITY_PROVISION_PRODUCT。
   rpc GetHostVNC(GetHostVNCRequest) returns (GetHostVNCReply);
 
+  // ListHostNATMappings 列出服务实例的 NAT 端口映射。未实现的插件返回
+  // UNIMPLEMENTED，主程序须容忍。需声明 CAPABILITY_PROVISION_PRODUCT。
+  rpc ListHostNATMappings(ListHostNATRequest) returns (ListHostNATReply);
+
+  // CreateHostNATMapping 为服务实例新增一条 NAT 端口映射；host_port 为 0
+  // 表示由上游自动分配。需声明 CAPABILITY_PROVISION_PRODUCT。
+  rpc CreateHostNATMapping(CreateHostNATRequest) returns (CreateHostNATReply);
+
+  // DeleteHostNATMapping 删除服务实例的一条 NAT 端口映射。mapping_id 为
+  // ListHostNATMappings 返回的 ID。需声明 CAPABILITY_PROVISION_PRODUCT。
+  rpc DeleteHostNATMapping(DeleteHostNATRequest) returns (DeleteHostNATReply);
+
   // StartKYC 发起实名认证并返回认证跳转地址/HTML。
   // 需声明 CAPABILITY_KYC。
   rpc StartKYC(StartKYCRequest) returns (StartKYCReply);
@@ -486,7 +498,7 @@ message HostResources {
   int64 bandwidth_mbps = 4;
   int64 traffic_gb = 5;
   // cpu_milli 是毫核表示的 CPU 配额（500 = 0.5 核），仅当实例配置了
-   // 小数核时非零；此时 cpu 字段为向上取整的整核数，用于旧客户端兼容。
+  // 小数核时非零；此时 cpu 字段为向上取整的整核数，用于旧客户端兼容。
   int32 cpu_milli = 6;
 }
 
@@ -627,4 +639,57 @@ message QueryKYCReply {
   string identity_info = 2;
   string material_info = 3;
   string message = 4;
+}
+
+// HostNATMapping 是服务实例的一条 NAT 端口映射。
+message HostNATMapping {
+  // mapping_id 是上游侧的映射 ID，删除时原样传回。
+  uint64 mapping_id = 1;
+  // protocol 是 tcp / udp。
+  string protocol = 2;
+  // host_port 是宿主（公网）端口。
+  int32 host_port = 3;
+  // guest_port 是实例内端口。
+  int32 guest_port = 4;
+  // remark 是备注，可为空。
+  string remark = 5;
+}
+
+message ListHostNATRequest {
+  string host_id = 1;
+  // 接口配置，见 ListProductsRequest.interface_config。
+  map<string, string> interface_config = 2;
+}
+
+message ListHostNATReply {
+  repeated HostNATMapping mappings = 1;
+  string error = 2;
+}
+
+message CreateHostNATRequest {
+  string host_id = 1;
+  // protocol 省略时上游默认 tcp。
+  string protocol = 2;
+  // host_port 为 0 表示由上游在允许范围内自动分配。
+  int32 host_port = 3;
+  int32 guest_port = 4;
+  string remark = 5;
+  // 接口配置，见 ListProductsRequest.interface_config。
+  map<string, string> interface_config = 6;
+}
+
+message CreateHostNATReply {
+  HostNATMapping mapping = 1;
+  string error = 2;
+}
+
+message DeleteHostNATRequest {
+  string host_id = 1;
+  uint64 mapping_id = 2;
+  // 接口配置，见 ListProductsRequest.interface_config。
+  map<string, string> interface_config = 3;
+}
+
+message DeleteHostNATReply {
+  string error = 1;
 }

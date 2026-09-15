@@ -47,6 +47,9 @@ const (
 	Plugin_GetHostMetrics_FullMethodName        = "/levis.plugin.v1.Plugin/GetHostMetrics"
 	Plugin_GetHostAccess_FullMethodName         = "/levis.plugin.v1.Plugin/GetHostAccess"
 	Plugin_GetHostVNC_FullMethodName            = "/levis.plugin.v1.Plugin/GetHostVNC"
+	Plugin_ListHostNATMappings_FullMethodName   = "/levis.plugin.v1.Plugin/ListHostNATMappings"
+	Plugin_CreateHostNATMapping_FullMethodName  = "/levis.plugin.v1.Plugin/CreateHostNATMapping"
+	Plugin_DeleteHostNATMapping_FullMethodName  = "/levis.plugin.v1.Plugin/DeleteHostNATMapping"
 	Plugin_StartKYC_FullMethodName              = "/levis.plugin.v1.Plugin/StartKYC"
 	Plugin_QueryKYC_FullMethodName              = "/levis.plugin.v1.Plugin/QueryKYC"
 )
@@ -120,6 +123,15 @@ type PluginClient interface {
 	// GetHostVNC 获取服务实例的 VNC 控制台接入信息。未实现的插件返回 UNIMPLEMENTED。
 	// 需声明 CAPABILITY_PROVISION_PRODUCT。
 	GetHostVNC(ctx context.Context, in *GetHostVNCRequest, opts ...grpc.CallOption) (*GetHostVNCReply, error)
+	// ListHostNATMappings 列出服务实例的 NAT 端口映射。未实现的插件返回
+	// UNIMPLEMENTED，主程序须容忍。需声明 CAPABILITY_PROVISION_PRODUCT。
+	ListHostNATMappings(ctx context.Context, in *ListHostNATRequest, opts ...grpc.CallOption) (*ListHostNATReply, error)
+	// CreateHostNATMapping 为服务实例新增一条 NAT 端口映射；host_port 为 0
+	// 表示由上游自动分配。需声明 CAPABILITY_PROVISION_PRODUCT。
+	CreateHostNATMapping(ctx context.Context, in *CreateHostNATRequest, opts ...grpc.CallOption) (*CreateHostNATReply, error)
+	// DeleteHostNATMapping 删除服务实例的一条 NAT 端口映射。mapping_id 为
+	// ListHostNATMappings 返回的 ID。需声明 CAPABILITY_PROVISION_PRODUCT。
+	DeleteHostNATMapping(ctx context.Context, in *DeleteHostNATRequest, opts ...grpc.CallOption) (*DeleteHostNATReply, error)
 	// StartKYC 发起实名认证并返回认证跳转地址/HTML。
 	// 需声明 CAPABILITY_KYC。
 	StartKYC(ctx context.Context, in *StartKYCRequest, opts ...grpc.CallOption) (*StartKYCReply, error)
@@ -326,6 +338,36 @@ func (c *pluginClient) GetHostVNC(ctx context.Context, in *GetHostVNCRequest, op
 	return out, nil
 }
 
+func (c *pluginClient) ListHostNATMappings(ctx context.Context, in *ListHostNATRequest, opts ...grpc.CallOption) (*ListHostNATReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListHostNATReply)
+	err := c.cc.Invoke(ctx, Plugin_ListHostNATMappings_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginClient) CreateHostNATMapping(ctx context.Context, in *CreateHostNATRequest, opts ...grpc.CallOption) (*CreateHostNATReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateHostNATReply)
+	err := c.cc.Invoke(ctx, Plugin_CreateHostNATMapping_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginClient) DeleteHostNATMapping(ctx context.Context, in *DeleteHostNATRequest, opts ...grpc.CallOption) (*DeleteHostNATReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteHostNATReply)
+	err := c.cc.Invoke(ctx, Plugin_DeleteHostNATMapping_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *pluginClient) StartKYC(ctx context.Context, in *StartKYCRequest, opts ...grpc.CallOption) (*StartKYCReply, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StartKYCReply)
@@ -415,6 +457,15 @@ type PluginServer interface {
 	// GetHostVNC 获取服务实例的 VNC 控制台接入信息。未实现的插件返回 UNIMPLEMENTED。
 	// 需声明 CAPABILITY_PROVISION_PRODUCT。
 	GetHostVNC(context.Context, *GetHostVNCRequest) (*GetHostVNCReply, error)
+	// ListHostNATMappings 列出服务实例的 NAT 端口映射。未实现的插件返回
+	// UNIMPLEMENTED，主程序须容忍。需声明 CAPABILITY_PROVISION_PRODUCT。
+	ListHostNATMappings(context.Context, *ListHostNATRequest) (*ListHostNATReply, error)
+	// CreateHostNATMapping 为服务实例新增一条 NAT 端口映射；host_port 为 0
+	// 表示由上游自动分配。需声明 CAPABILITY_PROVISION_PRODUCT。
+	CreateHostNATMapping(context.Context, *CreateHostNATRequest) (*CreateHostNATReply, error)
+	// DeleteHostNATMapping 删除服务实例的一条 NAT 端口映射。mapping_id 为
+	// ListHostNATMappings 返回的 ID。需声明 CAPABILITY_PROVISION_PRODUCT。
+	DeleteHostNATMapping(context.Context, *DeleteHostNATRequest) (*DeleteHostNATReply, error)
 	// StartKYC 发起实名认证并返回认证跳转地址/HTML。
 	// 需声明 CAPABILITY_KYC。
 	StartKYC(context.Context, *StartKYCRequest) (*StartKYCReply, error)
@@ -487,6 +538,15 @@ func (UnimplementedPluginServer) GetHostAccess(context.Context, *GetHostAccessRe
 }
 func (UnimplementedPluginServer) GetHostVNC(context.Context, *GetHostVNCRequest) (*GetHostVNCReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetHostVNC not implemented")
+}
+func (UnimplementedPluginServer) ListHostNATMappings(context.Context, *ListHostNATRequest) (*ListHostNATReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListHostNATMappings not implemented")
+}
+func (UnimplementedPluginServer) CreateHostNATMapping(context.Context, *CreateHostNATRequest) (*CreateHostNATReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateHostNATMapping not implemented")
+}
+func (UnimplementedPluginServer) DeleteHostNATMapping(context.Context, *DeleteHostNATRequest) (*DeleteHostNATReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteHostNATMapping not implemented")
 }
 func (UnimplementedPluginServer) StartKYC(context.Context, *StartKYCRequest) (*StartKYCReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method StartKYC not implemented")
@@ -857,6 +917,60 @@ func _Plugin_GetHostVNC_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Plugin_ListHostNATMappings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListHostNATRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServer).ListHostNATMappings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Plugin_ListHostNATMappings_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServer).ListHostNATMappings(ctx, req.(*ListHostNATRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Plugin_CreateHostNATMapping_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateHostNATRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServer).CreateHostNATMapping(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Plugin_CreateHostNATMapping_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServer).CreateHostNATMapping(ctx, req.(*CreateHostNATRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Plugin_DeleteHostNATMapping_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteHostNATRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServer).DeleteHostNATMapping(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Plugin_DeleteHostNATMapping_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServer).DeleteHostNATMapping(ctx, req.(*DeleteHostNATRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Plugin_StartKYC_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(StartKYCRequest)
 	if err := dec(in); err != nil {
@@ -975,6 +1089,18 @@ var Plugin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetHostVNC",
 			Handler:    _Plugin_GetHostVNC_Handler,
+		},
+		{
+			MethodName: "ListHostNATMappings",
+			Handler:    _Plugin_ListHostNATMappings_Handler,
+		},
+		{
+			MethodName: "CreateHostNATMapping",
+			Handler:    _Plugin_CreateHostNATMapping_Handler,
+		},
+		{
+			MethodName: "DeleteHostNATMapping",
+			Handler:    _Plugin_DeleteHostNATMapping_Handler,
 		},
 		{
 			MethodName: "StartKYC",
