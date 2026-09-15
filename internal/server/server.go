@@ -114,6 +114,8 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	services.POST("/:id/renew", h.RenewService)
 	// 续费新流程：先创建待付续费账单，再走统一收银台支付。
 	services.POST("/:id/renew-invoice", h.RenewInvoice)
+	// 流量包加购：先创建待付流量包账单，再走统一收银台支付（purpose=invoice），结清后累加配额。
+	services.POST("/:id/traffic-invoice", h.TrafficInvoice)
 	services.POST("/:id/retry", h.RetryService)
 	services.POST("/:id/power", h.ServicePower)
 	services.GET("/:id/upstream", h.ServiceUpstream)

@@ -100,6 +100,11 @@ const (
 	// SettingAgentProgramMode 是代理升级模式："auto"（余额达标自动升级）
 	// 或 "manual"（管理员审核，申请需余额达标）。
 	SettingAgentProgramMode = "agent_program_mode"
+
+	// SettingTrafficPricePerGB 是流量包兜底单价（分/GB，纯数字字符串）：
+	// 服务关联商品的 provision_config.traffic_gb 未定价（固定规格或
+	// unit_price_cents 为 0）时，流量加购按此单价计费；未配置则拒绝加购。
+	SettingTrafficPricePerGB = "traffic_price_per_gb_cents"
 )
 
 // User 是系统用户。普通用户与管理员共用此表，由 Role 区分。
@@ -452,6 +457,9 @@ type Service struct {
 	PriceCents int64      `gorm:"not null;default:0" json:"price_cents"`
 	NextDueAt  *time.Time `json:"next_due_at"`
 	ExpiresAt  *time.Time `json:"expires_at"`
+	// TrafficExtraGB 是售后加购累计的额外流量配额（GB，上游不计量时仅本地生效）。
+	// 下单时的 traffic_gb 选配只计入开通快照，不落本字段；结清流量包账单时累加。
+	TrafficExtraGB int64 `gorm:"not null;default:0" json:"traffic_extra_gb"`
 	// UpstreamPluginID 非空表示该服务由上游插件开通，值为插件 ID。
 	UpstreamPluginID string `gorm:"size:64;default:''" json:"upstream_plugin_id"`
 	// UpstreamHostID 是上游开通后返回的服务实例 ID，续费等操作用它定位上游资源。

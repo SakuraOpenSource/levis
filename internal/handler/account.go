@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"strings"
+
 	"github.com/gin-gonic/gin"
 
 	"github.com/SakuraOpenSource/levis/internal/httpx"
@@ -127,6 +129,45 @@ func (h *Handler) RenewInvoice(c *gin.Context) {
 		return
 	}
 	item, err := h.billing().CreateRenewalInvoice(httpx.CurrentUserID(c), id)
+	respond(c, item, err)
+}
+
+// TrafficInvoiceRequest 是流量包加购入参：extra_gb 为数量，unit 取 GB 或 TB
+// （大小写不敏感，缺省 GB；TB 按 1TB=1024GB 换算后校验与计费）。
+type TrafficInvoiceRequest struct {
+	ExtraGB int    `json:"extra_gb"`
+	Unit    string `json:"unit"`
+}
+
+// TrafficInvoice 为服务创建一张待付流量包账单，支付环节走统一收银台
+// （余额全额 / 余额抵扣 + 外部支付，purpose=invoice），结清后累加配额。
+func (h *Handler) TrafficInvoice(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	var req TrafficInvoiceRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	if req.ExtraGB < 1 {
+		BadRequest(c, "加购流量需大于 0")
+		return
+	}
+	extraGB := int64(req.ExtraGB)
+	switch unit := strings.ToUpper(strings.TrimSpace(req.Unit)); unit {
+	case "", "GB":
+	case "TB":
+		extraGB *= 1024
+	default:
+		BadRequest(c, "单位仅支持 GB 或 TB")
+		return
+	}
+	if extraGB > 10240 {
+		BadRequest(c, "单次加购流量不能超过 10240 GB（10 TB）")
+		return
+	}
+	item, err := h.billing().CreateTrafficInvoice(httpx.CurrentUserID(c), id, int(extraGB))
 	respond(c, item, err)
 }
 

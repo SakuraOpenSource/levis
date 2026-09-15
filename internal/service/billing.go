@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -268,11 +270,16 @@ func (s *BillingService) CreateRenewalInvoice(userID, serviceID uint) (*model.In
 	if err != nil {
 		return nil, err
 	}
-	var existing model.Invoice
-	if err := s.db.Where("service_id = ? AND status = ?", svc.ID, model.InvoiceUnpaid).First(&existing).Error; err == nil {
-		return nil, ErrConflict("该服务已有待支付的续费账单（%s），请先完成支付", existing.InvoiceNo)
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+	// 同一服务的待付流量包账单不挡续费：两类账单都挂 ServiceID，但流量包
+	// 明细以流量包前缀开头，结算路径也完全不同，可并存。
+	var unpaid []model.Invoice
+	if err := s.db.Preload("Items").Where("service_id = ? AND status = ?", svc.ID, model.InvoiceUnpaid).Find(&unpaid).Error; err != nil {
 		return nil, err
+	}
+	for i := range unpaid {
+		if !isTrafficInvoice(&unpaid[i]) {
+			return nil, ErrConflict("该服务已有待支付的续费账单（%s），请先完成支付", unpaid[i].InvoiceNo)
+		}
 	}
 	now := time.Now().UTC()
 	invoiceNo, err := serialNo("INV")
@@ -571,4 +578,288 @@ func (s *BillingService) ListOS(userID, serviceID uint) ([]*pb.OSImage, error) {
 		return nil, ErrBadRequest("获取系统列表失败: %v", err)
 	}
 	return reply.GetOs(), nil
+}
+
+// 流量包（售后加购）相关。
+//
+// 下单时的 traffic_gb 选配只影响首购价格与开通快照；已购服务想再加流量，
+// 走这里的“建流量包账单 → 统一收银台结清（purpose=invoice）→ 累加配额”
+// 流程，与续费账单复用同一套支付入口，但结算时只加配额、不顺延到期。
+const (
+	// MaxTrafficExtraGB 是单次加购流量的上限（GB）。
+	MaxTrafficExtraGB = 10240
+	// trafficItemPrefix 是流量包账单明细的前缀：同一 ServiceID 下可能同时
+	// 存在续费账单与流量包账单，靠此前缀区分结算路径。
+	trafficItemPrefix = "流量包 "
+)
+
+// trafficDescription 生成流量包账单明细，extraGB 同时是结算时回加配额的
+// 唯一依据（格式固定，parseTrafficDescription 反向解析）。
+func trafficDescription(extraGB int, serviceName string) string {
+	return fmt.Sprintf("%s%d GB（%s）", trafficItemPrefix, extraGB, serviceName)
+}
+
+// parseTrafficDescription 从明细反解加购的 GB 数。
+func parseTrafficDescription(desc string) (int, bool) {
+	if !strings.HasPrefix(desc, trafficItemPrefix) {
+		return 0, false
+	}
+	var extraGB int
+	if _, err := fmt.Sscanf(strings.TrimPrefix(desc, trafficItemPrefix), "%d GB", &extraGB); err != nil {
+		return 0, false
+	}
+	if extraGB < 1 || extraGB > MaxTrafficExtraGB {
+		return 0, false
+	}
+	return extraGB, true
+}
+
+// isTrafficInvoice 报告账单是否为流量包账单：挂服务、无订单归属、
+// 明细全部带流量包前缀。调用方需自行 Preload Items。
+func isTrafficInvoice(invoice *model.Invoice) bool {
+	if invoice == nil || invoice.ServiceID == nil || *invoice.ServiceID == 0 {
+		return false
+	}
+	if invoice.OrderID != nil && *invoice.OrderID != 0 {
+		return false
+	}
+	if len(invoice.Items) == 0 {
+		return false
+	}
+	for i := range invoice.Items {
+		if _, ok := parseTrafficDescription(invoice.Items[i].Description); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// trafficUnitPrice 返回加购流量的计价依据（每步单价 + 步长 GB）。
+//
+// 计费公式：amount_cents = (extra_gb / step) * unit_price_cents，
+// extra_gb 必须按 step 对齐。价格来源按优先级：
+//  1. 服务关联商品 provision_config.traffic_gb 的弹性定价
+//     （unit_price_cents > 0 才算定价；固定规格归一后为 0，走兜底）；
+//  2. 站点设置 traffic_price_per_gb_cents（分/GB，步长视为 1）；
+//  3. 都没有则报错，请管理员先定价。
+func (s *BillingService) trafficUnitPrice(product *model.Product) (unitPriceCents int64, step int, err error) {
+	return trafficUnitPrice(s.db, product)
+}
+
+// trafficUnitPrice 按同一口径计价，调用方传入事务内 DB，保证结算重验
+// 读到与写入同一快照的价格（防下单后改价导致的 stale-price 结算）。
+func trafficUnitPrice(db *gorm.DB, product *model.Product) (unitPriceCents int64, step int, err error) {
+	if product != nil && product.ProvisionConfig.TrafficGB.UnitPriceCents > 0 {
+		step = product.ProvisionConfig.TrafficGB.Step
+		if step <= 0 {
+			step = 1
+		}
+		return product.ProvisionConfig.TrafficGB.UnitPriceCents, step, nil
+	}
+	// key 是 MySQL 保留字，走 map 条件让 GORM 按方言给列名加引号。
+	var row model.Setting
+	if e := db.Where(map[string]any{"key": model.SettingTrafficPricePerGB}).First(&row).Error; e == nil {
+		if v, conv := strconv.ParseInt(strings.TrimSpace(row.Value), 10, 64); conv == nil && v > 0 {
+			return v, 1, nil
+		}
+	}
+	return 0, 0, ErrBadRequest("该服务暂未设置流量包单价，请联系管理员")
+}
+
+// loadTrafficService 读取可加购流量的服务：归属校验 + 仅使用中可加购。
+func (s *BillingService) loadTrafficService(tx *gorm.DB, userID, serviceID uint) (*model.Service, error) {
+	var svc model.Service
+	if err := tx.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("服务不存在")
+		}
+		return nil, err
+	}
+	if svc.Status != model.ServiceActive {
+		return nil, ErrConflict("只有使用中的服务才能购买流量包")
+	}
+	return &svc, nil
+}
+
+// CreateTrafficInvoice 为服务创建一张待付流量包账单，走统一收银台支付。
+// extraGB 单位为 GB（调用方负责把 TB 换算为 GB），合法范围 1..MaxTrafficExtraGB。
+// 同一服务最多保留一张待付流量包账单，重复创建直接 409。
+func (s *BillingService) CreateTrafficInvoice(userID, serviceID uint, extraGB int) (*model.Invoice, error) {
+	if extraGB < 1 || extraGB > MaxTrafficExtraGB {
+		return nil, ErrBadRequest("加购流量需在 1-%d GB 之间", MaxTrafficExtraGB)
+	}
+	svc, err := s.loadTrafficService(s.db, userID, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	var product model.Product
+	var productPtr *model.Product
+	if err := s.db.First(&product, svc.ProductID).Error; err == nil {
+		productPtr = &product
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	unitPrice, step, err := s.trafficUnitPrice(productPtr)
+	if err != nil {
+		return nil, err
+	}
+	if extraGB%step != 0 {
+		return nil, ErrBadRequest("加购流量需按 %d GB 的步长选择", step)
+	}
+	amount := int64(extraGB/step) * unitPrice
+	if amount <= 0 {
+		return nil, ErrBadRequest("该服务暂未设置流量包单价，请联系管理员")
+	}
+	var unpaid []model.Invoice
+	if err := s.db.Preload("Items").Where("service_id = ? AND status = ?", svc.ID, model.InvoiceUnpaid).Find(&unpaid).Error; err != nil {
+		return nil, err
+	}
+	for i := range unpaid {
+		if isTrafficInvoice(&unpaid[i]) {
+			return nil, ErrConflict("该服务已有待支付的流量包账单（%s），请先完成支付", unpaid[i].InvoiceNo)
+		}
+	}
+	now := time.Now().UTC()
+	invoiceNo, err := serialNo("INV")
+	if err != nil {
+		return nil, err
+	}
+	invoice := model.Invoice{
+		InvoiceNo:  invoiceNo,
+		UserID:     userID,
+		ServiceID:  &svc.ID,
+		Status:     model.InvoiceUnpaid,
+		TotalCents: amount,
+		DueAt:      &now,
+	}
+	if err := s.db.Create(&invoice).Error; err != nil {
+		return nil, err
+	}
+	item := model.InvoiceItem{
+		InvoiceID:   invoice.ID,
+		ServiceID:   &svc.ID,
+		Description: trafficDescription(extraGB, svc.Name),
+		AmountCents: amount,
+	}
+	if err := s.db.Create(&item).Error; err != nil {
+		return nil, err
+	}
+	invoice.Items = []model.InvoiceItem{item}
+	return &invoice, nil
+}
+
+// settleTrafficInvoiceTx 结算一张流量包账单：标记已付并把明细里的 GB 数
+// 累加到服务的 traffic_extra_gb。调用方负责先扣款，本方法只做记录与加配额，
+// 不调上游（上游不计量，由最外层在提交后 best-effort 通知）。
+func (s *BillingService) settleTrafficInvoiceTx(tx *gorm.DB, userID, invoiceID uint, now time.Time) (*model.Invoice, error) {
+	var invoice model.Invoice
+	if err := tx.Preload("Items").First(&invoice, "id = ? AND user_id = ?", invoiceID, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("账单不存在")
+		}
+		return nil, err
+	}
+	if !isTrafficInvoice(&invoice) {
+		return nil, ErrBadRequest("该账单不是流量包账单")
+	}
+	// 流量包账单恒为单明细：多明细说明数据被篡改或逻辑漂移，拒绝结算。
+	if len(invoice.Items) != 1 {
+		return nil, ErrBadRequest("流量包账单数据异常，请联系管理员")
+	}
+	extraGB, ok := parseTrafficDescription(invoice.Items[0].Description)
+	if !ok {
+		return nil, ErrBadRequest("流量包账单数据异常，请联系管理员")
+	}
+	var svc model.Service
+	if err := tx.First(&svc, "id = ? AND user_id = ?", *invoice.ServiceID, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("服务不存在")
+		}
+		return nil, err
+	}
+	// 按当前定价重算应付金额：下单后改价/调步长会让旧账单金额失效，
+	// 必须 409 拒付并让用户重下单，防止按 stale 价格结算（金额单位：分）。
+	var product model.Product
+	var productPtr *model.Product
+	if err := tx.First(&product, svc.ProductID).Error; err == nil {
+		productPtr = &product
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	unitPrice, step, err := trafficUnitPrice(tx, productPtr)
+	if err != nil {
+		return nil, err
+	}
+	if extraGB%step != 0 {
+		return nil, ErrConflict("流量包计价步长已调整为 %d GB，请重新下单", step)
+	}
+	if want := int64(extraGB/step) * unitPrice; invoice.TotalCents != want || invoice.Items[0].AmountCents != want {
+		return nil, ErrConflict("流量包价格已变动（现价 %d 分），请重新下单", want)
+	}
+	// 原子加配额并认领账单（同一事务）：并发重复结算时第二方 RowsAffected==0，
+	// 必须 409 让调用方按“已扣未结”处理，与续费/订单路径的认领语义一致。
+	if err := tx.Model(&model.Service{}).Where("id = ? AND user_id = ?", svc.ID, userID).
+		UpdateColumn("traffic_extra_gb", gorm.Expr("traffic_extra_gb + ?", extraGB)).Error; err != nil {
+		return nil, err
+	}
+	claimed := tx.Model(&model.Invoice{}).Where("id = ? AND user_id = ? AND status = ?", invoice.ID, userID, model.InvoiceUnpaid).
+		Updates(map[string]any{"status": model.InvoicePaid, "paid_at": now})
+	if claimed.Error != nil {
+		return nil, claimed.Error
+	}
+	if claimed.RowsAffected == 0 {
+		return nil, ErrConflict("账单状态已变更，请刷新后重试")
+	}
+	invoice.Status = model.InvoicePaid
+	invoice.PaidAt = &now
+	log.Printf("流量包结清 service=%d extra_gb=%d invoice=%s", svc.ID, extraGB, invoice.InvoiceNo)
+	return &invoice, nil
+}
+
+// ReconcileTrafficUpstream 在流量包账单提交后通知上游总额配额。
+//
+// 上游 Virtualis 只认总额（首购快照 base + 累计加购 extra）：本地账单与配额
+// 已落账，通知失败只记 provision_error 供重试排查，绝不回滚。
+func (s *BillingService) ReconcileTrafficUpstream(serviceID uint, extraGB int) {
+	var svc model.Service
+	if err := s.db.First(&svc, serviceID).Error; err != nil {
+		log.Printf("流量包上游通知读取服务 %d 失败: %v", serviceID, err)
+		return
+	}
+	if svc.UpstreamPluginID == "" || svc.UpstreamHostID == "" || s.plugins == nil {
+		return
+	}
+	total := int(svc.TrafficExtraGB)
+	var items []model.OrderItem
+	if err := s.db.Where("order_id = ?", svc.OrderID).Find(&items).Error; err == nil {
+		for _, it := range items {
+			if v, err := strconv.Atoi(it.Options["traffic_gb"]); err == nil && v > 0 {
+				total += v
+			}
+		}
+	}
+	ifaceConfig, err := interfaceConfigForService(s.db, &svc)
+	if err != nil {
+		log.Printf("流量包上游通知 service=%d 失败: %v", svc.ID, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	reply, err := s.plugins.ManageHost(ctx, svc.UpstreamPluginID, &pb.ManageHostRequest{
+		HostId:          svc.UpstreamHostID,
+		Action:          pb.HostAction_HOST_ACTION_UNSPECIFIED,
+		Os:              fmt.Sprintf("traffic_gb=%d", total),
+		InterfaceConfig: ifaceConfig,
+	})
+	if err != nil {
+		msg := truncateProvisionError(fmt.Sprintf("流量包上游同步失败（已加 %d GB，总额 %d GB）: %v", extraGB, total, err))
+		log.Printf("流量包上游通知 service=%d host=%s 失败: %v", svc.ID, svc.UpstreamHostID, err)
+		_ = s.db.Model(&model.Service{}).Where("id = ?", svc.ID).Update("provision_error", msg).Error
+		return
+	}
+	if !reply.GetSuccess() {
+		msg := truncateProvisionError(fmt.Sprintf("流量包上游同步失败（已加 %d GB，总额 %d GB）: %s", extraGB, total, reply.GetError()))
+		log.Printf("流量包上游通知 service=%d host=%s 未成功: %s", svc.ID, svc.UpstreamHostID, reply.GetError())
+		_ = s.db.Model(&model.Service{}).Where("id = ?", svc.ID).Update("provision_error", msg).Error
+	}
 }

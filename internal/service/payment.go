@@ -250,6 +250,7 @@ func (s *PaymentService) Create(ctx context.Context, userID uint, clientIP strin
 			s.orders.provisionPending(pending)
 		}
 		s.finishRenewalUpstream(in.Purpose, in.TargetID)
+		s.finishTrafficUpstream(in.Purpose, in.TargetID)
 		return intent, nil
 	}
 
@@ -309,7 +310,11 @@ func (s *PaymentService) finishRenewalUpstream(purpose string, targetID uint) {
 		s.billing.reconcileUpstreamRenewal(targetID)
 	case model.ExternalPaymentPurposeInvoice:
 		var invoice model.Invoice
-		if err := s.db.First(&invoice, "id = ?", targetID).Error; err != nil {
+		if err := s.db.Preload("Items").First(&invoice, "id = ?", targetID).Error; err != nil {
+			return
+		}
+		// 流量包账单不顺延到期、不走续费对账，由 finishTrafficUpstream 处理。
+		if isTrafficInvoice(&invoice) {
 			return
 		}
 		if invoice.ServiceID != nil && *invoice.ServiceID != 0 {
@@ -318,11 +323,31 @@ func (s *PaymentService) finishRenewalUpstream(purpose string, targetID uint) {
 	}
 }
 
+// finishTrafficUpstream 是流量包支付提交后的上游通知：配额已在本地累加，
+// 上游通知失败只记日志（见 ReconcileTrafficUpstream），不回滚支付。
+func (s *PaymentService) finishTrafficUpstream(purpose string, targetID uint) {
+	if purpose != model.ExternalPaymentPurposeInvoice {
+		return
+	}
+	var invoice model.Invoice
+	if err := s.db.Preload("Items").First(&invoice, "id = ?", targetID).Error; err != nil {
+		return
+	}
+	if !isTrafficInvoice(&invoice) {
+		return
+	}
+	extraGB, ok := parseTrafficDescription(invoice.Items[0].Description)
+	if !ok {
+		return
+	}
+	s.billing.ReconcileTrafficUpstream(*invoice.ServiceID, extraGB)
+}
+
 // settleInvoiceTx 结算一张待付账单：订单账单走订单开通并返回 PayResult，
-// 续费账单顺延到期，无归属的孤账单仅标记已付。
+// 续费账单顺延到期，流量包账单累加配额，无归属的孤账单仅标记已付。
 func settleInvoiceTx(tx *gorm.DB, orders *OrderService, billing *BillingService, userID, invoiceID uint, now time.Time) (*PayResult, error) {
 	var invoice model.Invoice
-	if err := tx.First(&invoice, "id = ? AND user_id = ?", invoiceID, userID).Error; err != nil {
+	if err := tx.Preload("Items").First(&invoice, "id = ? AND user_id = ?", invoiceID, userID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound("账单不存在")
 		}
@@ -333,6 +358,13 @@ func settleInvoiceTx(tx *gorm.DB, orders *OrderService, billing *BillingService,
 	}
 	if invoice.OrderID != nil && *invoice.OrderID != 0 {
 		return orders.payInTx(tx, userID, *invoice.OrderID, false)
+	}
+	// 流量包账单同样挂 ServiceID，必须先于续费分支识别，否则会被误顺延到期。
+	if isTrafficInvoice(&invoice) {
+		if _, err := billing.settleTrafficInvoiceTx(tx, userID, invoice.ID, now); err != nil {
+			return nil, err
+		}
+		return nil, nil
 	}
 	if invoice.ServiceID != nil && *invoice.ServiceID != 0 {
 		if _, err := billing.settleRenewalInvoiceTx(tx, userID, invoice.ID, now); err != nil {
@@ -389,6 +421,15 @@ func (s *PaymentService) SettleInvoice(userID, invoiceID uint) (*model.Invoice, 
 	}
 	if pending != nil {
 		s.orders.provisionPending(pending)
+	}
+	// 流量包账单只加配额、不顺延到期：跳过续费对账，走流量包上游通知。
+	if out != nil && isTrafficInvoice(out) {
+		if len(out.Items) > 0 {
+			if extraGB, ok := parseTrafficDescription(out.Items[0].Description); ok && out.ServiceID != nil {
+				s.billing.ReconcileTrafficUpstream(*out.ServiceID, extraGB)
+			}
+		}
+		return out, nil
 	}
 	// 续费账单提交后再调上游，失败只记 failed，不回滚已付账单。
 	if out != nil && out.ServiceID != nil && *out.ServiceID != 0 {
@@ -580,5 +621,6 @@ func (s *PaymentService) finalize(item *model.ExternalPayment, paidAmount int64,
 		s.orders.provisionPending(pending)
 	}
 	s.finishRenewalUpstream(item.Purpose, item.TargetID)
+	s.finishTrafficUpstream(item.Purpose, item.TargetID)
 	return nil
 }
