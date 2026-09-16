@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"math/big"
 	"strconv"
 	"strings"
@@ -176,12 +177,21 @@ func (s *EmailService) SaveEmailSettings(in EmailSettings, password string) (Ema
 
 // SendTestMail 给指定邮箱发一封测试信，供管理后台验证 SMTP 配置。
 func (s *EmailService) SendTestMail(to string) error {
+	cleaned, err := ValidateEmail(to)
+	if err != nil {
+		return err
+	}
 	cfg, ok := s.smtpConfig()
 	if !ok {
 		return ErrBadRequest("请先填写并保存 SMTP 服务器配置")
 	}
-	return s.send(cfg, strings.TrimSpace(to), "Levis SMTP 测试邮件",
-		"这是一封测试邮件。收到即说明 SMTP 配置正确。")
+	if err := s.send(cfg, cleaned, "Levis SMTP 测试邮件",
+		"这是一封测试邮件。收到即说明 SMTP 配置正确。"); err != nil {
+		// 测试信就是给管理员排障用的：把底层原因原样透出，否则 DNS 未配、
+		// 端口错配这类问题只会表现为一句「服务器内部错误」。
+		return ErrBadRequest("测试邮件发送失败: %s", err.Error())
+	}
+	return nil
 }
 
 // smtpConfig 拉出发信所需的完整配置；host/port 缺失视为未配置。
@@ -281,6 +291,8 @@ func (s *EmailService) SendEmailCode(scene, email, siteName string) error {
 		s.mu.Lock()
 		delete(s.codes, key)
 		s.mu.Unlock()
+		// 用户侧只给通用提示，真实原因进日志供管理员排障。
+		log.Printf("发送验证码邮件失败（场景 %s，收件人 %s）: %v", scene, maskEmail(cleaned), err)
 		return ErrBadRequest("验证码邮件发送失败，请稍后重试")
 	}
 	return nil
@@ -340,6 +352,8 @@ func (s *EmailService) IssueLoginTicket(user *model.User, siteName string) (stri
 		s.mu.Lock()
 		delete(s.tickets, ticket)
 		s.mu.Unlock()
+		// 用户侧只给通用提示，真实原因进日志供管理员排障。
+		log.Printf("发送登录验证码邮件失败（收件人 %s）: %v", maskEmail(user.Email), err)
 		return "", "", ErrBadRequest("验证码邮件发送失败，请稍后重试")
 	}
 	return ticket, maskEmail(user.Email), nil
