@@ -18,23 +18,46 @@ import (
 
 // checkWSOrigin 校验 WebSocket 握手来源，防止 Cookie 会话被跨站页面盗用。
 // 浏览器发起 ws 握手一定会带 Origin；两者都缺席视为非浏览器客户端，放行。
-// Origin 存在则必须与请求 Host 同源，否则拒绝；Origin 缺席时再看 Referer，同理。
+// 站点常经反代（宝塔/Nginx）转发到 127.0.0.1:8080，反代可能改写 Host
+// （如 proxy_set_header Host localhost），此时 Origin 与 r.Host 必然不等，
+// 全部 ws 握手会被误杀（生产 403 的根因）。因此除 r.Host 外，同时接受
+// 可信反代头 X-Forwarded-Host（Nginx 应设为 $host，多级代理为逗号分隔，
+// 任一匹配即放行）。
 func checkWSOrigin(r *http.Request) bool {
 	if origin := r.Header.Get("Origin"); origin != "" {
 		u, err := url.Parse(origin)
 		if err != nil || u.Host == "" {
 			return false
 		}
-		return strings.EqualFold(u.Host, r.Host)
+		return matchWSHost(r, u.Host)
 	}
 	if referer := r.Header.Get("Referer"); referer != "" {
 		u, err := url.Parse(referer)
 		if err != nil || u.Host == "" {
 			return false
 		}
-		return strings.EqualFold(u.Host, r.Host)
+		return matchWSHost(r, u.Host)
 	}
 	return true
+}
+
+// matchWSHost 报告 host 是否与请求 Host 或 X-Forwarded-Host 之一相同。
+// 反代头由站点自己的 Nginx 设置，视为可信。
+func matchWSHost(r *http.Request, host string) bool {
+	hosts := []string{r.Host}
+	if forwarded := r.Header.Get("X-Forwarded-Host"); forwarded != "" {
+		for _, candidate := range strings.Split(forwarded, ",") {
+			if candidate = strings.TrimSpace(candidate); candidate != "" {
+				hosts = append(hosts, candidate)
+			}
+		}
+	}
+	for _, candidate := range hosts {
+		if strings.EqualFold(candidate, host) {
+			return true
+		}
+	}
+	return false
 }
 
 // vncUpgrader 与 Virtualis 主控保持一致：noVNC 走 binary 子协议。
