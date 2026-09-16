@@ -464,3 +464,39 @@ func (s *SettingService) SaveSiteSettings(name, description string) (string, str
 	}
 	return name, description, nil
 }
+
+// TrafficPricePerGBMax 是流量包兜底单价的输入上限（分/GB）：100 万元/GB，
+// 只为拦住手滑多打几个 0 的保存请求，正常业务远用不到。
+const TrafficPricePerGBMax = 100_000_000
+
+// TrafficPricePerGB 读取流量包兜底单价（分/GB）。
+//
+// 未配置、存了非法值或非正数时返回 0：0 表示未定价，计费侧
+// （billing.trafficUnitPrice）据此拒绝流量加购而不是按 0 元放行。
+func (s *SettingService) TrafficPricePerGB() int64 {
+	var row model.Setting
+	if err := s.db.First(&row, "key = ?", model.SettingTrafficPricePerGB).Error; err != nil {
+		return 0
+	}
+	if v, err := strconv.ParseInt(strings.TrimSpace(row.Value), 10, 64); err == nil && v > 0 {
+		return v
+	}
+	return 0
+}
+
+// SaveTrafficPricePerGB 保存流量包兜底单价（分/GB），0 表示清除定价。
+func (s *SettingService) SaveTrafficPricePerGB(cents int64) error {
+	if cents < 0 || cents > TrafficPricePerGBMax {
+		return ErrBadRequest("流量包单价需在 0-%d 分之间", TrafficPricePerGBMax)
+	}
+	// 0 存空串：与“未配置”同义，读取端两个路径都会归一为 0。
+	value := ""
+	if cents > 0 {
+		value = strconv.FormatInt(cents, 10)
+	}
+	row := model.Setting{Key: model.SettingTrafficPricePerGB, Value: value}
+	return s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"value"}),
+	}).Create(&row).Error
+}

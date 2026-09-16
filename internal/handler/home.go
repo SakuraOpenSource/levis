@@ -25,21 +25,28 @@ func (h *Handler) AdminUpdateHomeConfig(c *gin.Context) {
 	respond(c, cfg, err)
 }
 
-// AdminSiteSettingsRequest 是保存站点名称与简介的入参。
+// AdminSiteSettingsRequest 是保存站点设置的入参。
 type AdminSiteSettingsRequest struct {
 	SiteName        string `json:"site_name"`
 	SiteDescription string `json:"site_description"`
+	// TrafficPricePerGBCents 是流量包兜底单价（分/GB）。用指针区分"未携带"与
+	// "显式清零"：旧客户端不传这个字段时不应把已配好的价格清掉，0 表示清除定价。
+	TrafficPricePerGBCents *int64 `json:"traffic_price_per_gb_cents"`
 }
 
-// AdminSiteSettings 返回安装后可编辑的站点名称与简介。
+// AdminSiteSettings 返回安装后可编辑的站点设置（名称、简介与流量包兜底单价）。
 func (h *Handler) AdminSiteSettings(c *gin.Context) {
 	name, description := h.settings().Site()
-	OK(c, gin.H{"site_name": name, "site_description": description})
+	OK(c, gin.H{
+		"site_name":                  name,
+		"site_description":           description,
+		"traffic_price_per_gb_cents": h.settings().TrafficPricePerGB(),
+	})
 }
 
-// AdminUpdateSiteSettings 保存站点名称与简介。
+// AdminUpdateSiteSettings 保存站点名称、简介与流量包兜底单价。
 //
-// 安装页之后唯一能改这两项的地方，保存后前端重拉 bootstrap 刷新标题。
+// 安装页之后唯一能改站点名称与简介的地方，保存后前端重拉 bootstrap 刷新标题。
 func (h *Handler) AdminUpdateSiteSettings(c *gin.Context) {
 	var req AdminSiteSettingsRequest
 	if !bindJSON(c, &req) {
@@ -50,5 +57,17 @@ func (h *Handler) AdminUpdateSiteSettings(c *gin.Context) {
 		respond(c, nil, err)
 		return
 	}
-	OK(c, gin.H{"site_name": name, "site_description": description})
+	price := h.settings().TrafficPricePerGB()
+	if req.TrafficPricePerGBCents != nil {
+		if err := h.settings().SaveTrafficPricePerGB(*req.TrafficPricePerGBCents); err != nil {
+			respond(c, nil, err)
+			return
+		}
+		price = *req.TrafficPricePerGBCents
+	}
+	OK(c, gin.H{
+		"site_name":                  name,
+		"site_description":           description,
+		"traffic_price_per_gb_cents": price,
+	})
 }
