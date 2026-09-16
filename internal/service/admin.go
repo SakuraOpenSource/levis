@@ -787,6 +787,10 @@ func normalizeProvisionConfig(cfg *model.ProvisionSpec) error {
 			}
 		}
 	}
+	// 流量包单价是独立于区间的顶层字段（固定模式的区间会被归一清零）。
+	if cfg.TrafficPriceCents < 0 || cfg.TrafficPriceCents > TrafficPricePerGBMax {
+		return ErrBadRequest("流量包单价需在 0-%d 分之间", TrafficPricePerGBMax)
+	}
 	return nil
 }
 

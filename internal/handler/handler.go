@@ -2,6 +2,7 @@ package handler
 
 import (
 	"log"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -34,6 +35,11 @@ type Handler struct {
 	// notify 是异步通知投递器，持有队列与 worker，同样全进程共用一份。
 	// 可为 nil —— nil 上调用任何方法都是空操作，调用点不必判空。
 	notify *notify.Notifier
+	// emailSvc 持有邮箱验证码与限流状态，同样全进程共用一份。数据库在
+	// 安装完成后才存在，因此首次使用时（必然已安装）惰性构造。
+	emailMu   sync.Mutex
+	emailSvc  *service.EmailService
+	emailInit bool
 }
 
 // New 构造 Handler。plugins 可为 nil，此时插件管理接口一律返回「未启用」，
@@ -61,6 +67,20 @@ func (h *Handler) agentProgram() *service.AgentProgramService {
 }
 func (h *Handler) cart() *service.CartService     { return service.NewCartService(h.db()) }
 func (h *Handler) wallet() *service.WalletService { return service.NewWalletService(h.db()) }
+func (h *Handler) email() *service.EmailService {
+	h.emailMu.Lock()
+	defer h.emailMu.Unlock()
+	if !h.emailInit {
+		if db := h.db(); db != nil {
+			h.emailSvc = service.NewEmailService(db)
+			h.emailInit = true
+		}
+	}
+	if h.emailSvc == nil {
+		return service.NewEmailService(h.db())
+	}
+	return h.emailSvc
+}
 
 func (h *Handler) settings() *service.SettingService {
 	return service.NewSettingService(h.db())

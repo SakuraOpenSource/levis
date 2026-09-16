@@ -180,8 +180,16 @@ type Bootstrap struct {
 	SiteName        string        `json:"site_name"`
 	SiteDescription string        `json:"site_description"`
 	Captcha         CaptchaScenes `json:"captcha"`
+	// EmailCode 是邮箱验证码的场景开关；注册页与登录页据此决定是否展示。
+	EmailCode EmailScenes `json:"email_code"`
 	// Home 为 nil 表示主页未启用，前端根路由应回落到商店。
 	Home *HomeConfig `json:"home,omitempty"`
+}
+
+// EmailScenes 是邮箱验证码的场景开关。
+type EmailScenes struct {
+	Login    bool `json:"login"`
+	Register bool `json:"register"`
 }
 
 // Bootstrap 返回安装状态与站点信息，供前端路由守卫使用。
@@ -196,6 +204,10 @@ func (s *InstallService) Bootstrap() Bootstrap {
 		Login:    captchaCfg.LoginEnabled,
 		Register: captchaCfg.RegisterEnabled,
 		Charset:  captchaCfg.Charset,
+	}
+	out.EmailCode = EmailScenes{
+		Login:    settingFlag(s.rt.DB(), SettingEmailCodeLogin),
+		Register: settingFlag(s.rt.DB(), SettingEmailCodeRegister),
 	}
 	var settings []model.Setting
 	if err := s.rt.DB().Find(&settings).Error; err != nil {
@@ -229,4 +241,13 @@ func SiteName(db *gorm.DB) string {
 		return "Levis"
 	}
 	return setting.Value
+}
+
+// settingFlag 读取布尔型设置（"1" 为真）；键缺失或库错误一律视为关闭。
+func settingFlag(db *gorm.DB, key string) bool {
+	var row model.Setting
+	if err := db.First(&row, "`key` = ?", key).Error; err != nil {
+		return false
+	}
+	return row.Value == "1"
 }

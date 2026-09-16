@@ -758,9 +758,11 @@ func isTrafficInvoice(invoice *model.Invoice) bool {
 // 计费公式：amount_cents = (extra_gb / step) * unit_price_cents，
 // extra_gb 必须按 step 对齐。价格来源按优先级：
 //  1. 服务关联商品 provision_config.traffic_gb 的弹性定价
-//     （unit_price_cents > 0 才算定价；固定规格归一后为 0，走兜底）；
-//  2. 站点设置 traffic_price_per_gb_cents（分/GB，步长视为 1）；
-//  3. 都没有则报错，请管理员先定价。
+//     （unit_price_cents > 0 才算定价；固定规格归一后为 0，走下一档）；
+//  2. 商品级流量包单价 provision_config.traffic_price_cents（分/GB，步长
+//     视为 1，固定模式商品也能给流量包定价）；
+//  3. 站点设置 traffic_price_per_gb_cents（分/GB，步长视为 1）；
+//  4. 都没有则报错，请管理员先定价。
 func (s *BillingService) trafficUnitPrice(product *model.Product) (unitPriceCents int64, step int, err error) {
 	return trafficUnitPrice(s.db, product)
 }
@@ -768,12 +770,19 @@ func (s *BillingService) trafficUnitPrice(product *model.Product) (unitPriceCent
 // trafficUnitPrice 按同一口径计价，调用方传入事务内 DB，保证结算重验
 // 读到与写入同一快照的价格（防下单后改价导致的 stale-price 结算）。
 func trafficUnitPrice(db *gorm.DB, product *model.Product) (unitPriceCents int64, step int, err error) {
-	if product != nil && product.ProvisionConfig.TrafficGB.UnitPriceCents > 0 {
-		step = int(math.Round(product.ProvisionConfig.TrafficGB.Step))
-		if step <= 0 {
-			step = 1
+	if product != nil {
+		// 弹性定价优先：带步长的每步加价。
+		if product.ProvisionConfig.TrafficGB.UnitPriceCents > 0 {
+			step = int(math.Round(product.ProvisionConfig.TrafficGB.Step))
+			if step <= 0 {
+				step = 1
+			}
+			return product.ProvisionConfig.TrafficGB.UnitPriceCents, step, nil
 		}
-		return product.ProvisionConfig.TrafficGB.UnitPriceCents, step, nil
+		// 商品级流量包单价：固定模式商品的定价入口，步长固定 1 GB。
+		if product.ProvisionConfig.TrafficPriceCents > 0 {
+			return product.ProvisionConfig.TrafficPriceCents, 1, nil
+		}
 	}
 	// key 是 MySQL 保留字，走 map 条件让 GORM 按方言给列名加引号。
 	var row model.Setting

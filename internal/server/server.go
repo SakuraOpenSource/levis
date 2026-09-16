@@ -74,10 +74,13 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	// 验证码是公开接口：登录、注册页在尚无登录态时就要取图。
 	// 但它要读站点配置，所以必须在 guarded 之下（未安装时无库可读）。
 	guarded.GET("/captcha", h.Captcha)
+	// 邮箱验证码与验证码同级的公开接口：注册页发码、登录票据二次校验。
+	guarded.POST("/email/code", h.EmailCode)
 
 	authGroup := guarded.Group("/auth")
 	authGroup.POST("/register", h.Register)
 	authGroup.POST("/login", h.Login)
+	authGroup.POST("/login/email", h.LoginEmailCode)
 	authGroup.POST("/logout", h.Logout)
 
 	catalog := guarded.Group("/catalog")
@@ -223,6 +226,9 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	admin.GET("/settings/kyc", h.AdminKYCSettings)
 	admin.GET("/settings/site", h.AdminSiteSettings)
 	admin.PUT("/settings/site", h.AdminUpdateSiteSettings)
+	admin.GET("/settings/email", h.AdminEmailSettings)
+	admin.PUT("/settings/email", h.AdminUpdateEmailSettings)
+	admin.POST("/settings/email/test", h.AdminEmailTest)
 	admin.GET("/settings/home", h.AdminHomeConfig)
 	admin.PUT("/settings/home", h.AdminUpdateHomeConfig)
 	// 代理加盟：管理端整体读写，用户端只读摘要。

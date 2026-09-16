@@ -296,6 +296,9 @@ type SpecRange struct {
 // ProvisionSpec 是接口商品的开通配置：驱动 + 各规格的区间或固定值。
 //
 // 流量统一以 GB 为单位入库与展示；Min/Max 为 0 表示不限流量。
+// ProvisionSpec 是接口商品的开通配置：驱动 + 各规格的区间或固定值。
+//
+// 流量统一以 GB 为单位入库与展示；Min/Max 为 0 表示不限流量。
 type ProvisionSpec struct {
 	Driver        string    `json:"driver"` // incus / qemu
 	Mode          string    `json:"mode"`   // fixed / elastic
@@ -304,6 +307,10 @@ type ProvisionSpec struct {
 	DiskGB        SpecRange `json:"disk_gb"`
 	BandwidthMbps SpecRange `json:"bandwidth_mbps"`
 	TrafficGB     SpecRange `json:"traffic_gb"`
+	// TrafficPriceCents 是售后流量包单价（分/GB），与模式无关的可选字段。
+	// 弹性模式的流量包优先用 TrafficGB.UnitPriceCents（每步加价）；固定模式
+	// 的规格区间被归一清零，流量包定价只能落在这里。0 表示未定价。
+	TrafficPriceCents int64 `json:"traffic_price_cents,omitempty"`
 }
 
 // Fixed 把一项规格归一为固定值。

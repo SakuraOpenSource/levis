@@ -72,6 +72,8 @@ type CaptchaFields struct {
 type RegisterRequest struct {
 	service.RegisterRequest
 	CaptchaFields
+	// EmailCode 是邮箱验证码；仅在站点开启注册邮箱验证码时必填。
+	EmailCode string `json:"email_code"`
 }
 
 // Register 注册普通用户。
@@ -86,6 +88,13 @@ func (h *Handler) Register(c *gin.Context) {
 	if err := h.captcha().Verify(service.CaptchaSceneRegister, req.CaptchaID, req.CaptchaCode); err != nil {
 		respond(c, nil, err)
 		return
+	}
+	// 站点开启注册邮箱验证码时，先验码再建号。
+	if h.email().EmailCodeEnabled(service.EmailSceneRegister) {
+		if err := h.email().VerifyEmailCode(service.EmailSceneRegister, req.RegisterRequest.Email, req.EmailCode); err != nil {
+			respond(c, nil, err)
+			return
+		}
 	}
 	user, err := h.users().Register(req.RegisterRequest)
 	if err != nil {
@@ -120,6 +129,10 @@ func (h *Handler) Login(c *gin.Context) {
 	user, err := h.users().Login(req.Identifier, req.Password)
 	if err != nil {
 		respond(c, nil, err)
+		return
+	}
+	// 密码正确但站点开启了登录邮箱验证码：不签发会话，走票据二次校验。
+	if h.loginEmailChallenge(c, user.ID) {
 		return
 	}
 	if err := h.issueSession(c, user); err != nil {
