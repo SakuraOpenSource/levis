@@ -246,7 +246,7 @@ func SiteName(db *gorm.DB) string {
 // settingFlag 读取布尔型设置（"1" 为真）；键缺失或库错误一律视为关闭。
 func settingFlag(db *gorm.DB, key string) bool {
 	var row model.Setting
-	if err := db.First(&row, "`key` = ?", key).Error; err != nil {
+	if err := db.Where(map[string]any{"key": key}).First(&row).Error; err != nil {
 		return false
 	}
 	return row.Value == "1"

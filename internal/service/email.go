@@ -45,6 +45,7 @@ const (
 	SettingSMTPHost          = "smtp_host"
 	SettingSMTPPort          = "smtp_port"
 	SettingSMTPSSL           = "smtp_ssl"
+	SettingSMTPEncryption    = "smtp_encryption"
 	SettingSMTPUsername      = "smtp_username"
 	SettingSMTPPassword      = "smtp_password"
 	SettingSMTPFrom          = "smtp_from"
@@ -59,6 +60,7 @@ type EmailSettings struct {
 	SMTPHost            string `json:"smtp_host"`
 	SMTPPort            int    `json:"smtp_port"`
 	SMTPSSL             bool   `json:"smtp_ssl"`
+	SMTPEncryption      string `json:"smtp_encryption"` // auto / ssl / starttls / none
 	SMTPUsername        string `json:"smtp_username"`
 	SMTPFrom            string `json:"smtp_from"`
 	HasPassword         bool   `json:"has_password"`
@@ -108,10 +110,12 @@ func NewEmailService(db *gorm.DB) *EmailService {
 // EmailSettings 读取邮件配置（密码不回显）。
 func (s *EmailService) EmailSettings() EmailSettings {
 	out := EmailSettings{}
+	var smtpSSLRaw string
 	var rows []model.Setting
 	keys := []string{
 		SettingSMTPHost, SettingSMTPPort, SettingSMTPSSL, SettingSMTPUsername,
-		SettingSMTPPassword, SettingSMTPFrom, SettingEmailCodeRegister, SettingEmailCodeLogin,
+		SettingSMTPPassword, SettingSMTPFrom, SettingSMTPEncryption,
+		SettingEmailCodeRegister, SettingEmailCodeLogin,
 	}
 	// key 是 MySQL 保留字，走 map 条件让 GORM 按方言给列名加引号。
 	if err := s.db.Where(map[string]any{"key": keys}).Find(&rows).Error; err != nil {
@@ -127,12 +131,15 @@ func (s *EmailService) EmailSettings() EmailSettings {
 			}
 		case SettingSMTPSSL:
 			out.SMTPSSL = r.Value == "1"
+			smtpSSLRaw = r.Value
 		case SettingSMTPUsername:
 			out.SMTPUsername = r.Value
 		case SettingSMTPPassword:
 			out.HasPassword = r.Value != ""
 		case SettingSMTPFrom:
 			out.SMTPFrom = r.Value
+		case SettingSMTPEncryption:
+			out.SMTPEncryption = r.Value
 		case SettingEmailCodeRegister:
 			out.RegisterCodeEnabled = r.Value == "1"
 		case SettingEmailCodeLogin:
@@ -141,6 +148,13 @@ func (s *EmailService) EmailSettings() EmailSettings {
 	}
 	if out.SMTPPort == 0 {
 		out.SMTPPort = 465
+	}
+	// 旧版本只有 ssl 开关：保存过新字段之前按旧开关回落，避免升级后丢配置。
+	if out.SMTPEncryption == "" && smtpSSLRaw == "1" {
+		out.SMTPEncryption = mailer.EncryptionSSL
+	}
+	if out.SMTPEncryption == "" {
+		out.SMTPEncryption = mailer.EncryptionAuto
 	}
 	return out
 }
@@ -153,10 +167,19 @@ func (s *EmailService) SaveEmailSettings(in EmailSettings, password string) (Ema
 	if in.SMTPPort < 1 || in.SMTPPort > 65535 {
 		return EmailSettings{}, ErrBadRequest("SMTP 端口需在 1-65535 之间")
 	}
+	switch in.SMTPEncryption {
+	case "":
+		in.SMTPEncryption = mailer.EncryptionAuto
+	case mailer.EncryptionAuto, mailer.EncryptionSSL, mailer.EncryptionStartTLS, mailer.EncryptionNone:
+	default:
+		return EmailSettings{}, ErrBadRequest("加密方式仅支持 auto / ssl / starttls / none")
+	}
 	rows := []model.Setting{
 		{Key: SettingSMTPHost, Value: in.SMTPHost},
 		{Key: SettingSMTPPort, Value: strconv.Itoa(in.SMTPPort)},
-		{Key: SettingSMTPSSL, Value: boolSetting(in.SMTPSSL)},
+		// ssl 开关降级为加密方式的派生值，兼容只认开关的旧版本/旧前端。
+		{Key: SettingSMTPSSL, Value: boolSetting(in.SMTPEncryption == mailer.EncryptionSSL)},
+		{Key: SettingSMTPEncryption, Value: in.SMTPEncryption},
 		{Key: SettingSMTPUsername, Value: in.SMTPUsername},
 		{Key: SettingSMTPFrom, Value: in.SMTPFrom},
 		{Key: SettingEmailCodeRegister, Value: boolSetting(in.RegisterCodeEnabled)},
@@ -171,6 +194,7 @@ func (s *EmailService) SaveEmailSettings(in EmailSettings, password string) (Ema
 		}
 	}
 	out := in
+	out.SMTPSSL = in.SMTPEncryption == mailer.EncryptionSSL
 	out.HasPassword = password != "" || s.hasStoredPassword()
 	return out, nil
 }
@@ -202,22 +226,23 @@ func (s *EmailService) smtpConfig() (mailer.Config, bool) {
 	}
 	var password string
 	var row model.Setting
-	if err := s.db.First(&row, "`key` = ?", SettingSMTPPassword).Error; err == nil {
+	if err := s.db.Where(map[string]any{"key": SettingSMTPPassword}).First(&row).Error; err == nil {
 		password = row.Value
 	}
 	return mailer.Config{
-		Host:     set.SMTPHost,
-		Port:     set.SMTPPort,
-		SSL:      set.SMTPSSL,
-		Username: set.SMTPUsername,
-		Password: password,
-		From:     set.SMTPFrom,
+		Host:       set.SMTPHost,
+		Port:       set.SMTPPort,
+		SSL:        set.SMTPSSL,
+		Encryption: set.SMTPEncryption,
+		Username:   set.SMTPUsername,
+		Password:   password,
+		From:       set.SMTPFrom,
 	}, true
 }
 
 func (s *EmailService) hasStoredPassword() bool {
 	var row model.Setting
-	if err := s.db.First(&row, "`key` = ?", SettingSMTPPassword).Error; err != nil {
+	if err := s.db.Where(map[string]any{"key": SettingSMTPPassword}).First(&row).Error; err != nil {
 		return false
 	}
 	return row.Value != ""
@@ -230,7 +255,7 @@ func (s *EmailService) EmailCodeEnabled(scene string) bool {
 		key = SettingEmailCodeLogin
 	}
 	var row model.Setting
-	if err := s.db.First(&row, "`key` = ?", key).Error; err != nil {
+	if err := s.db.Where(map[string]any{"key": key}).First(&row).Error; err != nil {
 		return false
 	}
 	return row.Value == "1"

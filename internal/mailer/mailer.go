@@ -32,11 +32,20 @@ const (
 	greetProbe = 3 * time.Second
 )
 
+// SMTP 加密方式。空值与 auto 等价：以 SSL 开关为起点双向自动探测。
+const (
+	EncryptionAuto     = "auto"     // 自动探测（推荐）
+	EncryptionSSL      = "ssl"      // 隐式 TLS：连接即握手，通常 465
+	EncryptionStartTLS = "starttls" // 明文连接后升级 STARTTLS，通常 587/25
+	EncryptionNone     = "none"     // 不加密（明文），仅限可信内网 relay
+)
+
 // Config 是一次发信所需的全部服务器信息。
 type Config struct {
 	Host          string // SMTP 服务器
 	Port          int    // 端口（465 隐式 TLS / 587 STARTTLS / 25 明文）
-	SSL           bool   // true = 隐式 TLS（握手即加密）；false = 先明文连，服务器支持则升级 STARTTLS
+	SSL           bool   // auto 模式下的起点提示：true = 先尝试隐式 TLS
+	Encryption    string // 加密方式：auto / ssl / starttls / none；空值同 auto
 	Username      string
 	Password      string
 	From          string // 发件邮箱；为空时回落 Username
@@ -79,9 +88,14 @@ func Send(cfg Config, to, subject, body string) error {
 	if err := cl.Hello(heloName(cfg.From)); err != nil {
 		return fmt.Errorf("SMTP 握手失败: %w", err)
 	}
-	// STARTTLS：服务器支持则升级（不支持时按明文继续，内网 relay 常见）。
+	// STARTTLS：自动模式下服务器支持则升级；显式选了 STARTTLS 而服务器
+	// 不支持时直接报错（绝不静默明文发信）；显式选了无加密时跳过升级。
 	if !tlsUp {
-		if ok, _ := cl.Extension("STARTTLS"); ok {
+		ok, _ := cl.Extension("STARTTLS")
+		switch {
+		case cfg.Encryption == EncryptionStartTLS && !ok:
+			return fmt.Errorf("服务器不支持 STARTTLS，请检查加密方式设置")
+		case ok && cfg.Encryption != EncryptionNone:
 			if err := cl.StartTLS(tlsConfig(cfg)); err != nil {
 				return fmt.Errorf("STARTTLS 升级失败: %w", err)
 			}
@@ -138,10 +152,17 @@ func Send(cfg Config, to, subject, body string) error {
 //     （TLS 服务器在收到 ClientHello 前一言不发），探测窗超时后改走 TLS。
 func dialConn(cfg Config) (net.Conn, bool, error) {
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
-	if cfg.SSL {
-		return dialTLSWithPlainFallback(cfg, addr)
+	switch cfg.Encryption {
+	case EncryptionSSL:
+		return dialTLSOnly(cfg, addr)
+	case EncryptionStartTLS, EncryptionNone:
+		return dialPlainOnly(cfg, addr)
+	default: // "" / auto：以 SSL 开关为起点双向自动探测。
+		if cfg.SSL {
+			return dialTLSWithPlainFallback(cfg, addr)
+		}
+		return dialPlainWithTLSFallback(cfg, addr)
 	}
-	return dialPlainWithTLSFallback(cfg, addr)
 }
 
 // dialTLSWithPlainFallback 先按隐式 TLS 握手；只有当对端根本没在说 TLS
@@ -195,6 +216,32 @@ func dialPlainWithTLSFallback(cfg Config, addr string) (net.Conn, bool, error) {
 	// 沉默（探测窗超时）或对端断开：按隐式 TLS 重试。
 	_ = conn.Close()
 	return dialTLSWithPlainFallback(cfg, addr)
+}
+
+// dialTLSOnly 强制隐式 TLS（加密方式选了 ssl）：握手失败直接报错，不回退明文。
+func dialTLSOnly(cfg Config, addr string) (net.Conn, bool, error) {
+	conn, err := net.DialTimeout("tcp", addr, dialTimeout)
+	if err != nil {
+		return nil, false, fmt.Errorf("连接 SMTP 服务器失败: %w", err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(sessionTimeout))
+	tlsConn := tls.Client(conn, tlsConfig(cfg))
+	if err := tlsConn.Handshake(); err != nil {
+		_ = conn.Close()
+		return nil, false, fmt.Errorf("TLS 握手失败: %w", err)
+	}
+	return tlsConn, true, nil
+}
+
+// dialPlainOnly 强制明文连接（加密方式选了 starttls / none）：不探测不自动
+// 升级，是否升级 STARTTLS 由 Send 按所选加密方式决定。
+func dialPlainOnly(cfg Config, addr string) (net.Conn, bool, error) {
+	conn, err := net.DialTimeout("tcp", addr, dialTimeout)
+	if err != nil {
+		return nil, false, fmt.Errorf("连接 SMTP 服务器失败: %w", err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(sessionTimeout))
+	return &peekConn{r: bufio.NewReader(conn), Conn: conn}, false, nil
 }
 
 // peekConn 把 bufio.Reader 的缓冲并入 net.Conn 的读取路径，让已探测过

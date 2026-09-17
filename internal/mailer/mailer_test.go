@@ -22,6 +22,7 @@ import (
 // 用于验证认证机制选择、TLS 自动探测与报文组装逻辑。
 type fakeSMTP struct {
 	listener net.Listener
+	cert     tls.Certificate // STARTTLS 升级与 TLS 监听共用
 
 	mu       sync.Mutex
 	banner   string // EHLO 能力行（以 \r\n 连接，含结尾的 250 OK 行）
@@ -40,7 +41,7 @@ func newFakeSMTP(t *testing.T, banner string) *fakeSMTP {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	f := &fakeSMTP{listener: ln, banner: banner}
+	f := &fakeSMTP{listener: ln, banner: banner, cert: selfSigned(t)}
 	go f.accept()
 	t.Cleanup(func() { _ = ln.Close() })
 	return f
@@ -52,7 +53,7 @@ func newFakeSMTPTLS(t *testing.T, banner string) *fakeSMTP {
 	if err != nil {
 		t.Fatalf("tls listen: %v", err)
 	}
-	f := &fakeSMTP{listener: ln, banner: banner}
+	f := &fakeSMTP{listener: ln, banner: banner, cert: selfSigned(t)}
 	go f.accept()
 	t.Cleanup(func() { _ = ln.Close() })
 	return f
@@ -87,6 +88,16 @@ func (f *fakeSMTP) serve(conn net.Conn) {
 		switch {
 		case strings.HasPrefix(cmd, "EHLO"), strings.HasPrefix(cmd, "HELO"):
 			write("250-test.local\r\n" + f.banner)
+		case strings.HasPrefix(cmd, "STARTTLS"):
+			write("220 go ahead\r\n")
+			tlsConn := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{f.cert}})
+			if err := tlsConn.Handshake(); err != nil {
+				return
+			}
+			// write 闭包按引用捕获 conn，升级后自动写 TLS 连接。
+			conn = tlsConn
+			br = bufio.NewReader(conn)
+			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 		case strings.HasPrefix(cmd, "AUTH LOGIN"):
 			f.setAuth(line, "LOGIN")
 			if rest := strings.TrimPrefix(line, "AUTH LOGIN "); rest != line {
@@ -373,4 +384,43 @@ func TestHeloName(t *testing.T) {
 	if got := heloName("no-at-sign"); got != "localhost" {
 		t.Fatalf("heloName = %q", got)
 	}
+}
+
+// TestSendEncryptionModes 覆盖显式加密方式：ssl 强制隐式 TLS 不回退、
+// starttls 强制升级且服务器不支持时报错、none 跳过 STARTTLS。
+func TestSendEncryptionModes(t *testing.T) {
+	t.Run("ssl 对明文服务器直接报错", func(t *testing.T) {
+		f := newFakeSMTP(t, "250-AUTH LOGIN\r\n250-STARTTLS\r\n250 OK\r\n")
+		cfg := f.cfg(true)
+		cfg.Encryption = EncryptionSSL
+		if err := Send(cfg, "to@example.com", "s", "b"); err == nil {
+			t.Fatal("对明文服务器强制 SSL 应失败")
+		}
+	})
+	t.Run("starttls 成功升级", func(t *testing.T) {
+		f := newFakeSMTP(t, "250-AUTH LOGIN\r\n250-STARTTLS\r\n250 OK\r\n")
+		cfg := f.cfg(false)
+		cfg.Encryption = EncryptionStartTLS
+		if err := Send(cfg, "to@example.com", "s", "b"); err != nil {
+			t.Fatalf("Send 失败: %v", err)
+		}
+	})
+	t.Run("starttls 服务器不支持时报错", func(t *testing.T) {
+		f := newFakeSMTP(t, "250-AUTH LOGIN\r\n250 OK\r\n")
+		cfg := f.cfg(false)
+		cfg.Encryption = EncryptionStartTLS
+		if err := Send(cfg, "to@example.com", "s", "b"); err == nil {
+			t.Fatal("服务器不支持 STARTTLS 时应报错")
+		}
+	})
+	t.Run("none 跳过 STARTTLS", func(t *testing.T) {
+		// 服务器广告了 STARTTLS，但 none 模式不应升级：若客户端升级了
+		// TLS，明文假服务器会把 ClientHello 当垃圾命令回 500，发信必然失败。
+		f := newFakeSMTP(t, "250-AUTH LOGIN\r\n250-STARTTLS\r\n250 OK\r\n")
+		cfg := f.cfg(false)
+		cfg.Encryption = EncryptionNone
+		if err := Send(cfg, "to@example.com", "s", "b"); err != nil {
+			t.Fatalf("Send 失败: %v", err)
+		}
+	})
 }
