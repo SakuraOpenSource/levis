@@ -46,6 +46,7 @@ const (
 	SettingSMTPPort          = "smtp_port"
 	SettingSMTPSSL           = "smtp_ssl"
 	SettingSMTPEncryption    = "smtp_encryption"
+	SettingSMTPSkipTLSVerify = "smtp_skip_tls_verify"
 	SettingSMTPUsername      = "smtp_username"
 	SettingSMTPPassword      = "smtp_password"
 	SettingSMTPFrom          = "smtp_from"
@@ -60,7 +61,8 @@ type EmailSettings struct {
 	SMTPHost            string `json:"smtp_host"`
 	SMTPPort            int    `json:"smtp_port"`
 	SMTPSSL             bool   `json:"smtp_ssl"`
-	SMTPEncryption      string `json:"smtp_encryption"` // auto / ssl / starttls / none
+	SMTPEncryption      string `json:"smtp_encryption"`      // auto / ssl / starttls / none
+	SMTPSkipTLSVerify   bool   `json:"smtp_skip_tls_verify"` // 自签证书场景跳过证书校验（仍加密）
 	SMTPUsername        string `json:"smtp_username"`
 	SMTPFrom            string `json:"smtp_from"`
 	HasPassword         bool   `json:"has_password"`
@@ -114,7 +116,7 @@ func (s *EmailService) EmailSettings() EmailSettings {
 	var rows []model.Setting
 	keys := []string{
 		SettingSMTPHost, SettingSMTPPort, SettingSMTPSSL, SettingSMTPUsername,
-		SettingSMTPPassword, SettingSMTPFrom, SettingSMTPEncryption,
+		SettingSMTPPassword, SettingSMTPFrom, SettingSMTPEncryption, SettingSMTPSkipTLSVerify,
 		SettingEmailCodeRegister, SettingEmailCodeLogin,
 	}
 	// key 是 MySQL 保留字，走 map 条件让 GORM 按方言给列名加引号。
@@ -140,6 +142,8 @@ func (s *EmailService) EmailSettings() EmailSettings {
 			out.SMTPFrom = r.Value
 		case SettingSMTPEncryption:
 			out.SMTPEncryption = r.Value
+		case SettingSMTPSkipTLSVerify:
+			out.SMTPSkipTLSVerify = r.Value == "1"
 		case SettingEmailCodeRegister:
 			out.RegisterCodeEnabled = r.Value == "1"
 		case SettingEmailCodeLogin:
@@ -180,6 +184,7 @@ func (s *EmailService) SaveEmailSettings(in EmailSettings, password string) (Ema
 		// ssl 开关降级为加密方式的派生值，兼容只认开关的旧版本/旧前端。
 		{Key: SettingSMTPSSL, Value: boolSetting(in.SMTPEncryption == mailer.EncryptionSSL)},
 		{Key: SettingSMTPEncryption, Value: in.SMTPEncryption},
+		{Key: SettingSMTPSkipTLSVerify, Value: boolSetting(in.SMTPSkipTLSVerify)},
 		{Key: SettingSMTPUsername, Value: in.SMTPUsername},
 		{Key: SettingSMTPFrom, Value: in.SMTPFrom},
 		{Key: SettingEmailCodeRegister, Value: boolSetting(in.RegisterCodeEnabled)},
@@ -230,13 +235,14 @@ func (s *EmailService) smtpConfig() (mailer.Config, bool) {
 		password = row.Value
 	}
 	return mailer.Config{
-		Host:       set.SMTPHost,
-		Port:       set.SMTPPort,
-		SSL:        set.SMTPSSL,
-		Encryption: set.SMTPEncryption,
-		Username:   set.SMTPUsername,
-		Password:   password,
-		From:       set.SMTPFrom,
+		Host:          set.SMTPHost,
+		Port:          set.SMTPPort,
+		SSL:           set.SMTPSSL,
+		Encryption:    set.SMTPEncryption,
+		SkipTLSVerify: set.SMTPSkipTLSVerify,
+		Username:      set.SMTPUsername,
+		Password:      password,
+		From:          set.SMTPFrom,
 	}, true
 }
 
