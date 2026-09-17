@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   backend:
-    name: 后端检查
+    name: Backend checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -20,16 +20,18 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # 真实前端产物由 release 流程注入；仓库里只有 .gitkeep 占位，
-      # go:embed all:dist 靠它就能编译通过（此时首页提示前端未构建）。
-      - name: 确认 embed 目录存在
+      # The real frontend build is injected by the release workflow; the
+      # repository only carries a .gitkeep placeholder, which is enough for
+      # go:embed all:dist to compile (the index page then reports that the
+      # frontend is not built).
+      - name: Ensure the embed directory exists
         run: test -f internal/web/dist/.gitkeep
 
-      - name: gofmt 检查
+      - name: gofmt check
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
-            echo "以下文件未格式化，请运行 make fmt："
+            echo "Unformatted files, run make fmt:"
             echo "$unformatted"
             exit 1
           fi
@@ -37,20 +39,23 @@ jobs:
       - name: go vet
         run: CGO_ENABLED=0 go vet ./...
 
-      # 交付形态是 CGO_ENABLED=0 的单文件二进制，所以先按发布口径跑一遍。
+      # The shipped artifact is a CGO_ENABLED=0 single binary, so run the
+      # suite in release configuration first.
       - name: go test
         run: CGO_ENABLED=0 go test ./...
 
-      # 竞态检测器依赖 cgo，必须开着 CGO_ENABLED 才能跑（关掉直接报错退出）。
-      # SQLite 用的是纯 Go 驱动，开 cgo 不会换实现，只是多了 race 运行时。
+      # The race detector requires cgo, so CGO_ENABLED must stay enabled
+      # here (it errors out when disabled). SQLite uses a pure-Go driver,
+      # so enabling cgo does not swap the implementation - it only adds
+      # the race runtime.
       - name: go test -race
         run: CGO_ENABLED=1 go test -race ./...
 
   frontend:
-    name: 前端检查
+    name: Frontend checks
     runs-on: ubuntu-latest
     steps:
-      - name: 拉取前端仓库
+      - name: Checkout frontend
         uses: actions/checkout@v6
         with:
           repository: SakuraOpenSource/levis-frontend
@@ -67,5 +72,6 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # build 脚本本身是 vue-tsc -b && vite build，类型检查已包含在内。
+      # The build script itself is `vue-tsc -b && vite build`, so type
+      # checking is included.
       - run: pnpm build

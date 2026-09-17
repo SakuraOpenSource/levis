@@ -1,23 +1,32 @@
 name: Release
 
-# 两种触发方式：
-#   - 手动：在 Actions 页面填 Release 标签与名称，构建完自动建 tag 与 Release
-#   - 推 tag：`git tag v0.1.0 && git push --tags`，名称取 tag 本身
+# Two ways to trigger:
+#   - Manual: fill in the release tag (and optional name) on the Actions page;
+#     the tag is created on the current commit when it does not exist yet.
+#   - Tag push: `git tag v0.1.0 && git push --tags`; the name defaults to the tag.
+#
+# Tag shape decides the release kind:
+#   - v1.2.3            -> stable release
+#   - v1.2.3-rc.1       -> pre-release (GitHub "Pre-release" flag set)
+#
+# Release notes scope:
+#   - pre-release: every commit since the last release of ANY kind
+#   - stable:      every commit since the last STABLE release
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release 标签，如 v0.1.0（不存在时会在当前提交上创建）'
+        description: 'Release tag, e.g. v0.1.0 (created on the current commit if missing)'
         required: true
       name:
-        description: 'Release 名称，留空则与标签相同'
+        description: 'Release name; defaults to the tag'
         required: false
       prerelease:
-        description: '标记为预发布版本'
+        description: 'Force a pre-release (tags with a suffix are always pre-releases)'
         type: boolean
         default: false
       frontend_ref:
-        description: '前端仓库的分支或 tag'
+        description: 'Branch or tag of the frontend repository'
         required: false
         default: 'main'
   push:
@@ -28,21 +37,23 @@ permissions:
 
 jobs:
   release:
-    name: 构建并发布单文件产物
+    name: Build and publish single-file artifacts
     runs-on: ubuntu-latest
     steps:
-      - name: 拉取后端仓库
+      - name: Checkout backend
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      # 标签与名称两种触发方式来源不同，先归一化，后面的步骤只认这里的输出。
-      # 输入值经 env 传入而不是直接插进脚本，避免带引号的输入把命令拼坏。
-      - name: 解析发布信息
+      # Trigger sources differ, so normalize first; later steps only read
+      # these outputs. Inputs travel through env instead of being spliced
+      # into the script, so quotes in an input cannot break the command.
+      - name: Resolve release metadata
         id: meta
         env:
           INPUT_TAG: ${{ inputs.tag }}
           INPUT_NAME: ${{ inputs.name }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             tag="$INPUT_TAG"
@@ -50,128 +61,49 @@ jobs:
             tag="$GITHUB_REF_NAME"
           fi
 
-          # 产物名与 Release 都带上它，先挡住手滑输入。
+          # The tag lands in artifact names and the release itself, so guard
+          # against typos early.
           case "$tag" in
-            v[0-9]*) ;;
-            *) echo "标签需形如 v0.1.0，当前为：$tag"; exit 1 ;;
+            v[0-9]*.[0-9]*.[0-9]*)
+              prerelease=false ;;
+            v[0-9]*.[0-9]*.[0-9]*-*)
+              prerelease=true ;;
+            *)
+              echo "Tag must look like v1.2.3 (stable) or v1.2.3-rc.1 (pre-release), got: $tag"
+              exit 1 ;;
           esac
+          # The manual checkbox can force a stable tag out as a pre-release.
+          if [ "$INPUT_PRERELEASE" = "true" ]; then
+            prerelease=true
+          fi
 
           name="${INPUT_NAME:-$tag}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "将发布 $tag（名称：$name）"
+          {
+            echo "tag=$tag"
+            echo "name=$name"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag (name: $name, prerelease: $prerelease)"
 
-      # 按 Conventional Commits 的前缀把提交分节，生成发布说明。
-      # 放在构建之前：提交历史有问题应该立刻失败，而不是等编译完十几分钟才发现。
-      - name: 生成发布说明
+      # Categorize commits by Conventional Commits prefix via the shared
+      # script. Runs before the build: broken history should fail fast,
+      # not after ten minutes of compiling.
+      - name: Generate release notes
         env:
           TAG: ${{ steps.meta.outputs.tag }}
-          REPO: ${{ github.repository }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          # 上一个版本：按版本号倒序取第一个不是本次发布、且确实是当前提交祖先的
-          # tag。手动触发时 TAG 可能还不存在，所以不能用 git describe "$TAG^"；
-          # 祖先判断则是为了避开其他分支上的 tag。
-          prev=''
-          for candidate in $(git tag --sort=-v:refname); do
-            [ "$candidate" = "$TAG" ] && continue
-            if git merge-base --is-ancestor "$candidate" HEAD 2>/dev/null; then
-              prev="$candidate"
-              break
-            fi
-          done
-
-          # tformat 而非 format：后者不给最后一条记录补换行，read 会因读到 EOF
-          # 而丢掉整个循环体，首次发布时表现为根提交凭空消失。
-          log_args=(--no-merges --pretty=tformat:'%h%x09%s')
-          if [ -n "$prev" ]; then
-            log_args+=("$prev..HEAD")
-            echo "对比区间：$prev..HEAD"
+          if [ "${{ steps.meta.outputs.prerelease }}" = "true" ]; then
+            bash scripts/release_notes.sh "$TAG" any > release-notes.md
           else
-            echo "未找到上一个 tag，取全部历史"
+            bash scripts/release_notes.sh "$TAG" stable > release-notes.md
           fi
-
-          work="$(mktemp -d)"
-
-          # 逐条解析主题行，按类型写进对应的临时文件。
-          # 分隔符用制表符 —— 提交主题里不会出现它。
-          while IFS="$(printf '\t')" read -r hash subject; do
-            [ -n "${hash:-}" ] || continue
-
-            kind='other'; scope=''; bang=''; summary="$subject"
-            if [[ "$subject" =~ ^([a-zA-Z]+)(\(([^\)]*)\))?(!)?:[[:space:]]*(.*)$ ]]; then
-              kind="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
-              scope="${BASH_REMATCH[3]:-}"
-              bang="${BASH_REMATCH[4]:-}"
-              summary="${BASH_REMATCH[5]:-}"
-            fi
-
-            line='- '
-            [ -n "$scope" ] && line="$line**$scope**: "
-            line="$line$summary ([\`$hash\`](https://github.com/$REPO/commit/$hash))"
-            printf '%s\n' "$line" >> "$work/$kind"
-
-            # 重大变更认两种写法：主题行的 ! 与正文里的 BREAKING CHANGE 脚注。
-            # 用 bash 自带的匹配而不是 sed | head：后者在脚注多于一条时会让 sed
-            # 吃到 SIGPIPE，配合 Actions 默认开启的 pipefail 直接把这步判成失败。
-            # 开头补一个换行，让首行也能命中「行首」。
-            body="$(git log -1 --pretty=%b "$hash")"
-            note=''
-            if [[ $'\n'"$body" =~ $'\n'[[:space:]]*BREAKING[\ -]CHANGE[[:space:]]*:[[:space:]]*([^$'\n']*) ]]; then
-              note="${BASH_REMATCH[1]}"
-            fi
-            if [ -n "$bang" ] || [ -n "$note" ]; then
-              printf '%s\n' "$line" >> "$work/breaking"
-              [ -n "$note" ] && printf '  %s\n' "$note" >> "$work/breaking"
-            fi
-          done < <(git log "${log_args[@]}")
-
-          : > release-notes.md
-
-          # 重大变更提到最前面，同时保留在原本的分节里：既要一眼看到不兼容改动，
-          # 也不能让「新功能」列表缺项。
-          if [ -s "$work/breaking" ]; then
-            printf '## ⚠️ Breaking Changes\n\n' >> release-notes.md
-            cat "$work/breaking" >> release-notes.md
-            printf '\n' >> release-notes.md
-          fi
-
-          # 面向使用者的改动排在前面，文档与工程杂项往后放。
-          emit() {
-            [ -s "$work/$1" ] || return 0
-            printf '## %s\n\n' "$2" >> release-notes.md
-            cat "$work/$1" >> release-notes.md
-            printf '\n' >> release-notes.md
-          }
-          emit feat     'Features'
-          emit fix      'Bug Fixes'
-          emit perf     'Performance'
-          emit refactor 'Refactor'
-          emit revert   'Revert'
-          emit docs     'Docs'
-          emit test     'Tests'
-          emit build    'Build'
-          emit ci       'CI'
-          emit style    'Style'
-          # 不合前缀约定的提交归到「其他变更」而不是丢掉 —— 静默漏掉变更
-          # 比多列一条难查得多。
-          emit chore    'Chores'
-          emit other    'Other Changes'
-
-          # 正文空着会让人误以为是生成失败，明说一句。
-          if [ ! -s release-notes.md ]; then
-            printf 'No changes in this release.\n' >> release-notes.md
-          fi
-
-          if [ -n "$prev" ]; then
-            printf '**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
-              "$REPO" "$prev" "$TAG" >> release-notes.md
-          fi
-
           cat release-notes.md
 
-      # 前端是独立仓库，产物在编译前注入 internal/web/dist，
-      # 由 go:embed 打进二进制，最终交付单个可执行文件。
-      - name: 拉取前端仓库
+      # The frontend lives in its own repository; its build output is
+      # injected into internal/web/dist before compiling, and go:embed
+      # packs it into the final single executable.
+      - name: Checkout frontend
         uses: actions/checkout@v6
         with:
           repository: SakuraOpenSource/levis-frontend
@@ -188,12 +120,12 @@ jobs:
           cache: pnpm
           cache-dependency-path: .frontend/pnpm-lock.yaml
 
-      - name: 构建前端
+      - name: Build frontend
         run: |
           pnpm --dir .frontend install --frozen-lockfile
           pnpm --dir .frontend build
 
-      - name: 注入前端产物
+      - name: Inject frontend build
         run: |
           rm -rf internal/web/dist
           mkdir -p internal/web/dist
@@ -205,9 +137,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: 交叉编译
+      - name: Cross-compile
         env:
-          # 纯 Go SQLite 驱动 + CGO_ENABLED=0，因此无需任何 C 工具链即可交叉编译。
+          # Pure-Go SQLite driver + CGO_ENABLED=0: no C toolchain needed
+          # for cross-compilation.
           CGO_ENABLED: '0'
           VERSION: ${{ steps.meta.outputs.tag }}
         run: |
@@ -216,31 +149,32 @@ jobs:
             os="${target%/*}"; arch="${target#*/}"
             out="bin/release/levis-${os}-${arch}"
             [ "$os" = "windows" ] && out="${out}.exe"
-            echo "构建 ${os}/${arch}"
+            echo "Building ${os}/${arch}"
             GOOS="$os" GOARCH="$arch" go build -trimpath \
               -ldflags "-s -w -X main.version=${VERSION}" \
               -o "$out" ./cmd/levis
           done
           ls -lh bin/release
 
-      - name: 生成校验和
+      - name: Generate checksums
         working-directory: bin/release
         run: sha256sum levis-* > checksums.txt
 
-      - name: 上传构建产物
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v5
         with:
           name: levis-binaries
           path: bin/release/*
 
-      # tag 不存在时由这一步在 target_commitish 上创建，因此手动触发无需先打 tag。
-      # 说明取自上一步按提交前缀生成的 release-notes.md。
-      - name: 创建 Release
+      # When the tag does not exist yet, this step creates it on
+      # target_commitish, so manual runs do not need a pre-pushed tag.
+      # Notes come from the categorized release-notes.md above.
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: ${{ steps.meta.outputs.name }}
           target_commitish: ${{ github.sha }}
-          prerelease: ${{ inputs.prerelease || false }}
+          prerelease: ${{ steps.meta.outputs.prerelease }}
           body_path: release-notes.md
           files: bin/release/*
