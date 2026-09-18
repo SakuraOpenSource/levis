@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -38,7 +39,9 @@ func TestMain(m *testing.M) {
 func newTestServer(t *testing.T) (*runtime.Runtime, http.Handler) {
 	t.Helper()
 	rt := runtime.New(t.TempDir())
-	engine, close := New(rt, nil, false)
+	// 注入假验证码存储：签发走真实实现（保持接口形状与 PNG 行为），
+	// 校验只认魔法答案。管理员专用入口强制验证码，没有它测试根本进不去。
+	engine, close := NewWithCaptchaStore(rt, nil, false, newTestCaptchaStore())
 	t.Cleanup(func() {
 		close()
 		// Windows 下 sqlite 文件被占用时 TempDir 删不掉：先关库连接再删目录。
@@ -179,13 +182,23 @@ func TestInstallThenRejectsSecondAttempt(t *testing.T) {
 		t.Errorf("已安装但未登录时 /api/me 应返回 401，实际 %d", rec.Code)
 	}
 
-	// 管理员应能登录，且登录态 cookie 是 httpOnly。
+	// 管理员凭证走普通入口被定向拒绝（入口分离），改走管理员专用入口应成功，
+	// 且登录态 cookie 是 httpOnly。
 	rec = do(t, handler, http.MethodPost, "/api/auth/login", map[string]string{
 		"identifier": "admin",
 		"password":   "password123",
 	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("管理员走普通入口应返回 403，实际 %d，响应: %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, handler, http.MethodPost, "/api/admin/login", map[string]string{
+		"identifier":   "admin",
+		"password":     "password123",
+		"captcha_id":   "test",
+		"captcha_code": testCaptchaAnswer,
+	})
 	if rec.Code != http.StatusOK {
-		t.Fatalf("管理员登录应成功，实际 %d，响应: %s", rec.Code, rec.Body.String())
+		t.Fatalf("管理员专用入口登录应成功，实际 %d，响应: %s", rec.Code, rec.Body.String())
 	}
 	var tokenCookie *http.Cookie
 	for _, cookie := range rec.Result().Cookies() {
@@ -198,6 +211,9 @@ func TestInstallThenRejectsSecondAttempt(t *testing.T) {
 	}
 	if !tokenCookie.HttpOnly {
 		t.Error("token cookie 必须是 httpOnly，否则 XSS 可直接窃取凭证")
+	}
+	if maxAge := tokenCookie.MaxAge; maxAge != int((12 * time.Hour).Seconds()) {
+		t.Errorf("管理员会话有效期应为 12 小时，实际 %d 秒", maxAge)
 	}
 }
 

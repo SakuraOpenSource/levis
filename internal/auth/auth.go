@@ -13,8 +13,13 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// TokenTTL 是登录态有效期。
+// TokenTTL 是普通用户登录态有效期。
 const TokenTTL = 7 * 24 * time.Hour
+
+// AdminTokenTTL 是管理员会话有效期。刻意比普通用户短：管理员凭证泄露的
+// 影响面远大于普通账号，缩短会话可以把暴露窗口压下来；操作中过期重新登录
+// 的代价可接受。
+const AdminTokenTTL = 12 * time.Hour
 
 // Cookie 名称。CSRF cookie 需要被前端 JS 读取，因此不能是 httpOnly；
 // token cookie 必须是 httpOnly，避免 XSS 直接取走凭证。
@@ -74,9 +79,15 @@ func CheckPassword(hash, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 
-// GenerateToken 为用户签发 JWT。
+// GenerateToken 为用户签发默认有效期的 JWT。
 func GenerateToken(secret string, userID uint, role string) (string, time.Time, error) {
-	expires := time.Now().Add(TokenTTL)
+	return GenerateTokenWithTTL(secret, userID, role, TokenTTL)
+}
+
+// GenerateTokenWithTTL 签发指定有效期的 JWT。管理员会话用更短的 TTL，
+// 见 AdminTokenTTL 的说明。
+func GenerateTokenWithTTL(secret string, userID uint, role string, ttl time.Duration) (string, time.Time, error) {
+	expires := time.Now().Add(ttl)
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   fmt.Sprint(userID),

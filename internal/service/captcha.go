@@ -48,6 +48,7 @@ func (s *CaptchaService) Issue() (*captcha.Challenge, error) {
 //
 // 调用点必须放在校验账号密码之前：否则攻击者可以无视验证码直接拿接口撞库，
 // 验证码等于白加。
+// Verify 校验指定场景的验证码；该场景未开启时直接放行。
 func (s *CaptchaService) Verify(scene, id, answer string) error {
 	cfg := s.settings.Captcha()
 	enabled := cfg.RegisterEnabled
@@ -57,6 +58,21 @@ func (s *CaptchaService) Verify(scene, id, answer string) error {
 	if !enabled {
 		return nil
 	}
+	return s.verifyAnswer(id, answer)
+}
+
+// VerifyForced 无条件校验验证码：不看场景开关，答案必填且必须答对。
+//
+// 管理员专用登录入口用它 —— 验证码是高危入口的硬门槛，不能因为站点没给
+// 普通登录开验证码而跟着缺位。签发（Issue）本就不受开关限制，管理员登录页
+// 始终能取到图；普通入口维持 Verify 的宽松语义（未开启即放行），老站点的
+// 用户登录流程不受影响。
+func (s *CaptchaService) VerifyForced(id, answer string) error {
+	return s.verifyAnswer(id, answer)
+}
+
+// verifyAnswer 是校验答案的公共实现，answer 错误给出统一的可读提示。
+func (s *CaptchaService) verifyAnswer(id, answer string) error {
 	if strings.TrimSpace(answer) == "" {
 		return ErrBadRequest("请输入验证码")
 	}

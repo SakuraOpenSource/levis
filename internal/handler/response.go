@@ -18,6 +18,7 @@ type Page = httpx.Page
 var (
 	Fail       = httpx.Fail
 	BadRequest = httpx.BadRequest
+	Forbidden  = httpx.Forbidden
 	NotFound   = httpx.NotFound
 	Conflict   = httpx.Conflict
 	Internal   = httpx.Internal

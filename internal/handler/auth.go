@@ -1,8 +1,12 @@
 package handler
 
 import (
+	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -52,7 +56,7 @@ func (h *Handler) Install(c *gin.Context) {
 		OK(c, gin.H{"ok": true})
 		return
 	}
-	if err := h.issueSession(c, user); err != nil {
+	if err := h.issueAdminSession(c, user); err != nil {
 		respond(c, nil, err)
 		return
 	}
@@ -115,10 +119,27 @@ type LoginRequest struct {
 	CaptchaFields
 }
 
-// Login 登录。管理员与普通用户共用此入口，前端按返回的 role 决定落地页。
+// 登录限速的入口 scope：账号维度的失败计数按入口隔离（见 loginlimit 包），
+// 普通入口上的爆破不会把管理员锁在管理员入口外，反之亦然。
+const (
+	loginScopeUser  = "login"
+	loginScopeAdmin = "admin"
+)
+
+// Login 登录普通用户。
+//
+// 管理员凭证在此入口被显式拒绝（前端收到 ADMIN_ENTRY_REQUIRED 后引导跳转
+// 管理员专用入口）。两类账号共用一个入口曾让管理员的爆破面与普通用户完全
+// 重合；拆开后管理员入口得以叠加更强的防护（强制验证码、独立限速、更短的
+// 会话有效期）而不拖累普通用户的体验。
 func (h *Handler) Login(c *gin.Context) {
 	var req LoginRequest
 	if !bindJSON(c, &req) {
+		return
+	}
+	ip := c.ClientIP()
+	// 限速先于验证码与密码：被锁的请求在这里结束，不消耗 bcrypt 的算力。
+	if !h.allowLogin(c, loginScopeUser, req.Identifier, ip) {
 		return
 	}
 	// 先验验证码再验密码，否则接口仍可被直接拿来撞库。
@@ -128,9 +149,18 @@ func (h *Handler) Login(c *gin.Context) {
 	}
 	user, err := h.users().Login(req.Identifier, req.Password)
 	if err != nil {
+		h.loginTracker.RecordFailure(loginScopeUser, req.Identifier, ip)
 		respond(c, nil, err)
 		return
 	}
+	if user.IsAdmin() {
+		// 管理员凭证出现在普通入口按失败计数：不这样做，攻击者可以把
+		// 这里当作「密码是否正确」的免费预言机无限试探。
+		h.loginTracker.RecordFailure(loginScopeUser, req.Identifier, ip)
+		Fail(c, http.StatusForbidden, httpx.CodeAdminEntryRequired, "管理员请使用专用入口登录")
+		return
+	}
+	h.loginTracker.RecordSuccess(loginScopeUser, req.Identifier)
 	// 密码正确但站点开启了登录邮箱验证码：不签发会话，走票据二次校验。
 	if h.loginEmailChallenge(c, user.ID) {
 		return
@@ -140,6 +170,63 @@ func (h *Handler) Login(c *gin.Context) {
 		return
 	}
 	OK(c, gin.H{"user": user})
+}
+
+// AdminLogin 是管理员专用登录入口（POST /api/admin/login）。
+//
+// 与普通入口的差异：
+//   - 验证码强制校验（VerifyForced，不看站点开关）；
+//   - 限速按独立的 scope 计数，阈值相同；
+//   - 会话有效期更短（auth.AdminTokenTTL）。
+func (h *Handler) AdminLogin(c *gin.Context) {
+	var req LoginRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	ip := c.ClientIP()
+	if !h.allowLogin(c, loginScopeAdmin, req.Identifier, ip) {
+		return
+	}
+	if err := h.captcha().VerifyForced(req.CaptchaID, req.CaptchaCode); err != nil {
+		respond(c, nil, err)
+		return
+	}
+	user, err := h.users().Login(req.Identifier, req.Password)
+	if err != nil {
+		h.loginTracker.RecordFailure(loginScopeAdmin, req.Identifier, ip)
+		respond(c, nil, err)
+		return
+	}
+	if !user.IsAdmin() {
+		// 普通用户凭证出现在管理员入口同样按失败计数 —— 不给「密码
+		// 是否正确」提供无限次的免费试探。
+		h.loginTracker.RecordFailure(loginScopeAdmin, req.Identifier, ip)
+		Forbidden(c, "需要管理员权限")
+		return
+	}
+	h.loginTracker.RecordSuccess(loginScopeAdmin, req.Identifier)
+	if err := h.issueAdminSession(c, user); err != nil {
+		respond(c, nil, err)
+		return
+	}
+	OK(c, gin.H{"user": user})
+}
+
+// allowLogin 检查登录限速；被拒时写回 429 与 Retry-After，返回 false。
+//
+// 提示不区分账号锁定还是来源锁定，避免向探测方暴露具体维度。
+func (h *Handler) allowLogin(c *gin.Context, scope, identifier, ip string) bool {
+	if ok, wait := h.loginTracker.Check(scope, identifier, ip); !ok {
+		minutes := int(math.Ceil(wait.Minutes()))
+		if minutes < 1 {
+			minutes = 1
+		}
+		c.Header("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
+		httpx.Fail(c, http.StatusTooManyRequests, httpx.CodeTooManyRequests,
+			fmt.Sprintf("尝试过于频繁，请约 %d 分钟后再试", minutes))
+		return false
+	}
+	return true
 }
 
 // Logout 清除登录态 cookie。
@@ -205,9 +292,19 @@ func (h *Handler) UpdatePassword(c *gin.Context) {
 	noContent(c)
 }
 
-// issueSession 签发 JWT 与 CSRF token 并写入 cookie。
+// issueSession 签发普通用户会话（JWT + CSRF cookie），有效期 auth.TokenTTL。
 func (h *Handler) issueSession(c *gin.Context, user *model.User) error {
-	token, _, err := auth.GenerateToken(h.rt.JWTSecret(), user.ID, user.Role)
+	return h.issueSessionFor(c, user, auth.TokenTTL)
+}
+
+// issueAdminSession 签发管理员会话，有效期 auth.AdminTokenTTL（更短）。
+func (h *Handler) issueAdminSession(c *gin.Context, user *model.User) error {
+	return h.issueSessionFor(c, user, auth.AdminTokenTTL)
+}
+
+// issueSessionFor 签发指定有效期的会话并写入 cookie。
+func (h *Handler) issueSessionFor(c *gin.Context, user *model.User, ttl time.Duration) error {
+	token, _, err := auth.GenerateTokenWithTTL(h.rt.JWTSecret(), user.ID, user.Role, ttl)
 	if err != nil {
 		return err
 	}
@@ -215,7 +312,7 @@ func (h *Handler) issueSession(c *gin.Context, user *model.User) error {
 	if err != nil {
 		return err
 	}
-	maxAge := int(auth.TokenTTL.Seconds())
+	maxAge := int(ttl.Seconds())
 	secure := h.secureCookie(c)
 
 	// token 是 httpOnly：前端 JS 读不到，XSS 无法直接取走凭证。

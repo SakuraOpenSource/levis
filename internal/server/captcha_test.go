@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/SakuraOpenSource/levis/internal/auth"
+	"github.com/SakuraOpenSource/levis/internal/captcha"
 	"github.com/SakuraOpenSource/levis/internal/runtime"
 )
 
@@ -81,16 +82,51 @@ func installVia(t *testing.T, rt *runtime.Runtime, handler http.Handler) {
 }
 
 // loginAs 登录并返回登录态 cookie。
+//
+// 管理员与普通用户入口已分离：先走普通入口（恒带假验证码字段 —— 场景开关
+// 关闭时后端不校验，开启时假存储放行），收到 ADMIN_ENTRY_REQUIRED 再改走
+// 管理员专用入口。
 func loginAs(t *testing.T, handler http.Handler, identifier, password string) []*http.Cookie {
 	t.Helper()
-	rec := do(t, handler, http.MethodPost, "/api/auth/login", map[string]string{
-		"identifier": identifier,
-		"password":   password,
-	})
+	payload := map[string]string{
+		"identifier":   identifier,
+		"password":     password,
+		"captcha_id":   "test",
+		"captcha_code": testCaptchaAnswer,
+	}
+	rec := do(t, handler, http.MethodPost, "/api/auth/login", payload)
+	if rec.Code == http.StatusForbidden {
+		rec = do(t, handler, http.MethodPost, "/api/admin/login", payload)
+	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("登录 %s 失败: %d %s", identifier, rec.Code, rec.Body.String())
 	}
 	return rec.Result().Cookies()
+}
+
+// testCaptchaAnswer 是假验证码存储唯一接受的答案。
+const testCaptchaAnswer = "246810"
+
+// testCaptchaStore 是接口测试用的假验证码存储。
+//
+// Issue 走真实实现（保持接口形状与 PNG 行为，TestCaptchaIssueIsPublic 等
+// 用例依赖）；Verify 只认魔法答案 —— 真实存储的答案只留在服务端，测试
+// 根本读不到，管理员入口又强制验证码，没有它就构造不出「答对」的路径。
+// TestRegisterRejectsWrongCaptcha 提交 "@@@@@@" 依旧会被拒，语义不受影响。
+type testCaptchaStore struct {
+	inner *captcha.Store
+}
+
+func (s testCaptchaStore) Issue(charset string, length int) (*captcha.Challenge, error) {
+	return s.inner.Issue(charset, length)
+}
+
+func (s testCaptchaStore) Verify(id, answer string) bool {
+	return answer == testCaptchaAnswer
+}
+
+func newTestCaptchaStore() testCaptchaStore {
+	return testCaptchaStore{inner: captcha.NewStore()}
 }
 
 // captchaConfig 是设置接口的响应体。
@@ -213,14 +249,33 @@ func TestRegisterRejectsWrongCaptcha(t *testing.T) {
 }
 
 // 默认登录不开验证码：老用户的登录流程不能被这次改动打断。
+//
+// 入口分离后管理员走普通入口会被定向拒绝，改用普通用户验证这条路径：
+// 关掉注册/登录验证码 → 注册 → 不带验证码登录。
 func TestLoginWorksWithoutCaptchaByDefault(t *testing.T) {
 	_, handler := installedServer(t)
-	rec := do(t, handler, http.MethodPost, "/api/auth/login", map[string]string{
-		"identifier": "admin",
+	admin := loginAs(t, handler, "admin", "password123")
+	rec := doAs(t, handler, http.MethodPut, "/api/admin/settings/captcha", captchaConfig{
+		Charset: "digit",
+		Length:  6,
+	}, admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("关闭验证码失败: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, handler, http.MethodPost, "/api/auth/register", map[string]string{
+		"username": "alice",
+		"email":    "alice@example.com",
+		"password": "password123",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("注册失败: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, handler, http.MethodPost, "/api/auth/login", map[string]string{
+		"identifier": "alice",
 		"password":   "password123",
 	})
 	if rec.Code != http.StatusOK {
-		t.Fatalf("登录验证码默认关闭，应能直接登录，实际 %d，响应: %s", rec.Code, rec.Body.String())
+		t.Fatalf("登录验证码关闭，应能直接登录，实际 %d，响应: %s", rec.Code, rec.Body.String())
 	}
 }
 

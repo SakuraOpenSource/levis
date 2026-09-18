@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/SakuraOpenSource/levis/internal/captcha"
+	"github.com/SakuraOpenSource/levis/internal/loginlimit"
 	"github.com/SakuraOpenSource/levis/internal/notify"
 	"github.com/SakuraOpenSource/levis/internal/plugin"
 	"github.com/SakuraOpenSource/levis/internal/pluginhost"
@@ -26,15 +27,19 @@ type Handler struct {
 	// plugins 管理插件子进程。它持有进程与连接，整个进程内必须共用一份，
 	// 不能像其它 service 那样按请求新建。可为 nil（测试里不需要插件时）。
 	plugins *plugin.Manager
-	// captchaStore 是唯一的例外：它持有已签发但未校验的验证码，必须在整个
-	// 进程内共用一份，按请求新建会让上一次发出去的验证码立刻查无此码。
-	captchaStore *captcha.Store
+	// captchaStore 是验证码存储。签发与校验分属两次请求，必须在整个进程
+	// 内共用一份；真实实现是 *captcha.Store，测试注入假存储以构造「答对」
+	// 的路径（真实存储的答案只留在服务端，测试读不到）。
+	captchaStore service.CaptchaStore
 	// storage 只依赖数据目录，该值在进程生命周期内不变，因此可以在启动时
 	// 就建好，不必像其它 service 那样等数据库。
 	storage *storage.Store
 	// notify 是异步通知投递器，持有队列与 worker，同样全进程共用一份。
 	// 可为 nil —— nil 上调用任何方法都是空操作，调用点不必判空。
 	notify *notify.Notifier
+	// loginTracker 统计登录失败并临时锁定，全进程共用一份（见 loginlimit
+	// 包的说明）。Close 时停掉它后台的清扫协程。
+	loginTracker *loginlimit.Tracker
 	// emailSvc 持有邮箱验证码与限流状态，同样全进程共用一份。数据库在
 	// 安装完成后才存在，因此首次使用时（必然已安装）惰性构造。
 	emailMu   sync.Mutex
@@ -45,18 +50,36 @@ type Handler struct {
 // New 构造 Handler。plugins 可为 nil，此时插件管理接口一律返回「未启用」，
 // 通知邮件也不发（没有插件就没有发信能力）。
 func New(rt *runtime.Runtime, plugins *plugin.Manager) *Handler {
+	return newHandler(rt, plugins, captcha.NewStore())
+}
+
+// NewWithCaptchaStore 用指定的验证码存储构造 Handler。
+//
+// 生产代码一律用 New；测试用它注入假存储 —— 真实存储只把答案留在服务端，
+// 测试拿不到答案，也就无法构造「答对」这条路径（管理员入口强制验证码，
+// 没有它接口测试根本登录不进管理员）。
+func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, store service.CaptchaStore) *Handler {
+	return newHandler(rt, plugins, store)
+}
+
+// newHandler 是两个公开构造函数的公共实现。
+func newHandler(rt *runtime.Runtime, plugins *plugin.Manager, store service.CaptchaStore) *Handler {
 	return &Handler{
 		rt:           rt,
 		install:      service.NewInstallService(rt),
 		plugins:      plugins,
-		captchaStore: captcha.NewStore(),
+		captchaStore: store,
 		storage:      storage.New(rt.DataDir()),
 		notify:       pluginhost.NewNotifier(rt, plugins, log.Printf),
+		loginTracker: loginlimit.New(),
 	}
 }
 
 // Close 释放 Handler 持有的后台资源。
-func (h *Handler) Close() { h.notify.Close() }
+func (h *Handler) Close() {
+	h.notify.Close()
+	h.loginTracker.Close()
+}
 
 func (h *Handler) db() *gorm.DB                { return h.rt.DB() }
 func (h *Handler) users() *service.UserService { return service.NewUserService(h.db()) }

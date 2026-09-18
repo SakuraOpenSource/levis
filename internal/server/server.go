@@ -2,6 +2,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/SakuraOpenSource/levis/internal/middleware"
 	"github.com/SakuraOpenSource/levis/internal/plugin"
 	"github.com/SakuraOpenSource/levis/internal/runtime"
+	"github.com/SakuraOpenSource/levis/internal/service"
 	"github.com/SakuraOpenSource/levis/internal/web"
 )
 
@@ -45,18 +47,30 @@ var uploadRoutes = map[string]bool{
 // 返回的 close 释放 Handler 持有的后台资源（当前是通知队列的 worker），调用方
 // 必须在服务停止后执行它。engine 本身没有需要释放的东西，是 Handler 有。
 func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine, func()) {
+	return NewWithCaptchaStore(rt, plugins, debug, nil)
+}
+
+// NewWithCaptchaStore 与 New 相同，但允许注入验证码存储。
+//
+// store 传 nil 表示使用真实存储（生产形态）；接口测试注入假存储以构造
+// 「验证码答对」的路径 —— 真实存储的答案只留在服务端，测试读不到。
+func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug bool, store service.CaptchaStore) (*gin.Engine, func()) {
 	if !debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
-
 	engine := gin.New()
+	// 只信任回环代理（生产 Nginx 与后端同机）：gin 默认信任一切代理头，
+	// 远端可伪造 X-Forwarded-For 绕过按 IP 的登录限速，或把别的源算进来。
+	// 直连（本地开发）没有代理头，ClientIP 就是直连地址。
+	if err := engine.SetTrustedProxies([]string{"127.0.0.1", "::1"}); err != nil {
+		panic(fmt.Sprintf("设置可信代理失败: %v", err))
+	}
 	engine.Use(gin.Logger(), gin.Recovery(), limitBody(), securityHeaders())
 	// 前端为 SPA，所有未命中的路径都交给它做客户端路由。
 	engine.RedirectTrailingSlash = false
 	engine.MaxMultipartMemory = maxMultipartMemory
 
-	h := handler.New(rt, plugins)
-
+	h := newHandlerFor(rt, plugins, store)
 	// CSRF 挂在整个 /api 上：GET 请求负责播种令牌，写请求负责校验。
 	// 前端启动时必然先调 GET /api/bootstrap，因此安装、登录、注册这些
 	// 「第一次写操作」总能拿到可用的令牌。
@@ -82,6 +96,11 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	authGroup.POST("/login", h.Login)
 	authGroup.POST("/login/email", h.LoginEmailCode)
 	authGroup.POST("/logout", h.Logout)
+
+	// 管理员专用登录入口：挂在 guarded（要求已安装）但不在 authed 组 ——
+	// 登录恰好发生在「还没有登录态」的时候。与下面 authed 里的 /admin/* 组
+	// 共享 /api/admin 前缀，静态路由 login 不与其余子路径冲突。
+	guarded.POST("/admin/login", h.AdminLogin)
 
 	catalog := guarded.Group("/catalog")
 	catalog.GET("/categories", h.Categories)
@@ -282,6 +301,14 @@ func New(rt *runtime.Runtime, plugins *plugin.Manager, debug bool) (*gin.Engine,
 	})
 
 	return engine, h.Close
+}
+
+// newHandlerFor 构造 Handler：store 为 nil 用真实验证码存储，否则注入。
+func newHandlerFor(rt *runtime.Runtime, plugins *plugin.Manager, store service.CaptchaStore) *handler.Handler {
+	if store == nil {
+		return handler.New(rt, plugins)
+	}
+	return handler.NewWithCaptchaStore(rt, plugins, store)
 }
 
 // limitBody 限制请求体大小，上传接口按 uploadRoutes 放宽。

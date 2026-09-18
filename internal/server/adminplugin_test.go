@@ -107,7 +107,7 @@ func newAdminPluginEnv(t *testing.T) adminPluginEnv {
 	// 无论用例怎么结束都要收掉子进程，否则残留进程会跟着 CI 一直跑。
 	t.Cleanup(plugins.Close)
 
-	handler, closeHandler := New(rt, plugins, false)
+	handler, closeHandler := NewWithCaptchaStore(rt, plugins, false, newTestCaptchaStore())
 	t.Cleanup(closeHandler)
 	installVia(t, rt, handler)
 	admin := loginAs(t, handler, "admin", "password123")

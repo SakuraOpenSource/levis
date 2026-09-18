@@ -22,6 +22,11 @@ const (
 	CodeConflict     = "CONFLICT"
 	CodeNotInstalled = "NOT_INSTALLED"
 	CodeInternal     = "INTERNAL"
+	// CodeTooManyRequests 登录限速触发的 429，前端据此展示重试提示。
+	CodeTooManyRequests = "TOO_MANY_REQUESTS"
+	// CodeAdminEntryRequired 普通登录入口收到管理员凭证时的定向拒绝，
+	// 前端据此引导跳转管理员专用入口。
+	CodeAdminEntryRequired = "ADMIN_ENTRY_REQUIRED"
 )
 
 // ErrorBody 是统一的错误响应结构。
