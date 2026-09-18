@@ -1,6 +1,10 @@
 package service
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/SakuraOpenSource/levis/internal/model"
+)
 
 func TestValidateRealName(t *testing.T) {
 	ok := []struct{ in, want string }{
@@ -92,5 +96,47 @@ func TestValidateIDNumberDetectsSingleDigitTypo(t *testing.T) {
 				t.Errorf("改动第 %d 位得到的 %s 竟被接受", i+1, mutated)
 			}
 		}
+	}
+}
+
+// escapeLike 必须把 LIKE 通配符与转义符本身都转掉，配合 ESCAPE 子句工作。
+func TestEscapeLike(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"plain", "plain"},
+		{"100%", `100\%`},
+		{"a_b", `a\_b`},
+		{`back\slash`, `back\\slash`},
+		{"混排%中文", `混排\%中文`},
+	}
+	for _, c := range cases {
+		if got := escapeLike(c.in); got != c.want {
+			t.Errorf("escapeLike(%q) = %q，期望 %q", c.in, got, c.want)
+		}
+	}
+}
+
+// 管理端用户搜索带 % 时应按字面匹配而不是全表通配。
+func TestAdminUserSearchEscapesLikeWildcards(t *testing.T) {
+	db := newTestDB(t)
+	seed := []model.User{
+		{Username: "alice", Email: "alice@example.com", PasswordHash: "x", Role: model.RoleUser, Status: model.UserActive},
+		{Username: "bob", Email: "bob@example.com", PasswordHash: "x", Role: model.RoleUser, Status: model.UserActive},
+	}
+	for i := range seed {
+		if err := db.Create(&seed[i]).Error; err != nil {
+			t.Fatalf("造数失败: %v", err)
+		}
+	}
+	svc := NewAdminService(db, nil, nil, nil)
+	items, total, err := svc.Users("%", 0, 20)
+	if err != nil {
+		t.Fatalf("搜索失败: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("搜索 %% 应按字面匹配查不到任何人，实际 total=%d items=%d", total, len(items))
+	}
+	items, total, err = svc.Users("ali", 0, 20)
+	if err != nil || total != 1 || len(items) != 1 {
+		t.Fatalf("普通关键词应命中 alice：err=%v total=%d", err, total)
 	}
 }

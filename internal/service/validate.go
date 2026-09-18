@@ -106,3 +106,20 @@ func ValidateIDNumber(id string) (string, error) {
 	}
 	return normalized, nil
 }
+
+// escapeLike 转义 SQL LIKE 通配符（% 与 _），配合 ESCAPE '\' 子句使用。
+//
+// 用户搜索框里的一个 "%" 若不转义会被当成通配符触发全表扫描；反斜杠本身
+// 也要先转义，否则用户输入的 "\%" 会拼出非法的转义序列。
+func escapeLike(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '%', '_', '\\':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}

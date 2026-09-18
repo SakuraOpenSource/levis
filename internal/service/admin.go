@@ -43,8 +43,10 @@ func NewAdminService(db *gorm.DB, wallet *WalletService, store *storage.Store, p
 func (s *AdminService) Users(keyword string, offset, limit int) ([]model.User, int64, error) {
 	query := s.db.Model(&model.User{})
 	if keyword = strings.TrimSpace(keyword); keyword != "" {
-		like := "%" + keyword + "%"
-		query = query.Where("username LIKE ? OR email LIKE ?", like, like)
+		// LIKE 通配符转义：用户输入里的 %/_ 只当字面字符，否则一个 "%" 就能
+		// 触发全表扫描。ESCAPE 子句三种驱动（SQLite/MySQL/PG）都支持。
+		like := "%" + escapeLike(keyword) + "%"
+		query = query.Where("username LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\'", like, like)
 	}
 
 	var total int64
