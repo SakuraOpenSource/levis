@@ -107,6 +107,7 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	catalog.GET("/products", h.Products)
 	catalog.GET("/products/:id", h.Product)
 	catalog.GET("/products/:id/os", h.ProductOS)
+	catalog.GET("/products/:id/agents", h.ProductAgents)
 	guarded.GET("/articles", h.Articles)
 	guarded.GET("/articles/by-id/:id", h.ArticleByID)
 	guarded.POST("/articles/by-ids", h.ArticlesByIDs)

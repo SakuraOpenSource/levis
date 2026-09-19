@@ -164,6 +164,47 @@ func (s *UpstreamService) Test(id uint) error {
 	return nil
 }
 
+// ProductAgents 返回接口商品购买时可选的被控节点：调用插件的 ListAgents。
+// 非接口商品或老插件未实现时返回空列表，购买页据此隐藏节点选择而不是 400。
+func (s *UpstreamService) ProductAgents(productID uint) ([]*pb.UpstreamAgent, error) {
+	var product model.Product
+	if err := s.db.First(&product, "id = ? AND status = ?", productID, model.ProductActive).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound("商品不存在或已下架")
+		}
+		return nil, err
+	}
+	if product.InterfaceID == 0 || s.plugins == nil {
+		return []*pb.UpstreamAgent{}, nil
+	}
+	iface, err := s.InterfaceForPlugin(product.InterfaceID)
+	if err != nil {
+		return nil, err
+	}
+	inst, err := s.plugins.Get(iface.PluginID)
+	if err != nil {
+		return []*pb.UpstreamAgent{}, nil
+	}
+	client := inst.Client()
+	if client == nil {
+		return []*pb.UpstreamAgent{}, nil
+	}
+	reply, err := s.plugins.ListAgents(inst.TokenContext(context.Background()), iface.PluginID, &pb.ListAgentsRequest{
+		InterfaceConfig: optionMapToProto(iface.Config),
+	})
+	if err != nil {
+		// 老插件未实现 ListAgents：返回空列表，购买页隐藏节点选择。
+		if status.Code(err) == codes.Unimplemented {
+			return []*pb.UpstreamAgent{}, nil
+		}
+		return nil, err
+	}
+	if reply.GetError() != "" {
+		return nil, ErrBadRequest("上游返回错误: %s", reply.GetError())
+	}
+	return reply.GetAgents(), nil
+}
+
 // ProductOS 返回接口商品购买时可选的系统镜像：按商品绑定的接口调用插件的
 // ListProductOS，以商品的驱动过滤。非接口商品直接报错 —— 购买页只对
 // 接口商品展示系统选择。

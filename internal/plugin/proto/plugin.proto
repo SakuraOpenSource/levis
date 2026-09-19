@@ -91,6 +91,11 @@ service Plugin {
   // 需声明 CAPABILITY_PROVISION_PRODUCT。
   rpc ListProductOS(ListProductOSRequest) returns (ListHostOSReply);
 
+  // ListAgents 列出上游的可用被控节点，供购买页/商品配置选择部署位置。
+  // 未实现的插件返回 UNIMPLEMENTED，主程序须容忍（此时不展示节点选择）。
+  // 需声明 CAPABILITY_PROVISION_PRODUCT。
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsReply);
+
   // GetHostMetrics 获取服务实例的实时监控数据。未实现的插件返回 UNIMPLEMENTED。
   rpc GetHostMetrics(GetHostMetricsRequest) returns (GetHostMetricsReply);
 
@@ -636,6 +641,28 @@ message ListProductOSRequest {
   map<string, string> interface_config = 2;
   // options 携带过滤条件，如 driver=incus / qemu。
   map<string, string> options = 3;
+}
+
+// UpstreamAgent 是上游的一个可用被控节点。
+message UpstreamAgent {
+  string id = 1;
+  string name = 2;
+  // display_name 是给用户看的名称，可为空（此时用 name）。
+  string display_name = 3;
+  // status 是节点状态：online / offline / pending 等，主程序只透传。
+  string status = 4;
+  // drivers 是该节点支持的虚拟化驱动（incus / qemu）。
+  repeated string drivers = 5;
+}
+
+message ListAgentsRequest {
+  // 接口配置，见 ListProductsRequest.interface_config。
+  map<string, string> interface_config = 1;
+}
+
+message ListAgentsReply {
+  repeated UpstreamAgent agents = 1;
+  string error = 2;
 }
 
 message StartKYCRequest {

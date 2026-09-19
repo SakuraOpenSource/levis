@@ -45,6 +45,7 @@ const (
 	Plugin_GetHost_FullMethodName               = "/levis.plugin.v1.Plugin/GetHost"
 	Plugin_ListHostOS_FullMethodName            = "/levis.plugin.v1.Plugin/ListHostOS"
 	Plugin_ListProductOS_FullMethodName         = "/levis.plugin.v1.Plugin/ListProductOS"
+	Plugin_ListAgents_FullMethodName            = "/levis.plugin.v1.Plugin/ListAgents"
 	Plugin_GetHostMetrics_FullMethodName        = "/levis.plugin.v1.Plugin/GetHostMetrics"
 	Plugin_GetHostAccess_FullMethodName         = "/levis.plugin.v1.Plugin/GetHostAccess"
 	Plugin_GetHostVNC_FullMethodName            = "/levis.plugin.v1.Plugin/GetHostVNC"
@@ -121,6 +122,10 @@ type PluginClient interface {
 	// 供购买页渲染系统下拉。未实现的插件返回 UNIMPLEMENTED，主程序须容忍。
 	// 需声明 CAPABILITY_PROVISION_PRODUCT。
 	ListProductOS(ctx context.Context, in *ListProductOSRequest, opts ...grpc.CallOption) (*ListHostOSReply, error)
+	// ListAgents 列出上游的可用被控节点，供购买页/商品配置选择部署位置。
+	// 未实现的插件返回 UNIMPLEMENTED，主程序须容忍（此时不展示节点选择）。
+	// 需声明 CAPABILITY_PROVISION_PRODUCT。
+	ListAgents(ctx context.Context, in *ListAgentsRequest, opts ...grpc.CallOption) (*ListAgentsReply, error)
 	// GetHostMetrics 获取服务实例的实时监控数据。未实现的插件返回 UNIMPLEMENTED。
 	GetHostMetrics(ctx context.Context, in *GetHostMetricsRequest, opts ...grpc.CallOption) (*GetHostMetricsReply, error)
 	// GetHostAccess 获取服务实例的网络与 SSH 访问信息。未实现的插件返回 UNIMPLEMENTED。
@@ -323,6 +328,16 @@ func (c *pluginClient) ListProductOS(ctx context.Context, in *ListProductOSReque
 	return out, nil
 }
 
+func (c *pluginClient) ListAgents(ctx context.Context, in *ListAgentsRequest, opts ...grpc.CallOption) (*ListAgentsReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAgentsReply)
+	err := c.cc.Invoke(ctx, Plugin_ListAgents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *pluginClient) GetHostMetrics(ctx context.Context, in *GetHostMetricsRequest, opts ...grpc.CallOption) (*GetHostMetricsReply, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetHostMetricsReply)
@@ -469,6 +484,10 @@ type PluginServer interface {
 	// 供购买页渲染系统下拉。未实现的插件返回 UNIMPLEMENTED，主程序须容忍。
 	// 需声明 CAPABILITY_PROVISION_PRODUCT。
 	ListProductOS(context.Context, *ListProductOSRequest) (*ListHostOSReply, error)
+	// ListAgents 列出上游的可用被控节点，供购买页/商品配置选择部署位置。
+	// 未实现的插件返回 UNIMPLEMENTED，主程序须容忍（此时不展示节点选择）。
+	// 需声明 CAPABILITY_PROVISION_PRODUCT。
+	ListAgents(context.Context, *ListAgentsRequest) (*ListAgentsReply, error)
 	// GetHostMetrics 获取服务实例的实时监控数据。未实现的插件返回 UNIMPLEMENTED。
 	GetHostMetrics(context.Context, *GetHostMetricsRequest) (*GetHostMetricsReply, error)
 	// GetHostAccess 获取服务实例的网络与 SSH 访问信息。未实现的插件返回 UNIMPLEMENTED。
@@ -551,6 +570,9 @@ func (UnimplementedPluginServer) ListHostOS(context.Context, *ListHostOSRequest)
 }
 func (UnimplementedPluginServer) ListProductOS(context.Context, *ListProductOSRequest) (*ListHostOSReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListProductOS not implemented")
+}
+func (UnimplementedPluginServer) ListAgents(context.Context, *ListAgentsRequest) (*ListAgentsReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAgents not implemented")
 }
 func (UnimplementedPluginServer) GetHostMetrics(context.Context, *GetHostMetricsRequest) (*GetHostMetricsReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetHostMetrics not implemented")
@@ -903,6 +925,24 @@ func _Plugin_ListProductOS_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Plugin_ListAgents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAgentsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServer).ListAgents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Plugin_ListAgents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServer).ListAgents(ctx, req.(*ListAgentsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Plugin_GetHostMetrics_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetHostMetricsRequest)
 	if err := dec(in); err != nil {
@@ -1121,6 +1161,10 @@ var Plugin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListProductOS",
 			Handler:    _Plugin_ListProductOS_Handler,
+		},
+		{
+			MethodName: "ListAgents",
+			Handler:    _Plugin_ListAgents_Handler,
 		},
 		{
 			MethodName: "GetHostMetrics",

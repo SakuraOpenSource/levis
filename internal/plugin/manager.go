@@ -467,6 +467,35 @@ func (m *Manager) RefundPayment(ctx context.Context, id string, req *pb.RefundPa
 	return out, nil
 }
 
+// ListAgents 让指定上游插件返回可用被控节点列表（供购买页选节点）。
+// 插件未实现该 RPC 时返回 UNIMPLEMENTED 类错误，调用方须容忍并隐藏选择。
+func (m *Manager) ListAgents(ctx context.Context, id string, req *pb.ListAgentsRequest) (*pb.ListAgentsReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.ListAgentsReply
+	err = c.call(ctx, hookTimeout, func(ctx context.Context) error {
+		reply, err := client.ListAgents(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CreateOrder 让指定上游插件创建一笔上游订单（下单并支付开通）。
 func (m *Manager) CreateOrder(ctx context.Context, id string, req *pb.CreateOrderRequest) (*pb.CreateOrderReply, error) {
 	inst, err := m.get(id)

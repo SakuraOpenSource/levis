@@ -33,6 +33,16 @@ func (h *Handler) Product(c *gin.Context) {
 	respond(c, item, err)
 }
 
+// ProductAgents 返回接口商品购买时可选的被控节点列表。
+func (h *Handler) ProductAgents(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.upstream().ProductAgents(id)
+	respond(c, gin.H{"items": items}, err)
+}
+
 // ProductOS 返回接口商品在购买时可选的系统镜像（按商品的驱动过滤）。
 func (h *Handler) ProductOS(c *gin.Context) {
 	id, ok := IDParam(c, "id")
