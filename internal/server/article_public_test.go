@@ -56,6 +56,23 @@ func TestPublicArticleNeedsPublished(t *testing.T) {
 	if rec := do(t, handler, http.MethodGet, byID, nil); rec.Code != http.StatusOK {
 		t.Fatalf("已发布按 ID 应返回 200，实际 %d %s", rec.Code, rec.Body.String())
 	}
+
+	// 公开列表只含已发布文章，且不泄露正文。
+	if rec := do(t, handler, http.MethodGet, "/api/articles", nil); rec.Code != http.StatusOK {
+		t.Fatalf("公开列表应返回 200，实际 %d %s", rec.Code, rec.Body.String())
+	} else {
+		var items []struct {
+			Slug      string `json:"slug"`
+			ContentMD string `json:"content_md"`
+		}
+		decodeJSON(t, rec, &items)
+		if len(items) != 1 || items[0].Slug != "e2e-draft" {
+			t.Fatalf("公开列表应只含已发布文章，实际 %+v", items)
+		}
+		if items[0].ContentMD != "" {
+			t.Fatal("公开列表不应返回正文 content_md")
+		}
+	}
 }
 
 // TestAdminBillingListsRequireAdmin 确认账单/订单/业务全局查询仅管理员可用。

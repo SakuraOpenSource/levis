@@ -6,6 +6,12 @@ import (
 	"github.com/SakuraOpenSource/levis/internal/service"
 )
 
+// Articles 返回全部已发布文章的索引（不含正文），公开可读。
+func (h *Handler) Articles(c *gin.Context) {
+	items, err := h.articles().ListPublished()
+	respond(c, items, err)
+}
+
 // Article 按 slug 返回已发布的知识库文章，公开可读。
 func (h *Handler) Article(c *gin.Context) {
 	item, err := h.articles().GetPublished(c.Param("slug"))

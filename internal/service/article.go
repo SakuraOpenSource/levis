@@ -63,6 +63,21 @@ func (s *ArticleService) GetPublishedByID(id uint) (*model.Article, error) {
 	return &item, nil
 }
 
+// ListPublished 返回全部已发布文章的索引（不含正文），按管理端排序。
+// 供用户中心知识库列表页使用。
+func (s *ArticleService) ListPublished() ([]model.Article, error) {
+	var items []model.Article
+	err := s.db.Model(&model.Article{}).
+		Select("id, slug, title, status, sort_order, created_at, updated_at").
+		Where("status = ?", model.ArticlePublished).
+		Order("sort_order ASC, id ASC").
+		Find(&items).Error
+	if err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 // AdminList 分页返回文章，status 为空时不过滤。
 func (s *ArticleService) AdminList(status string, offset, limit int) ([]model.Article, int64, error) {
 	query := s.db.Model(&model.Article{})
