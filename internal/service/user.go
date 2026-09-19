@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -66,6 +67,7 @@ func (s *UserService) Register(req RegisterRequest) (*model.User, error) {
 		Role:         model.RoleUser, // 固定为普通用户
 		Status:       model.UserActive,
 	}
+	user.TouchPassword()
 	if err := s.db.Create(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, ErrConflict("用户名或邮箱已被注册")
@@ -147,7 +149,12 @@ func (s *UserService) ChangePassword(userID uint, oldPassword, newPassword strin
 	if err != nil {
 		return err
 	}
-	return s.db.Model(&model.User{}).Where("id = ?", userID).Update("password_hash", hash).Error
+	// 同步记录改密时间：iat 早于它的 token 一律失效（踢掉所有旧会话）。
+	return s.db.Model(&model.User{}).Where("id = ?", userID).
+		Updates(map[string]any{
+			"password_hash":       hash,
+			"password_changed_at": time.Now().UTC(),
+		}).Error
 }
 
 // Get 按 ID 读取用户。

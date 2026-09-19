@@ -110,7 +110,7 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	guarded.GET("/articles/by-id/:id", h.ArticleByID)
 	guarded.GET("/articles/:slug", h.Article)
 	// 以下均需登录。
-	authed := guarded.Group("", middleware.RequireAuth(rt))
+	authed := guarded.Group("", middleware.RequireAuth(rt, h.Revoker()))
 
 	authed.GET("/me", h.Me)
 	authed.PATCH("/me/email", h.UpdateEmail)

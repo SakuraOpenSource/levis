@@ -106,6 +106,7 @@ func (s *InstallService) Install(req InstallRequest) error {
 			Role:         model.RoleAdmin,
 			Status:       model.UserActive,
 		}
+		admin.TouchPassword()
 		if err := tx.Create(&admin).Error; err != nil {
 			return err
 		}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -32,8 +33,13 @@ func RequireInstalled(rt *runtime.Runtime) gin.HandlerFunc {
 // RequireAuth 校验 token cookie 并把用户实体放入 context。
 //
 // 这里每次请求都查库，而不是只信 JWT 里的 role：用户被禁用或降权后应立即
-// 失效，不能等到 token 过期。
-func RequireAuth(rt *runtime.Runtime) gin.HandlerFunc {
+// 失效，不能等到 token 过期。两级失效判定：
+//  1. jti 在吊销表里（用户登出过，见 auth.RevocationList）；
+//  2. token 签发时间早于该用户的最近改密时间 —— 改密即踢掉所有旧设备，
+//     这是「凭证可能已被偷」场景下用户唯一能自救的动作，必须立即生效。
+//
+// revoker 可为 nil（不启用登出吊销），密码比对不依赖它。
+func RequireAuth(rt *runtime.Runtime, revoker *auth.RevocationList) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token, err := c.Cookie(auth.CookieToken)
 		if err != nil || token == "" {
@@ -43,6 +49,10 @@ func RequireAuth(rt *runtime.Runtime) gin.HandlerFunc {
 		claims, err := auth.ParseToken(rt.JWTSecret(), token)
 		if err != nil {
 			httpx.Unauthorized(c, "登录已过期，请重新登录")
+			return
+		}
+		if revoker != nil && revoker.IsRevoked(claims.ID) {
+			httpx.Unauthorized(c, "登录已失效，请重新登录")
 			return
 		}
 
@@ -57,6 +67,13 @@ func RequireAuth(rt *runtime.Runtime) gin.HandlerFunc {
 		}
 		if user.Status != model.UserActive {
 			httpx.Forbidden(c, "账号已被禁用")
+			return
+		}
+		// iat 只有秒精度（jwt v5 序列化取整秒），改密时间对齐到秒再比对，
+		// 否则「改密后立刻重签」的 token 会被自己的签发时刻误伤。
+		if user.PasswordChangedAt != nil && claims.IssuedAt != nil &&
+			claims.IssuedAt.Time.Before(user.PasswordChangedAt.Truncate(time.Second)) {
+			httpx.Unauthorized(c, "密码已变更，请重新登录")
 			return
 		}
 

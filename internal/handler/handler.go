@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/SakuraOpenSource/levis/internal/auth"
 	"github.com/SakuraOpenSource/levis/internal/captcha"
 	"github.com/SakuraOpenSource/levis/internal/loginlimit"
 	"github.com/SakuraOpenSource/levis/internal/notify"
@@ -40,6 +41,9 @@ type Handler struct {
 	// loginTracker 统计登录失败并临时锁定，全进程共用一份（见 loginlimit
 	// 包的说明）。Close 时停掉它后台的清扫协程。
 	loginTracker *loginlimit.Tracker
+	// revoker 是登出吊销表，全进程共用一份（见 auth.RevocationList 的
+	// 说明）。Logout 写入，RequireAuth 查询；Close 时停掉后台清扫协程。
+	revoker *auth.RevocationList
 	// emailSvc 持有邮箱验证码与限流状态，同样全进程共用一份。数据库在
 	// 安装完成后才存在，因此首次使用时（必然已安装）惰性构造。
 	emailMu   sync.Mutex
@@ -72,6 +76,7 @@ func newHandler(rt *runtime.Runtime, plugins *plugin.Manager, store service.Capt
 		storage:      storage.New(rt.DataDir()),
 		notify:       pluginhost.NewNotifier(rt, plugins, log.Printf),
 		loginTracker: loginlimit.New(),
+		revoker:      auth.NewRevocationList(),
 	}
 }
 
@@ -79,7 +84,12 @@ func newHandler(rt *runtime.Runtime, plugins *plugin.Manager, store service.Capt
 func (h *Handler) Close() {
 	h.notify.Close()
 	h.loginTracker.Close()
+	h.revoker.Close()
 }
+
+// Revoker 暴露登出吊销表，供路由层装配 RequireAuth 中间件（同一进程必须
+// 共用 Handler 里的这一份，否则登出写不进中间件查的那张表）。
+func (h *Handler) Revoker() *auth.RevocationList { return h.revoker }
 
 func (h *Handler) db() *gorm.DB                { return h.rt.DB() }
 func (h *Handler) users() *service.UserService { return service.NewUserService(h.db()) }

@@ -113,6 +113,7 @@ func (s *AdminService) CreateUser(req CreateUserRequest) (*model.User, error) {
 		Role:         role,
 		Status:       model.UserActive,
 	}
+	user.TouchPassword()
 
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&user).Error; err != nil {
@@ -206,6 +207,8 @@ func (s *AdminService) UpdateUser(operatorID, userID uint, req UpdateUserRequest
 			return nil, err
 		}
 		updates["password_hash"] = hash
+		// 管理员重置密码同样踢掉该用户全部旧会话。
+		updates["password_changed_at"] = time.Now().UTC()
 	}
 
 	if req.Role != nil {

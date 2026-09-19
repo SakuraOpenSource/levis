@@ -229,8 +229,16 @@ func (h *Handler) allowLogin(c *gin.Context, scope, identifier, ip string) bool 
 	return true
 }
 
-// Logout 清除登录态 cookie。
+// Logout 登出：吊销当前 token 并清除登录态 cookie。
+//
+// 只删 cookie 不够 —— token 本身在到期前依旧有效，拷贝走的人还能继续用。
+// 这里把它按 jti 记入吊销表，RequireAuth 会在剩余有效期内持续拒绝它。
 func (h *Handler) Logout(c *gin.Context) {
+	if token, err := c.Cookie(auth.CookieToken); err == nil && token != "" {
+		if claims, err := auth.ParseToken(h.rt.JWTSecret(), token); err == nil && claims.ExpiresAt != nil {
+			h.revoker.Revoke(claims.ID, claims.ExpiresAt.Time)
+		}
+	}
 	h.clearCookie(c, auth.CookieToken, true)
 	h.clearCookie(c, auth.CookieCSRF, false)
 	noContent(c)

@@ -123,6 +123,17 @@ type User struct {
 	// 自动判定（支持预授权代理）。指向 agent_tiers.id。
 	AgentTierID *uint  `gorm:"index" json:"agent_tier_id"`
 	Status      string `gorm:"size:16;not null;default:active" json:"status"`
+	// PasswordChangedAt 是最近一次密码变更时间（NULL = 从未改过）。
+	// RequireAuth 用它与 JWT 的 iat 比对：改密即踢掉此前签发的所有会话，
+	// 包括登出吊销表管不到的「另一台设备上的旧 token」。指针类型让存量
+	// 行（新加列）保持 NULL，升级部署不会强制全站重新登录。
+	PasswordChangedAt *time.Time `json:"-"`
+}
+
+// TouchPassword 记录一次密码变更，供建号与改密路径复用。
+func (u *User) TouchPassword() {
+	now := time.Now().UTC()
+	u.PasswordChangedAt = &now
 }
 
 // IsAdmin 报告用户是否为管理员。

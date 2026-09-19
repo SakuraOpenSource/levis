@@ -88,8 +88,14 @@ func GenerateToken(secret string, userID uint, role string) (string, time.Time, 
 // 见 AdminTokenTTL 的说明。
 func GenerateTokenWithTTL(secret string, userID uint, role string, ttl time.Duration) (string, time.Time, error) {
 	expires := time.Now().Add(ttl)
+	// jti 用于登出吊销：无状态 token 唯一能精确指认「就是这一张」的抓手。
+	jti, err := randomHex(16)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("生成凭证标识失败: %w", err)
+	}
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        jti,
 			Subject:   fmt.Sprint(userID),
 			ExpiresAt: jwt.NewNumericDate(expires),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -102,6 +108,15 @@ func GenerateTokenWithTTL(secret string, userID uint, role string, ttl time.Dura
 		return "", time.Time{}, fmt.Errorf("签发凭证失败: %w", err)
 	}
 	return signed, expires, nil
+}
+
+// randomHex 生成 n 字节的随机十六进制串。
+func randomHex(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 // ParseToken 校验并解析 JWT。
