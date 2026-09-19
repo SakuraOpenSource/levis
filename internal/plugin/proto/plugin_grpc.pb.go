@@ -36,6 +36,7 @@ const (
 	Plugin_CreatePayment_FullMethodName         = "/levis.plugin.v1.Plugin/CreatePayment"
 	Plugin_QueryPayment_FullMethodName          = "/levis.plugin.v1.Plugin/QueryPayment"
 	Plugin_VerifyPaymentCallback_FullMethodName = "/levis.plugin.v1.Plugin/VerifyPaymentCallback"
+	Plugin_RefundPayment_FullMethodName         = "/levis.plugin.v1.Plugin/RefundPayment"
 	Plugin_ListProducts_FullMethodName          = "/levis.plugin.v1.Plugin/ListProducts"
 	Plugin_GetProduct_FullMethodName            = "/levis.plugin.v1.Plugin/GetProduct"
 	Plugin_CreateOrder_FullMethodName           = "/levis.plugin.v1.Plugin/CreateOrder"
@@ -90,6 +91,10 @@ type PluginClient interface {
 	// 插件验签后返回商户单号与实收金额，再由主程序匹配本地支付意图。
 	// 需声明 CAPABILITY_CREATE_PAYMENT。
 	VerifyPaymentCallback(ctx context.Context, in *VerifyPaymentCallbackRequest, opts ...grpc.CallOption) (*VerifyPaymentCallbackReply, error)
+	// RefundPayment 向支付渠道发起一笔退款。需声明 CAPABILITY_CREATE_PAYMENT。
+	// 未实现该 RPC 的旧插件返回 UNIMPLEMENTED，主程序须据此把退款标记为
+	// 渠道侧失败，而不是中断整个审批流程。
+	RefundPayment(ctx context.Context, in *RefundPaymentRequest, opts ...grpc.CallOption) (*RefundPaymentReply, error)
 	// ListProducts 拉取上游供货商的产品列表。
 	// 需声明 CAPABILITY_PROVISION_PRODUCT。
 	ListProducts(ctx context.Context, in *ListProductsRequest, opts ...grpc.CallOption) (*ListProductsReply, error)
@@ -222,6 +227,16 @@ func (c *pluginClient) VerifyPaymentCallback(ctx context.Context, in *VerifyPaym
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(VerifyPaymentCallbackReply)
 	err := c.cc.Invoke(ctx, Plugin_VerifyPaymentCallback_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginClient) RefundPayment(ctx context.Context, in *RefundPaymentRequest, opts ...grpc.CallOption) (*RefundPaymentReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RefundPaymentReply)
+	err := c.cc.Invoke(ctx, Plugin_RefundPayment_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -424,6 +439,10 @@ type PluginServer interface {
 	// 插件验签后返回商户单号与实收金额，再由主程序匹配本地支付意图。
 	// 需声明 CAPABILITY_CREATE_PAYMENT。
 	VerifyPaymentCallback(context.Context, *VerifyPaymentCallbackRequest) (*VerifyPaymentCallbackReply, error)
+	// RefundPayment 向支付渠道发起一笔退款。需声明 CAPABILITY_CREATE_PAYMENT。
+	// 未实现该 RPC 的旧插件返回 UNIMPLEMENTED，主程序须据此把退款标记为
+	// 渠道侧失败，而不是中断整个审批流程。
+	RefundPayment(context.Context, *RefundPaymentRequest) (*RefundPaymentReply, error)
 	// ListProducts 拉取上游供货商的产品列表。
 	// 需声明 CAPABILITY_PROVISION_PRODUCT。
 	ListProducts(context.Context, *ListProductsRequest) (*ListProductsReply, error)
@@ -505,6 +524,9 @@ func (UnimplementedPluginServer) QueryPayment(context.Context, *QueryPaymentRequ
 }
 func (UnimplementedPluginServer) VerifyPaymentCallback(context.Context, *VerifyPaymentCallbackRequest) (*VerifyPaymentCallbackReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method VerifyPaymentCallback not implemented")
+}
+func (UnimplementedPluginServer) RefundPayment(context.Context, *RefundPaymentRequest) (*RefundPaymentReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method RefundPayment not implemented")
 }
 func (UnimplementedPluginServer) ListProducts(context.Context, *ListProductsRequest) (*ListProductsReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListProducts not implemented")
@@ -715,6 +737,24 @@ func _Plugin_VerifyPaymentCallback_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(PluginServer).VerifyPaymentCallback(ctx, req.(*VerifyPaymentCallbackRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Plugin_RefundPayment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefundPaymentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServer).RefundPayment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Plugin_RefundPayment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServer).RefundPayment(ctx, req.(*RefundPaymentRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1045,6 +1085,10 @@ var Plugin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "VerifyPaymentCallback",
 			Handler:    _Plugin_VerifyPaymentCallback_Handler,
+		},
+		{
+			MethodName: "RefundPayment",
+			Handler:    _Plugin_RefundPayment_Handler,
 		},
 		{
 			MethodName: "ListProducts",

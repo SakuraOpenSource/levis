@@ -110,6 +110,9 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	guarded.GET("/articles", h.Articles)
 	guarded.GET("/articles/by-id/:id", h.ArticleByID)
 	guarded.GET("/articles/:slug", h.Article)
+	guarded.GET("/refunds", h.Refunds)
+	guarded.POST("/refunds", h.CreateRefund)
+	guarded.POST("/refunds/:id/cancel", h.CancelRefund)
 	// 以下均需登录。
 	authed := guarded.Group("", middleware.RequireAuth(rt, h.Revoker()))
 
@@ -263,6 +266,11 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	admin.GET("/agent-program/applications", h.AgentProgramApplications)
 	admin.POST("/agent-program/applications/:id/review", h.AgentProgramReview)
 	admin.PUT("/settings/kyc", h.AdminUpdateKYCSettings)
+	admin.GET("/settings/refund", h.AdminRefundPolicy)
+	admin.PUT("/settings/refund", h.AdminUpdateRefundPolicy)
+	admin.GET("/refunds", h.AdminRefunds)
+	admin.POST("/refunds/:id/review", h.AdminReviewRefund)
+	admin.POST("/refunds/:id/retry", h.AdminRetryRefund)
 	admin.GET("/tickets", h.AdminTickets)
 	admin.GET("/tickets/:id", h.AdminTicket)
 	admin.POST("/tickets/:id/replies", h.AdminReplyTicket)

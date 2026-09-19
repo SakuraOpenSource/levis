@@ -52,6 +52,11 @@ service Plugin {
   // 需声明 CAPABILITY_CREATE_PAYMENT。
   rpc VerifyPaymentCallback(VerifyPaymentCallbackRequest) returns (VerifyPaymentCallbackReply);
 
+  // RefundPayment 向支付渠道发起一笔退款。需声明 CAPABILITY_CREATE_PAYMENT。
+  // 未实现该 RPC 的旧插件返回 UNIMPLEMENTED，主程序须据此把退款标记为
+  // 渠道侧失败，而不是中断整个审批流程。
+  rpc RefundPayment(RefundPaymentRequest) returns (RefundPaymentReply);
+
   // ListProducts 拉取上游供货商的产品列表。
   // 需声明 CAPABILITY_PROVISION_PRODUCT。
   rpc ListProducts(ListProductsRequest) returns (ListProductsReply);
@@ -310,6 +315,27 @@ message VerifyPaymentCallbackReply {
   // currency 可为空；非空时主程序必须核对为 CNY。
   string currency = 5;
   string message = 6;
+}
+
+// RefundPaymentRequest 向渠道发起退款。
+message RefundPaymentRequest {
+  // external_id 是原支付的商户单号（多数渠道按它定位原单）。
+  string external_id = 1;
+  // gateway_ref 是原支付的渠道侧单号；渠道支持时优先使用。
+  string gateway_ref = 2;
+  // amount_cents 是退款金额（分），不得超过原支付实收金额。
+  int64 amount_cents = 3;
+  // config 是按支付方式实例传入的插件配置（与 CreatePayment 一致）。
+  map<string, string> config = 4;
+}
+
+message RefundPaymentReply {
+  // ok 为 true 表示渠道已受理退款。
+  bool ok = 1;
+  // refund_ref 是渠道侧的退款流水号，可为空。
+  string refund_ref = 2;
+  // error 非空表示渠道拒绝或调用失败，信息可展示给管理员。
+  string error = 3;
 }
 
 // =============================================================================

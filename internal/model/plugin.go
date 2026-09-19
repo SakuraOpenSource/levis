@@ -149,6 +149,58 @@ type ExternalPayment struct {
 	BalanceCents int64 `gorm:"not null;default:0" json:"balance_cents"`
 }
 
+// RefundRequest 是用户的退款申请。
+//
+// 生命周期：pending（待审）→ approved/refunded（已通过并退回）/
+// rejected（已驳回）/ failed（渠道退款失败，可重试）/ canceled（用户撤回）。
+// 渠道退款与余额退还在 Approved 后执行；执行结果落在 Status 与 FailReason。
+type RefundRequest struct {
+	Base
+	// RefundNo 是对外展示的退款单号。
+	RefundNo string `gorm:"uniqueIndex;size:32;not null" json:"refund_no"`
+	UserID   uint   `gorm:"index;not null" json:"user_id"`
+	// PaymentID 指向被退款的外部支付意图；余额支付（无意图）为 0。
+	PaymentID uint `gorm:"index" json:"payment_id"`
+	// OrderID 是关联订单，用于展示与策略校验；纯余额退款可为 0。
+	OrderID uint `gorm:"index" json:"order_id"`
+	// AmountCents 是申请退款金额（分），不得超过原支付实收（意图金额 + 余额抵扣）。
+	AmountCents int64 `gorm:"not null" json:"amount_cents"`
+	// ChannelCents / BalanceCents 是审批时计算出的退回渠道/余额金额（分）。
+	ChannelCents int64  `json:"channel_cents"`
+	BalanceCents int64  `json:"balance_cents"`
+	Reason       string `gorm:"size:500;not null" json:"reason"`
+	Status       string `gorm:"size:16;index;not null;default:pending" json:"status"`
+	// PolicyResult 记录自动审批判定：auto_approved / manual_review / policy_denied。
+	PolicyResult string `gorm:"size:24" json:"policy_result"`
+	// ReviewRemark 是管理员处理备注，驳回时必填原因。
+	ReviewRemark string     `gorm:"size:500" json:"review_remark"`
+	ReviewerID   uint       `gorm:"index" json:"reviewer_id"`
+	ReviewedAt   *time.Time `json:"reviewed_at"`
+	// FailReason 是渠道退款失败原因，重试成功后清空。
+	FailReason string `gorm:"size:500" json:"fail_reason"`
+	// RefundedAt 是退款完成时刻。
+	RefundedAt *time.Time `json:"refunded_at"`
+}
+
+// RefundRequest 状态常量。
+const (
+	RefundPending   = "pending"
+	RefundApproved  = "approved" // 审批通过，退款执行中/已入账
+	RefundRejected  = "rejected"
+	RefundFailed    = "failed" // 渠道退款失败，待重试
+	RefundCanceled  = "canceled"
+	RefundCompleted = "refunded" // 渠道 + 余额全部退回完成
+)
+
+// RefundRequest 策略判定结果常量。
+const (
+	RefundPolicyAutoApproved = "auto_approved"
+	RefundPolicyManualReview = "manual_review"
+	RefundPolicyDenied       = "policy_denied"
+)
+
+// 用户可见的退款状态集合（避免用户侧出现中间态歧义）。
+
 // PluginPayment 记录插件报上来的每一笔到账，唯一索引即幂等键。
 //
 // 支付渠道一定会重复回调 —— 超时重试、人工补发都会触发。靠数据库的唯一

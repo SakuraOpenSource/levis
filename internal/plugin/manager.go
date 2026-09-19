@@ -438,6 +438,35 @@ func (m *Manager) QueryPayment(ctx context.Context, id string, req *pb.QueryPaym
 	return out, nil
 }
 
+// RefundPayment 让指定支付插件向渠道发起退款。旧插件未实现时返回
+// UNIMPLEMENTED 类错误，由调用方决定如何呈现（渠道侧退款不可用）。
+func (m *Manager) RefundPayment(ctx context.Context, id string, req *pb.RefundPaymentRequest) (*pb.RefundPaymentReply, error) {
+	inst, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.Has(pb.Capability_CAPABILITY_CREATE_PAYMENT) {
+		return nil, ErrUnavailable
+	}
+	client, c := inst.client()
+	if client == nil {
+		return nil, ErrUnavailable
+	}
+	var out *pb.RefundPaymentReply
+	err = c.call(ctx, hookTimeout, func(ctx context.Context) error {
+		reply, err := client.RefundPayment(ctx, req)
+		if err != nil {
+			return err
+		}
+		out = reply
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CreateOrder 让指定上游插件创建一笔上游订单（下单并支付开通）。
 func (m *Manager) CreateOrder(ctx context.Context, id string, req *pb.CreateOrderRequest) (*pb.CreateOrderReply, error) {
 	inst, err := m.get(id)

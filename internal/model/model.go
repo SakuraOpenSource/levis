@@ -112,7 +112,24 @@ const (
 	// 自动 TERMINATE 上游实例，其他值或缺省=干跑（只记日志不删除）。
 	// 破坏性动作默认关：先让到期停机上线观察清单，管理员确认后再开启。
 	SettingLifecycleTerminate = "lifecycle_terminate_enabled"
+	// SettingRefundPolicy 是退款策略的 JSON 快照（model.RefundPolicyConfig）。
+	// 缺失时等价于「强制人工」——退款是资金出口，缺省保守。
+	SettingRefundPolicy = "refund_policy"
 )
+
+// RefundPolicyConfig 是退款审批策略。
+//
+// 提交申请时即时判定：命中「不退」条件 → policy_denied（申请直接拒绝）；
+// 开启强制人工 → manual_review；否则按「全量自动通过」与 12 小时无理由
+// 规则决定是否自动通过。
+type RefundPolicyConfig struct {
+	// ForceManual 为 true 时所有申请都转人工审批。
+	ForceManual bool `json:"force_manual"`
+	// AutoApproveAll 为 true 时除命中拒绝条件外全部自动通过。
+	AutoApproveAll bool `json:"auto_approve_all"`
+	// NoRefundAfterHours 是「购买满 N 小时不予退款」；0 表示不限制。
+	NoRefundAfterHours int `json:"no_refund_after_hours"`
+}
 
 // User 是系统用户。普通用户与管理员共用此表，由 Role 区分。
 type User struct {
@@ -611,6 +628,7 @@ func AllModels() []any {
 		&PluginSetting{},
 		&PluginPayment{},
 		&ExternalPayment{},
+		&RefundRequest{},
 		&PaymentMethod{},
 		&Article{},
 	}
