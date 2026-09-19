@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	pb "github.com/SakuraOpenSource/levis/pkg/plugin/proto"
 
@@ -83,7 +84,11 @@ func (s *RefundService) SavePolicy(in RefundPolicyInput) (model.RefundPolicyConf
 		return model.RefundPolicyConfig{}, err
 	}
 	row := model.Setting{Key: model.SettingRefundPolicy, Value: string(raw)}
-	if err := s.db.Create(&row).Error; err != nil {
+	// key 有唯一索引：upsert 而不是裸 Create，重复保存直接覆盖原值。
+	if err := s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"value"}),
+	}).Create(&row).Error; err != nil {
 		return model.RefundPolicyConfig{}, err
 	}
 	return policy, nil
