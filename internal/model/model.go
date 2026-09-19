@@ -393,8 +393,11 @@ type ProvisionSpec struct {
 	// 的规格区间被归一清零，流量包定价只能落在这里。0 表示未定价。
 	TrafficPriceCents int64 `json:"traffic_price_cents,omitempty"`
 	// AgentID 是商品级固定的上游被控节点（接口商品选 virtualis 插件时可选）。
-	// 0 表示由上游自动选节点；买家在购买页选择的节点优先于本字段。
+	// 0 表示由上游自动选节点。
 	AgentID uint `json:"agent_id,omitempty"`
+	// AllowBuyerAgent 允许买家在购买页自选部署节点（覆盖商品固定节点）。
+	// 关闭时买家提交的 agent_id 会被后端剥离，杜绝绕过接口伪造。
+	AllowBuyerAgent bool `json:"allow_buyer_agent,omitempty"`
 }
 
 // Fixed 把一项规格归一为固定值。

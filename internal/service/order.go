@@ -115,6 +115,11 @@ func buildOrderItems(tx *gorm.DB, userID uint, lines []OrderLine) ([]model.Order
 			if err := validateProvisionOptions(product.ProvisionConfig, line.Options); err != nil {
 				return nil, 0, err
 			}
+			// 节点选择权限在商品上：未开启买家自选时剥离请求里的 agent_id，
+			// 商品级固定节点（若有）随后经 defaultProvisionOptions 生效。
+			if !product.ProvisionConfig.AllowBuyerAgent {
+				delete(line.Options, "agent_id")
+			}
 			unitPrice += provisionOptionPrice(product.ProvisionConfig, line.Options)
 		}
 		discountPermille := 0
@@ -145,6 +150,8 @@ func buildOrderItems(tx *gorm.DB, userID uint, lines []OrderLine) ([]model.Order
 }
 
 // validateProvisionOptions 校验接口商品的购买选配。
+// 商品未开启 AllowBuyerAgent 时强制剥离买家提交的 agent_id —— 节点选择
+// 是管理员在商品上设定的，不能被请求参数绕过。返回（可能修正过的）options。
 //
 // 五项规格（CPU 核数、内存 MB、硬盘 GB、带宽 Mbps、流量 GB）都必须给出，
 // 且落在商品配置的区间内 —— 固定规格商品的区间退化为单点，等于必须一致；
