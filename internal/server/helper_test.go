@@ -179,14 +179,38 @@ func uploadedFiles(t *testing.T, rt *runtime.Runtime) []string {
 	return out
 }
 
-// grantBalance 用假充值给用户加余额。
-func grantBalance(t *testing.T, handler http.Handler, cookies []*http.Cookie, cents int64) {
+// grantBalance 由管理员把目标用户余额调整为 cents（PATCH 目标余额语义）。
+// 旧的假充值接口已封禁，测试资金一律走这条带审计的管理员通道。
+func grantBalance(t *testing.T, handler http.Handler, admin []*http.Cookie, userID uint, cents int64) {
 	t.Helper()
-	rec := doAs(t, handler, http.MethodPost, "/api/wallet/recharge",
-		map[string]int64{"amount_cents": cents}, cookies)
+	rec := doAs(t, handler, http.MethodPatch, "/api/admin/users/"+itoa(userID),
+		map[string]any{"balance_cents": cents}, admin)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("充值失败: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("调整余额失败: %d %s", rec.Code, rec.Body.String())
 	}
+}
+
+// userIDByName 用管理员接口查出用户名对应的 ID（测试内小助手）。
+func userIDByName(t *testing.T, handler http.Handler, admin []*http.Cookie, username string) uint {
+	t.Helper()
+	rec := doAs(t, handler, http.MethodGet, "/api/admin/users?keyword="+username+"&page=1&page_size=50", nil, admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("查询用户 %s 失败: %d %s", username, rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Items []struct {
+			ID       uint   `json:"id"`
+			Username string `json:"username"`
+		} `json:"items"`
+	}
+	decodeJSON(t, rec, &out)
+	for _, u := range out.Items {
+		if u.Username == username {
+			return u.ID
+		}
+	}
+	t.Fatalf("用户列表里没找到 %s", username)
+	return 0
 }
 
 // seedProductVia 通过管理接口建一个上架的月付商品，返回商品 ID。

@@ -300,8 +300,11 @@ func (h *Handler) UpdatePassword(c *gin.Context) {
 	noContent(c)
 }
 
-// issueSession 签发普通用户会话（JWT + CSRF cookie），有效期 auth.TokenTTL。
+// issueSession 按用户当前角色签发会话，改密重签也不能延长管理员有效期。
 func (h *Handler) issueSession(c *gin.Context, user *model.User) error {
+	if user.IsAdmin() {
+		return h.issueAdminSession(c, user)
+	}
 	return h.issueSessionFor(c, user, auth.TokenTTL)
 }
 

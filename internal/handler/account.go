@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -30,14 +31,13 @@ type RechargeRequest struct {
 	AmountCents int64 `json:"amount_cents"`
 }
 
-// Recharge 为当前用户充值（假充值，等待接入真实支付渠道）。
+// Recharge 是历史上的「假充值」入口：不需要任何支付凭证就能给余额加钱，
+// 等于一个公开的造币口。真实充值已由统一收银台（POST /api/payments，
+// purpose=recharge）承接，前端也不再调用这里。保留路由只是为了给旧客户端
+// 一个明确的错误说明，而不是 404；service 层的 Recharge 仍保留给退款回流
+// 等资金已在上游核验过的内部路径使用。
 func (h *Handler) Recharge(c *gin.Context) {
-	var req RechargeRequest
-	if !bindJSON(c, &req) {
-		return
-	}
-	record, err := h.wallet().Recharge(httpx.CurrentUserID(c), req.AmountCents)
-	respond(c, record, err)
+	Fail(c, http.StatusForbidden, httpx.CodeForbidden, "充值请通过收银台完成")
 }
 
 // Services 分页返回已购服务。

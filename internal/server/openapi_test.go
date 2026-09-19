@@ -37,10 +37,11 @@ func setupOpenAPI(t *testing.T, balance int64) openSetup {
 	t.Helper()
 	_, handler, admin, users := installedWithUsers(t, "alice")
 	alice := users["alice"]
+	aliceID := userIDByName(t, handler, admin, "alice")
 	passKYC(t, handler, admin, alice, "张三", validID1)
 	productID := seedProductVia(t, handler, admin, "vps", 1500)
 	if balance > 0 {
-		grantBalance(t, handler, alice, balance)
+		grantBalance(t, handler, admin, aliceID, balance)
 	}
 	secret := createKey(t, handler, alice, "全权限", model.AllScopes())
 	return openSetup{
@@ -154,7 +155,7 @@ func TestOpenAPIScopeEnforcement(t *testing.T) {
 	alice := users["alice"]
 	passKYC(t, handler, admin, alice, "张三", validID1)
 	productID := seedProductVia(t, handler, admin, "vps", 1500)
-	grantBalance(t, handler, alice, 100000)
+	grantBalance(t, handler, admin, userIDByName(t, handler, admin, "alice"), 100000)
 
 	balanceOnly := createKey(t, handler, alice, "只读余额", []string{model.ScopeBalanceRead})
 	orderOnly := createKey(t, handler, alice, "只下单", []string{model.ScopeOrderWrite})
@@ -487,7 +488,7 @@ func TestOpenAPIKeyScopedToOwnAccount(t *testing.T) {
 	passKYC(t, handler, admin, users["alice"], "张三", validID1)
 	passKYC(t, handler, admin, users["bob"], "李四", validID2)
 	productID := seedProductVia(t, handler, admin, "vps", 1500)
-	grantBalance(t, handler, users["alice"], 100000)
+	grantBalance(t, handler, admin, userIDByName(t, handler, admin, "alice"), 100000)
 
 	aliceKey := createKey(t, handler, users["alice"], "alice", model.AllScopes())
 	bobKey := createKey(t, handler, users["bob"], "bob", model.AllScopes())
