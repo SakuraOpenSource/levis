@@ -47,6 +47,10 @@ func (s *AdminService) Users(keyword string, offset, limit int) ([]model.User, i
 		// 触发全表扫描。ESCAPE 子句三种驱动（SQLite/MySQL/PG）都支持。
 		like := "%" + escapeLike(keyword) + "%"
 		query = query.Where("username LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\'", like, like)
+		// 关键词是纯数字时同时按用户 ID 精确匹配（OR 语义，ID 列在管理端直接可见）。
+		if id, err := strconv.ParseUint(keyword, 10, 64); err == nil && id > 0 {
+			query = query.Or("id = ?", id)
+		}
 	}
 
 	var total int64
@@ -571,21 +575,22 @@ func (s *AdminService) CreateProduct(in ProductInput) (*model.Product, error) {
 		return nil, err
 	}
 	item := model.Product{
-		CategoryID:         in.CategoryID,
-		Name:               in.Name,
-		Description:        strings.TrimSpace(in.Description),
-		Specs:              in.Specs,
-		PriceCents:         in.PriceCents,
-		BillingCyc:         in.BillingCyc,
-		Stock:              in.Stock,
-		Status:             in.Status,
-		Sort:               in.Sort,
-		UpstreamPluginID:   in.UpstreamPluginID,
-		UpstreamProductID:  in.UpstreamProductID,
-		InterfaceID:        in.InterfaceID,
-		ProvisionConfig:    in.ProvisionConfig,
-		AgreementArticleID: in.AgreementArticleID,
-		Region:             in.Region,
+		CategoryID:          in.CategoryID,
+		Name:                in.Name,
+		Description:         strings.TrimSpace(in.Description),
+		Specs:               in.Specs,
+		PriceCents:          in.PriceCents,
+		BillingCyc:          in.BillingCyc,
+		Stock:               in.Stock,
+		Status:              in.Status,
+		Sort:                in.Sort,
+		UpstreamPluginID:    in.UpstreamPluginID,
+		UpstreamProductID:   in.UpstreamProductID,
+		InterfaceID:         in.InterfaceID,
+		ProvisionConfig:     in.ProvisionConfig,
+		AgreementArticleID:  in.AgreementArticleID,
+		AgreementArticleIDs: model.JSONUintArray(dedupeUint(in.AgreementArticleIDs)),
+		Region:              in.Region,
 	}
 	if err := s.db.Create(&item).Error; err != nil {
 		return nil, err
@@ -606,21 +611,22 @@ func (s *AdminService) UpdateProduct(id uint, in ProductInput) (*model.Product, 
 		return nil, err
 	}
 	updates := map[string]any{
-		"category_id":          in.CategoryID,
-		"name":                 in.Name,
-		"description":          strings.TrimSpace(in.Description),
-		"specs":                in.Specs,
-		"price_cents":          in.PriceCents,
-		"billing_cycle":        in.BillingCyc,
-		"stock":                in.Stock,
-		"status":               in.Status,
-		"sort":                 in.Sort,
-		"upstream_plugin_id":   in.UpstreamPluginID,
-		"upstream_product_id":  in.UpstreamProductID,
-		"interface_id":         in.InterfaceID,
-		"provision_config":     in.ProvisionConfig,
-		"agreement_article_id": in.AgreementArticleID,
-		"region":               in.Region,
+		"category_id":           in.CategoryID,
+		"name":                  in.Name,
+		"description":           strings.TrimSpace(in.Description),
+		"specs":                 in.Specs,
+		"price_cents":           in.PriceCents,
+		"billing_cycle":         in.BillingCyc,
+		"stock":                 in.Stock,
+		"status":                in.Status,
+		"sort":                  in.Sort,
+		"upstream_plugin_id":    in.UpstreamPluginID,
+		"upstream_product_id":   in.UpstreamProductID,
+		"interface_id":          in.InterfaceID,
+		"provision_config":      in.ProvisionConfig,
+		"agreement_article_id":  in.AgreementArticleID,
+		"agreement_article_ids": model.JSONUintArray(dedupeUint(in.AgreementArticleIDs)),
+		"region":                in.Region,
 	}
 	if err := s.db.Model(&item).Updates(updates).Error; err != nil {
 		return nil, err
@@ -717,7 +723,7 @@ func (s *AdminService) validateProduct(in *ProductInput) error {
 	if len(in.Region) > 16 {
 		return ErrBadRequest("地域代码过长")
 	}
-	// 购买协议：引用文章必须存在。
+	// 购买协议：引用文章必须存在（单选旧字段 + 多选新字段都校验）。
 	if in.AgreementArticleID != nil {
 		var article model.Article
 		if err := s.db.First(&article, *in.AgreementArticleID).Error; err != nil {
@@ -727,7 +733,34 @@ func (s *AdminService) validateProduct(in *ProductInput) error {
 			return err
 		}
 	}
+	if len(in.AgreementArticleIDs) > 0 {
+		var count int64
+		if err := s.db.Model(&model.Article{}).
+			Where("id IN ?", dedupeUint(in.AgreementArticleIDs)).Count(&count).Error; err != nil {
+			return err
+		}
+		if int(count) != len(dedupeUint(in.AgreementArticleIDs)) {
+			return ErrBadRequest("勾选的协议文章中有不存在项")
+		}
+	}
 	return nil
+}
+
+// dedupeUint 去重并保序，空值剔除。
+func dedupeUint(in []uint) []uint {
+	seen := make(map[uint]struct{}, len(in))
+	out := make([]uint, 0, len(in))
+	for _, v := range in {
+		if v == 0 {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
 }
 
 // stepEpsilon 是开通配置浮点校验的容差（绝对偏差）：

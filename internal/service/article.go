@@ -47,7 +47,7 @@ func (s *ArticleService) GetPublished(slug string) (*model.Article, error) {
 }
 
 // GetPublishedByID 按 ID 读取已发布的文章，未发布或不存在一律返回 404，
-// 避免通过公开接口探测草稿的存在。购买页按商品 agreement_article_id 解析用。
+// 避免通过公开接口探测草稿的存在。购买页按商品协议解析标题与 slug 用。
 func (s *ArticleService) GetPublishedByID(id uint) (*model.Article, error) {
 	if id == 0 {
 		return nil, ErrNotFound("文章不存在")
@@ -61,6 +61,21 @@ func (s *ArticleService) GetPublishedByID(id uint) (*model.Article, error) {
 		return nil, err
 	}
 	return &item, nil
+}
+
+// GetPublishedByIDs 批量按 ID 读取已发布文章（不含正文），顺序与传入一致，
+// 缺失或未发布的 ID 直接跳过（不报错）——购买页解析商品的多篇协议用。
+func (s *ArticleService) GetPublishedByIDs(ids []uint) ([]model.Article, error) {
+	out := make([]model.Article, 0, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var items []model.Article
+	if err := s.db.Where("id IN ? AND status = ?", ids, model.ArticlePublished).
+		Order("sort_order ASC, id ASC").Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 // ListPublished 返回全部已发布文章的索引（不含正文），按管理端排序。

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -89,7 +90,11 @@ func (s *RefundService) SavePolicy(in RefundPolicyInput) (model.RefundPolicyConf
 }
 
 // RefundCreateInput 是用户提交退款申请的入参。
+//
+// 推荐传 ServiceID（选择已开通的产品）；传了 ServiceID 时订单与支付记录
+// 自动解析，OrderID/PaymentID 仅作兜底（历史兼容，不推荐前端使用）。
 type RefundCreateInput struct {
+	ServiceID uint   `json:"service_id"`
 	PaymentID uint   `json:"payment_id"`
 	OrderID   uint   `json:"order_id"`
 	Reason    string `json:"reason"`
@@ -115,8 +120,22 @@ func (s *RefundService) Create(ctx context.Context, userID uint, in RefundCreate
 	if reason == "" {
 		return nil, ErrBadRequest("请填写退款原因")
 	}
-	if in.PaymentID == 0 && in.OrderID == 0 {
-		return nil, ErrBadRequest("请指定要退款的订单或支付记录")
+	if in.ServiceID == 0 && in.PaymentID == 0 && in.OrderID == 0 {
+		return nil, ErrBadRequest("请选择要退款的产品")
+	}
+
+	// 按产品申请：服务 → 订单（ServiceID 的来源），支付记录随后按订单解析。
+	if in.ServiceID != 0 {
+		var svc model.Service
+		if err := s.db.First(&svc, "id = ? AND user_id = ?", in.ServiceID, userID).Error; err != nil {
+			return nil, ErrNotFound("产品不存在")
+		}
+		if in.OrderID == 0 {
+			in.OrderID = svc.OrderID
+		}
+		if in.OrderID == 0 {
+			return nil, ErrBadRequest("该产品没有关联订单，请联系管理员处理")
+		}
 	}
 
 	// 锁定原支付意图（可选：余额支付订单没有意图）。
@@ -147,7 +166,22 @@ func (s *RefundService) Create(ctx context.Context, userID uint, in RefundCreate
 			return nil, ErrNotFound("订单不存在")
 		}
 	default:
-		return nil, ErrBadRequest("请指定要退款的订单或支付记录")
+		return nil, ErrBadRequest("请选择要退款的产品")
+	}
+
+	// 按订单自动补找已完成的支付记录（按产品申请时 ServiceID→OrderID 走到这）：
+	// 一个订单可能有多笔支付（失败重付），取最近一笔已完成的。
+	if payment == nil {
+		var pay model.ExternalPayment
+		err := s.db.Where("user_id = ? AND target_id = ? AND purpose = ? AND status = ?",
+			userID, order.ID, model.ExternalPaymentPurposeOrder, model.ExternalPaymentPaid).
+			Order("id DESC").First(&pay).Error
+		if err == nil {
+			payment = &pay
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		// 没有支付记录 = 纯余额支付订单，金额按订单总额退余额。
 	}
 
 	// 已有进行中的申请则拒绝重复提交。
@@ -210,6 +244,7 @@ func (s *RefundService) Create(ctx context.Context, userID uint, in RefundCreate
 	item := model.RefundRequest{
 		RefundNo:     no,
 		UserID:       userID,
+		ServiceID:    in.ServiceID,
 		PaymentID:    mapUint(payment, payment),
 		OrderID:      order.ID,
 		AmountCents:  paidCents,

@@ -109,6 +109,7 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	catalog.GET("/products/:id/os", h.ProductOS)
 	guarded.GET("/articles", h.Articles)
 	guarded.GET("/articles/by-id/:id", h.ArticleByID)
+	guarded.POST("/articles/by-ids", h.ArticlesByIDs)
 	guarded.GET("/articles/:slug", h.Article)
 	// 以下均需登录。
 	authed := guarded.Group("", middleware.RequireAuth(rt, h.Revoker()))

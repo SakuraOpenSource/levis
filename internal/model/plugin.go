@@ -161,6 +161,8 @@ type RefundRequest struct {
 	UserID   uint   `gorm:"index;not null" json:"user_id"`
 	// PaymentID 指向被退款的外部支付意图；余额支付（无意图）为 0。
 	PaymentID uint `gorm:"index" json:"payment_id"`
+	// ServiceID 是用户申请退款时选择的已开通产品；0 表示旧数据/按订单申请。
+	ServiceID uint `gorm:"index" json:"service_id"`
 	// OrderID 是关联订单，用于展示与策略校验；纯余额退款可为 0。
 	OrderID uint `gorm:"index" json:"order_id"`
 	// AmountCents 是申请退款金额（分），不得超过原支付实收（意图金额 + 余额抵扣）。

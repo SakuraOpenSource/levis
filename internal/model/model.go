@@ -234,6 +234,49 @@ type Spec struct {
 // 也不必为规格另开一张表 —— 规格只随商品整体读写，没有独立查询需求。
 type SpecList []Spec
 
+// JSONUintArray 是落库为 JSON 文本的 uint 数组（如商品勾选的多篇协议文章 ID）。
+// 空数组写 "[]"，NULL/空串读为 nil，语义与 SpecList 一致。
+type JSONUintArray []uint
+
+// Value 实现 driver.Valuer，写库时序列化为 JSON 文本。
+func (a JSONUintArray) Value() (driver.Value, error) {
+	if len(a) == 0 {
+		return "[]", nil
+	}
+	raw, err := json.Marshal([]uint(a))
+	if err != nil {
+		return nil, err
+	}
+	return string(raw), nil
+}
+
+// Scan 实现 sql.Scanner，读库时从 JSON 文本还原；兼容 NULL 与空串。
+func (a *JSONUintArray) Scan(src any) error {
+	if src == nil {
+		*a = nil
+		return nil
+	}
+	var raw []byte
+	switch v := src.(type) {
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		return fmt.Errorf("model: 无法把 %T 解析为 JSONUintArray", src)
+	}
+	if len(raw) == 0 {
+		*a = nil
+		return nil
+	}
+	var out []uint
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return errors.New("model: 字段不是合法的 JSON uint 数组")
+	}
+	*a = out
+	return nil
+}
+
 // Value 实现 driver.Valuer，写库时序列化为 JSON 文本。
 func (s SpecList) Value() (driver.Value, error) {
 	if len(s) == 0 {
@@ -299,7 +342,11 @@ type Product struct {
 	ProvisionConfig ProvisionSpec `gorm:"type:text" json:"provision_config"`
 	// AgreementArticleID 指向知识库文章：非空表示购买该商品前必须阅读并同意该协议。
 	// 为空（NULL）表示无需同意。
+	// AgreementArticleID 指向知识库文章（旧字段，单选兼容；与 AgreementArticleIDs 并存，
+	// 两者都为空表示购买前无需同意协议）。
 	AgreementArticleID *uint `gorm:"index" json:"agreement_article_id"`
+	// AgreementArticleIDs 是商品勾选的多篇协议文章（JSON 数组落 text 列）。
+	AgreementArticleIDs JSONUintArray `gorm:"type:text" json:"agreement_article_ids"`
 	// Region 是商品地域代码（cn/hk/tw/mo/jp/kr/sg/us/de/uk/fr/nl/au/ca/ru/global…
 	// …），空表示未设置。前端按 REGIONS 映射展示名称与旗帜（台湾展示中国国旗）。
 	Region string `gorm:"size:16;not null;default:''" json:"region"`

@@ -242,7 +242,7 @@ func formatSpecNumber(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
-// checkAgreement 校验购买协议：商品绑定了协议文章时必须传 agree=true。
+// checkAgreement 校验购买协议：商品绑定了协议文章（单选或多选任一非空）时必须传 agree=true。
 func checkAgreement(tx *gorm.DB, lines []OrderLine, agree bool) error {
 	if agree {
 		return nil
@@ -252,7 +252,7 @@ func checkAgreement(tx *gorm.DB, lines []OrderLine, agree bool) error {
 		if err := tx.First(&product, line.ProductID).Error; err != nil {
 			continue
 		}
-		if product.AgreementArticleID != nil {
+		if product.AgreementArticleID != nil || len(product.AgreementArticleIDs) > 0 {
 			return ErrBadRequest("请先阅读并同意商品协议后再下单")
 		}
 	}

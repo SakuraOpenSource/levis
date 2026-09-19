@@ -19,7 +19,7 @@ func (h *Handler) Article(c *gin.Context) {
 }
 
 // ArticleByID 按 ID 返回已发布的知识库文章，公开可读。
-// 购买页按商品 agreement_article_id 解析协议标题与 slug 用。
+// 购买页按商品协议解析协议标题与 slug 用。
 func (h *Handler) ArticleByID(c *gin.Context) {
 	id, ok := IDParam(c, "id")
 	if !ok {
@@ -27,6 +27,24 @@ func (h *Handler) ArticleByID(c *gin.Context) {
 	}
 	item, err := h.articles().GetPublishedByID(id)
 	respond(c, item, err)
+}
+
+// ArticlesByIDs 批量按 ID 返回已发布文章（不含正文），供购买页解析
+// 商品勾选的多篇协议。缺失或未发布的 ID 静默跳过。
+func (h *Handler) ArticlesByIDs(c *gin.Context) {
+	var in struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		Fail(c, 400, "BAD_REQUEST", "请求格式错误")
+		return
+	}
+	if len(in.IDs) > 50 {
+		Fail(c, 400, "BAD_REQUEST", "一次最多查询 50 篇文章")
+		return
+	}
+	items, err := h.articles().GetPublishedByIDs(in.IDs)
+	respond(c, items, err)
 }
 
 // AdminArticles 分页返回文章，支持 status 过滤。
