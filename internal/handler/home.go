@@ -44,6 +44,7 @@ func (h *Handler) AdminSiteSettings(c *gin.Context) {
 		"site_description":            description,
 		"traffic_price_per_gb_cents":  h.settings().TrafficPricePerGB(),
 		"lifecycle_terminate_enabled": h.settings().LifecycleTerminateEnabled(),
+		"has_site_icon":               h.settings().SiteIconPath() != "",
 	})
 }
 

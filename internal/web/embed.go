@@ -47,6 +47,17 @@ const notBuiltNotice = `Levis 后端已启动，但未找到前端产物。
 后端 API 仍可正常使用（前缀 /api）。
 `
 
+// SetFaviconProvider 注册站点自定义图标处理器（由 server 装配阶段注入）。
+// 图标存储在数据目录，web 包无法直接访问 settings/storage，因此用回调解耦；
+// 返回 nil 表示站点未设置自定义图标，/favicon.* 回退到前端内置文件。
+var SetFaviconProvider = func() http.Handler { return nil }
+
+// customFavicon 返回站点自定义图标处理器；未设置时 ok=false。
+func customFavicon() (http.Handler, bool) {
+	h := SetFaviconProvider()
+	return h, h != nil
+}
+
 // Handler 返回前端静态资源的处理器。
 //
 // 行为：命中真实文件则直接返回；否则回退到 index.html，以支持前端 history
@@ -63,7 +74,15 @@ func Handler() http.HandlerFunc {
 
 	fileServer := http.FileServer(http.FS(assets))
 	return func(w http.ResponseWriter, r *http.Request) {
+		// /favicon.ico / /favicon.svg：站点设置里传了自定义图标时优先返回，
+		// 让浏览器默认请求的 /favicon.ico 也能命中自定义图标。
 		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if name == "favicon.ico" || name == "favicon.svg" {
+			if iconHandler, ok := customFavicon(); ok {
+				iconHandler.ServeHTTP(w, r)
+				return
+			}
+		}
 		if name == "" || name == "." {
 			serveIndex(w, r, assets)
 			return

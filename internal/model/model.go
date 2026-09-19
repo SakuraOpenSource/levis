@@ -115,6 +115,8 @@ const (
 	// SettingRefundPolicy 是退款策略的 JSON 快照（model.RefundPolicyConfig）。
 	// 缺失时等价于「强制人工」——退款是资金出口，缺省保守。
 	SettingRefundPolicy = "refund_policy"
+	// SettingSiteIcon 存站点图标（favicon）在 storage 中的相对路径；空 = 未设置。
+	SettingSiteIcon = "site_icon"
 )
 
 // RefundPolicyConfig 是退款审批策略。
@@ -390,6 +392,9 @@ type ProvisionSpec struct {
 	// 弹性模式的流量包优先用 TrafficGB.UnitPriceCents（每步加价）；固定模式
 	// 的规格区间被归一清零，流量包定价只能落在这里。0 表示未定价。
 	TrafficPriceCents int64 `json:"traffic_price_cents,omitempty"`
+	// AgentID 是商品级固定的上游被控节点（接口商品选 virtualis 插件时可选）。
+	// 0 表示由上游自动选节点；买家在购买页选择的节点优先于本字段。
+	AgentID uint `json:"agent_id,omitempty"`
 }
 
 // Fixed 把一项规格归一为固定值。

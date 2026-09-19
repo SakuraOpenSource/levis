@@ -439,6 +439,24 @@ func (s *SettingService) Site() (name, description string) {
 	return name, description
 }
 
+// SiteIconPath 返回站点图标（favicon）的存储相对路径；空表示未设置。
+func (s *SettingService) SiteIconPath() string {
+	var row model.Setting
+	if err := s.db.First(&row, "key = ?", model.SettingSiteIcon).Error; err != nil {
+		return ""
+	}
+	return row.Value
+}
+
+// SaveSiteIconPath 记录站点图标的存储路径。iconPath 为空表示清除图标。
+func (s *SettingService) SaveSiteIconPath(iconPath string) error {
+	row := model.Setting{Key: model.SettingSiteIcon, Value: iconPath}
+	return s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"value"}),
+	}).Create(&row).Error
+}
+
 // SaveSiteSettings 保存安装后可编辑的站点名称与简介，返回落库后的值。
 func (s *SettingService) SaveSiteSettings(name, description string) (string, string, error) {
 	name = strings.TrimSpace(name)

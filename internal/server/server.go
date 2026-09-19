@@ -4,7 +4,11 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
+	"time"
+
+	"github.com/SakuraOpenSource/levis/internal/storage"
 
 	"github.com/gin-gonic/gin"
 
@@ -38,6 +42,28 @@ var uploadRoutes = map[string]bool{
 	"/api/admin/tickets/:id/replies": true,
 	"/api/kyc":                       true,
 	"/api/admin/plugins/install":     true,
+	"/api/admin/settings/site-icon":  true,
+}
+
+// allowedIconMimesMap 与 handler.allowedIconMimes 保持一致（跨包无法直接引用）。
+var allowedIconMimesMap = map[string]bool{
+	"image/png":                true,
+	"image/x-icon":             true,
+	"image/vnd.microsoft.icon": true,
+	"image/svg+xml":            true,
+}
+
+// sniffFileMime 嗅探文件头 MIME 并回绕读取位置（handler 包版本复用）。
+func sniffFileMime(file *os.File) (string, error) {
+	head := make([]byte, 512)
+	n, err := file.Read(head)
+	if err != nil && n == 0 {
+		return "", err
+	}
+	if _, serr := file.Seek(0, 0); serr != nil {
+		return "", serr
+	}
+	return http.DetectContentType(head[:n]), nil
 }
 
 // New 构造 gin 引擎，挂载 API 与前端静态资源。
@@ -108,6 +134,7 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	catalog.GET("/products/:id", h.Product)
 	catalog.GET("/products/:id/os", h.ProductOS)
 	catalog.GET("/products/:id/agents", h.ProductAgents)
+	guarded.GET("/site-icon", h.SiteIcon)
 	guarded.GET("/articles", h.Articles)
 	guarded.GET("/articles/by-id/:id", h.ArticleByID)
 	guarded.POST("/articles/by-ids", h.ArticlesByIDs)
@@ -223,6 +250,9 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	admin.POST("/interfaces", h.AdminCreateInterface)
 	admin.PATCH("/interfaces/:id", h.AdminUpdateInterface)
 	admin.POST("/interfaces/:id/test", h.AdminTestInterface)
+	admin.GET("/interfaces/:id/agents", h.AdminInterfaceAgents)
+	admin.POST("/settings/site-icon", h.AdminUploadSiteIcon)
+	admin.DELETE("/settings/site-icon", h.AdminRemoveSiteIcon)
 	admin.DELETE("/interfaces/:id", h.AdminDeleteInterface)
 	admin.GET("/users/:id/services", h.AdminUserServices)
 	admin.POST("/users/:id/services", h.AdminCreateService)
@@ -301,6 +331,34 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	mountOpenAPI(engine, rt, h)
 	// 插件回调同理，且更敏感 —— 详见 pluginapi.go 的说明。
 	mountPluginAPI(engine, rt, h)
+
+	// 站点自定义图标：注入 web 包，让 /favicon.ico / /favicon.svg 也命中
+	// 管理后台上传的图标（浏览器默认请求路径，不必依赖 index.html 里的 <link>）。
+	web.SetFaviconProvider = func() http.Handler {
+		set := service.NewSettingService(rt.DB())
+		path := set.SiteIconPath()
+		if path == "" {
+			return nil
+		}
+		store := storage.New(rt.DataDir())
+		file, err := store.Open(path)
+		if err != nil {
+			return nil
+		}
+		mime, err := sniffFileMime(file)
+		if err != nil || !allowedIconMimesMap[mime] {
+			file.Close()
+			return nil
+		}
+		// sendFile 之外复用标准库：内容类型显式设置，避免嗅探不一致。
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer file.Close()
+			w.Header().Set("Content-Type", mime)
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("Cache-Control", "public, max-age=300")
+			http.ServeContent(w, r, "favicon", time.Time{}, file)
+		})
+	}
 
 	// 未匹配的 API 路径返回 JSON 404；其余交给前端。
 	frontend := gin.WrapF(web.Handler())

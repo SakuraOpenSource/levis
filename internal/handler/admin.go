@@ -264,6 +264,17 @@ func (h *Handler) AdminTestInterface(c *gin.Context) {
 	OK(c, gin.H{"message": "接口可用"})
 }
 
+// AdminInterfaceAgents 返回指定接口上游的可用被控节点列表，
+// 供商品管理表单（选 virtualis 接口后）选择部署节点。
+func (h *Handler) AdminInterfaceAgents(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.upstream().InterfaceAgents(id)
+	respond(c, gin.H{"items": items}, err)
+}
+
 // AdminUpstreamProducts 返回上游插件的产品列表，供管理端选择上游商品时使用。
 func (h *Handler) AdminUpstreamProducts(c *gin.Context) {
 	if !h.pluginsReady(c) {

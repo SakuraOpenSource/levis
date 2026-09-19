@@ -164,6 +164,31 @@ func (s *UpstreamService) Test(id uint) error {
 	return nil
 }
 
+// InterfaceAgents 返回指定接口上游的可用被控节点（管理端商品表单用）。
+// 上游不可达或老插件未实现时返回错误信息由调用方展示；节点列表本身可为空。
+func (s *UpstreamService) InterfaceAgents(interfaceID uint) ([]*pb.UpstreamAgent, error) {
+	iface, err := s.Interface(interfaceID)
+	if err != nil {
+		return nil, err
+	}
+	if s.plugins == nil {
+		return nil, ErrBadRequest("插件系统未启用")
+	}
+	reply, err := s.plugins.ListAgents(context.Background(), iface.PluginID, &pb.ListAgentsRequest{
+		InterfaceConfig: optionMapToProto(iface.Config),
+	})
+	if err != nil {
+		if status.Code(err) == codes.Unimplemented {
+			return []*pb.UpstreamAgent{}, nil
+		}
+		return nil, err
+	}
+	if reply.GetError() != "" {
+		return nil, ErrBadRequest("上游返回错误: %s", reply.GetError())
+	}
+	return reply.GetAgents(), nil
+}
+
 // ProductAgents 返回接口商品购买时可选的被控节点：调用插件的 ListAgents。
 // 非接口商品或老插件未实现时返回空列表，购买页据此隐藏节点选择而不是 400。
 func (s *UpstreamService) ProductAgents(productID uint) ([]*pb.UpstreamAgent, error) {

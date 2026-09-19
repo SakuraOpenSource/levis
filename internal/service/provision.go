@@ -94,6 +94,10 @@ func defaultProvisionOptions(cfg model.ProvisionSpec) map[string]string {
 	if v := specValue(cfg.TrafficGB); v > 0 {
 		options["traffic_gb"] = strconv.Itoa(int(v))
 	}
+	// 商品级固定节点：随默认选配下传，插件据此把实例固定到指定被控。
+	if cfg.AgentID > 0 {
+		options["agent_id"] = strconv.FormatUint(uint64(cfg.AgentID), 10)
+	}
 	return options
 }
 
