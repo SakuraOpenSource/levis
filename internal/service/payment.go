@@ -304,10 +304,12 @@ func settleTargetTx(tx *gorm.DB, orders *OrderService, billing *BillingService, 
 
 // finishRenewalUpstream 是续费类支付提交后的上游对账：钱已落账，上游续费
 // 失败只记 failed（见 reconcileUpstreamRenewal），不回滚支付。
+// 因 traffic/expired 自动停机的服务在对账成功后恢复开机。
 func (s *PaymentService) finishRenewalUpstream(purpose string, targetID uint) {
 	switch purpose {
 	case model.ExternalPaymentPurposeRenewal:
 		s.billing.reconcileUpstreamRenewal(targetID)
+		s.resumeAfterUpstreamRenewal(targetID)
 	case model.ExternalPaymentPurposeInvoice:
 		var invoice model.Invoice
 		if err := s.db.Preload("Items").First(&invoice, "id = ?", targetID).Error; err != nil {
@@ -319,12 +321,25 @@ func (s *PaymentService) finishRenewalUpstream(purpose string, targetID uint) {
 		}
 		if invoice.ServiceID != nil && *invoice.ServiceID != 0 {
 			s.billing.reconcileUpstreamRenewal(*invoice.ServiceID)
+			s.resumeAfterUpstreamRenewal(*invoice.ServiceID)
 		}
 	}
 }
 
+// resumeAfterUpstreamRenewal 在上游续费对账完成后恢复自动停机服务。
+// 对账失败的服务已被置为 failed，这里读到 failed 就不会恢复，钱不丢、
+// 机器不假装在线，与 renew() 的语义一致。
+func (s *PaymentService) resumeAfterUpstreamRenewal(serviceID uint) {
+	var svc model.Service
+	if err := s.db.First(&svc, serviceID).Error; err != nil {
+		return
+	}
+	ResumeSuspendedService(s.db, s.plugins, &svc, suspendReasonTraffic, suspendReasonExpired)
+}
+
 // finishTrafficUpstream 是流量包支付提交后的上游通知：配额已在本地累加，
-// 上游通知失败只记日志（见 ReconcileTrafficUpstream），不回滚支付。
+// 上游通知失败只记日志（见 ReconcileTrafficUpstream），不回滚支付；
+// 本地因流量超限停机的服务同时自动恢复。
 func (s *PaymentService) finishTrafficUpstream(purpose string, targetID uint) {
 	if purpose != model.ExternalPaymentPurposeInvoice {
 		return
@@ -333,12 +348,16 @@ func (s *PaymentService) finishTrafficUpstream(purpose string, targetID uint) {
 	if err := s.db.Preload("Items").First(&invoice, "id = ?", targetID).Error; err != nil {
 		return
 	}
-	if !isTrafficInvoice(&invoice) {
+	if !isTrafficInvoice(&invoice) || invoice.ServiceID == nil || *invoice.ServiceID == 0 {
 		return
 	}
 	extraGB, ok := parseTrafficDescription(invoice.Items[0].Description)
 	if !ok {
 		return
+	}
+	var svc model.Service
+	if err := s.db.First(&svc, *invoice.ServiceID).Error; err == nil {
+		ResumeSuspendedService(s.db, s.plugins, &svc, "traffic")
 	}
 	s.billing.ReconcileTrafficUpstream(*invoice.ServiceID, extraGB)
 }

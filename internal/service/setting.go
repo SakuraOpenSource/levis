@@ -500,3 +500,26 @@ func (s *SettingService) SaveTrafficPricePerGB(cents int64) error {
 		DoUpdates: clause.AssignmentColumns([]string{"value"}),
 	}).Create(&row).Error
 }
+
+// LifecycleTerminateEnabled 读取生命周期删机开关；缺省关闭（干跑模式）。
+func (s *SettingService) LifecycleTerminateEnabled() bool {
+	var row model.Setting
+	if err := s.db.First(&row, "key = ?", model.SettingLifecycleTerminate).Error; err != nil {
+		return false
+	}
+	return row.Value == "1"
+}
+
+// SaveLifecycleTerminateEnabled 保存生命周期删机开关。
+// 开启前建议先在日志里观察干跑清单，确认无误删风险。
+func (s *SettingService) SaveLifecycleTerminateEnabled(enabled bool) error {
+	value := ""
+	if enabled {
+		value = "1"
+	}
+	row := model.Setting{Key: model.SettingLifecycleTerminate, Value: value}
+	return s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"value"}),
+	}).Create(&row).Error
+}

@@ -23,6 +23,7 @@ import (
 	"github.com/SakuraOpenSource/levis/internal/pluginhost"
 	"github.com/SakuraOpenSource/levis/internal/runtime"
 	"github.com/SakuraOpenSource/levis/internal/server"
+	"github.com/SakuraOpenSource/levis/internal/service"
 	"github.com/SakuraOpenSource/levis/internal/web"
 )
 
@@ -104,6 +105,26 @@ func run(dataDir, listenOverride string, debug bool) error {
 	// 与 plugins.Close 同理，defer 保证它在 srv.Shutdown 之后才跑。顺序上先停
 	// 通知队列再停插件：队列里的信要靠插件发出去，反过来会让最后几封信必然失败。
 	defer closeHandler()
+
+	// 已安装站点启动生命周期执法：流量超限停机、到期停机并在宽限期后删机。
+	// 未安装时在同一 goroutine 里等待安装完成（安装只调 rt.Activate，没有
+	// 通知钩子，轮询 5 秒粒度足够），避免“装完必须重启才执法”。
+	var stopLifecycle context.CancelFunc
+	{
+		lifecycleCtx, cancel := context.WithCancel(context.Background())
+		stopLifecycle = cancel
+		go func() {
+			for !rt.Installed() {
+				select {
+				case <-lifecycleCtx.Done():
+					return
+				case <-time.After(5 * time.Second):
+				}
+			}
+			service.NewLifecycleService(rt.DB(), plugins).Start(lifecycleCtx)
+		}()
+	}
+	defer stopLifecycle()
 
 	srv := &http.Server{
 		Addr:              addr,

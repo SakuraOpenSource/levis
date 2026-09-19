@@ -102,6 +102,16 @@ func (h *Handler) ServiceUpstream(c *gin.Context) {
 	respond(c, info, err)
 }
 
+// ServiceTraffic 返回服务的累计流量与配额进度，供前端进度条使用。
+func (h *Handler) ServiceTraffic(c *gin.Context) {
+	id, ok := IDParam(c, "id")
+	if !ok {
+		return
+	}
+	progress, err := h.billing().TrafficProgress(httpx.CurrentUserID(c), id)
+	respond(c, progress, err)
+}
+
 // ServiceMetrics 返回上游主机的实时监控数据（CPU、内存、带宽）。
 func (h *Handler) ServiceMetrics(c *gin.Context) {
 	id, ok := IDParam(c, "id")

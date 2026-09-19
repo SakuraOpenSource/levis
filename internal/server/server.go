@@ -141,6 +141,7 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	services.POST("/:id/retry", h.RetryService)
 	services.POST("/:id/power", h.ServicePower)
 	services.GET("/:id/upstream", h.ServiceUpstream)
+	services.GET("/:id/traffic", h.ServiceTraffic)
 	services.GET("/:id/metrics", h.ServiceMetrics)
 	// VNC：先查可用性，再用同源 ws 代理连控制台。
 	services.GET("/:id/vnc", h.ServiceVNC)

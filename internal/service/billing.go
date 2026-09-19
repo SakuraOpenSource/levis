@@ -126,8 +126,14 @@ func (s *BillingService) renew(userID, serviceID uint, debit bool) (*RenewResult
 	// （与订单先付后开通的可重试模式一致）。免费服务同样走此路径。
 	if out != nil && out.Service != nil && needsUpstreamRenew(out.Service) {
 		s.reconcileUpstreamRenewal(out.Service.ID)
+	}
+	if out != nil && out.Service != nil {
 		var reloaded model.Service
 		if err := s.db.First(&reloaded, out.Service.ID).Error; err == nil {
+			// 续费成功后恢复因 traffic/expired 自动停机的实例；失败状态不恢复。
+			if reloaded.Status == model.ServiceSuspended {
+				ResumeSuspendedService(s.db, s.plugins, &reloaded, "traffic", "expired")
+			}
 			out.Service = &reloaded
 		}
 	}
@@ -167,7 +173,8 @@ func (s *BillingService) reconcileUpstreamRenewal(serviceID uint) {
 	_ = s.db.Model(&model.Service{}).Where("id = ?", svc.ID).Updates(updates).Error
 }
 
-// loadRenewableService 读取并校验可续费的服务：必须是在用中且非一次性付费。
+// loadRenewableService 读取并校验可续费的服务：active，或因 traffic/expired 自动
+// 停机的服务。手动停机与 terminated 不允许通过续费悄悄恢复。
 func (s *BillingService) loadRenewableService(tx *gorm.DB, userID, serviceID uint) (*model.Service, error) {
 	var svc model.Service
 	if err := tx.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
@@ -176,8 +183,9 @@ func (s *BillingService) loadRenewableService(tx *gorm.DB, userID, serviceID uin
 		}
 		return nil, err
 	}
-	if svc.Status != model.ServiceActive {
-		return nil, ErrConflict("只有使用中的服务才能续费")
+	if svc.Status != model.ServiceActive &&
+		!(svc.Status == model.ServiceSuspended && (svc.SuspendReason == "traffic" || svc.SuspendReason == "expired")) {
+		return nil, ErrConflict("只有使用中的服务或自动停机的服务才能续费")
 	}
 	if svc.BillingCyc == model.CycleOneTime {
 		return nil, ErrBadRequest("一次性付费服务无需续费")
@@ -195,19 +203,37 @@ func (s *BillingService) applyRenewalTx(tx *gorm.DB, svc *model.Service, userID 
 		base = *svc.ExpiresAt
 	}
 	next := model.AdvanceCycle(base, svc.BillingCyc)
-	if err := tx.Model(&model.Service{}).Where("id = ?", svc.ID).
-		Updates(map[string]any{
-			"next_due_at":     next,
-			"expires_at":      next,
-			"status":          model.ServiceActive,
-			"provision_error": "",
-		}).Error; err != nil {
-		return time.Time{}, err
+	keepSuspended := svc.Status == model.ServiceSuspended && (svc.SuspendReason == "traffic" || svc.SuspendReason == "expired") && needsUpstreamRenew(svc)
+	updates := map[string]any{
+		"next_due_at":     next,
+		"expires_at":      next,
+		"status":          model.ServiceActive,
+		"suspend_reason":  "",
+		"provision_error": "",
+	}
+	if keepSuspended {
+		updates["status"] = model.ServiceSuspended
+		updates["suspend_reason"] = svc.SuspendReason
+	}
+	// 认领式更新：只有仍处于读取时的可续费状态才生效。余额续费与外部支付
+	// 回调并发时（本次改动把 suspended 也放行续费），双方都读到 suspended
+	// 会导致双重扣款+双倍时长；RowsAffected==0 的一方在此返回 409，支付侧
+	// 按「状态已变更」处理，不会重复落账。
+	res := tx.Model(&model.Service{}).
+		Where("id = ? AND status = ?", svc.ID, svc.Status).
+		Updates(updates)
+	if res.Error != nil {
+		return time.Time{}, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return time.Time{}, ErrConflict("服务状态已变更，请刷新后重试")
 	}
 	svc.NextDueAt = &next
 	svc.ExpiresAt = &next
-	svc.Status = model.ServiceActive
 	svc.ProvisionError = ""
+	if !keepSuspended {
+		svc.Status, svc.SuspendReason = model.ServiceActive, ""
+	}
 	return next, nil
 }
 
@@ -794,7 +820,8 @@ func trafficUnitPrice(db *gorm.DB, product *model.Product) (unitPriceCents int64
 	return 0, 0, ErrBadRequest("该服务暂未设置流量包单价，请联系管理员")
 }
 
-// loadTrafficService 读取可加购流量的服务：归属校验 + 仅使用中可加购。
+// loadTrafficService 读取可加购流量的服务：active，或因流量超限自动停机的服务。
+// 到期停机应走续费，不允许只买流量包绕过到期限制。
 func (s *BillingService) loadTrafficService(tx *gorm.DB, userID, serviceID uint) (*model.Service, error) {
 	var svc model.Service
 	if err := tx.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
@@ -803,8 +830,8 @@ func (s *BillingService) loadTrafficService(tx *gorm.DB, userID, serviceID uint)
 		}
 		return nil, err
 	}
-	if svc.Status != model.ServiceActive {
-		return nil, ErrConflict("只有使用中的服务才能购买流量包")
+	if svc.Status != model.ServiceActive && !(svc.Status == model.ServiceSuspended && svc.SuspendReason == "traffic") {
+		return nil, ErrConflict("只有使用中的服务或流量超限停机的服务才能购买流量包")
 	}
 	return &svc, nil
 }
@@ -957,15 +984,7 @@ func (s *BillingService) ReconcileTrafficUpstream(serviceID uint, extraGB int) {
 	if svc.UpstreamPluginID == "" || svc.UpstreamHostID == "" || s.plugins == nil {
 		return
 	}
-	total := int(svc.TrafficExtraGB)
-	var items []model.OrderItem
-	if err := s.db.Where("order_id = ?", svc.OrderID).Find(&items).Error; err == nil {
-		for _, it := range items {
-			if v, err := strconv.Atoi(it.Options["traffic_gb"]); err == nil && v > 0 {
-				total += v
-			}
-		}
-	}
+	total := TrafficQuotaTotalGB(s.db, &svc)
 	ifaceConfig, err := interfaceConfigForService(s.db, &svc)
 	if err != nil {
 		log.Printf("流量包上游通知 service=%d 失败: %v", svc.ID, err)

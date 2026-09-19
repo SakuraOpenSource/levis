@@ -108,6 +108,10 @@ const (
 	// SettingHomeConfig 是公开主页的 JSON 配置，结构见 service.HomeConfig。
 	// 未配置或关闭时公开 bootstrap 不下发 home 字段。
 	SettingHomeConfig = "home_config"
+	// SettingLifecycleTerminate 是生命周期删机开关："1"=允许到期宽限期满后
+	// 自动 TERMINATE 上游实例，其他值或缺省=干跑（只记日志不删除）。
+	// 破坏性动作默认关：先让到期停机上线观察清单，管理员确认后再开启。
+	SettingLifecycleTerminate = "lifecycle_terminate_enabled"
 )
 
 // User 是系统用户。普通用户与管理员共用此表，由 Role 区分。
@@ -484,6 +488,24 @@ type Service struct {
 	// TrafficExtraGB 是售后加购累计的额外流量配额（GB，上游不计量时仅本地生效）。
 	// 下单时的 traffic_gb 选配只计入开通快照，不落本字段；结清流量包账单时累加。
 	TrafficExtraGB int64 `gorm:"not null;default:0" json:"traffic_extra_gb"`
+	// SuspendReason 记录自动停机原因：""=无，traffic=流量超限停机，expired=到期停机。
+	// 管理员手动停机不写本字段，因此不会被到期删机流程误删（见 lifecycle）。
+	SuspendReason string `gorm:"size:16;not null;default:''" json:"suspend_reason"`
+	// SuspendedAt 是自动停机发生时刻；宽限期从实际停机时刻起算而非 expires_at
+	// （上游 SUSPEND 反复失败可能让停机远晚于到期，按到期算会立刻删机）。
+	// NULL 表示未自动停机或存量数据——删机查询对 NULL 不命中，方向安全。
+	SuspendedAt *time.Time `json:"suspended_at"`
+	// ResumePending 标记「钱已收、前置条件已满足，但上游开机失败待重试」：
+	// 生命周期巡检每轮按此重试（retryPendingResumes），成功后清空。
+	ResumePending bool `gorm:"not null;default:false" json:"-"`
+	// TrafficUsedBytes 是 Levis 侧差分累计的流量用量（rx+tx 字节）。上游插件
+	// 的 metrics 只给瞬时计数器（重启清零），这里在每次采样时做差分累加，
+	// 计数器回退（重启/重装）时把当前值视为新基线、已累计值保留。
+	TrafficUsedBytes int64 `gorm:"not null;default:0" json:"traffic_used_bytes"`
+	// TrafficLastRxBytes / TrafficLastTxBytes 是上次采样时的瞬时计数器，
+	// 用于差分；仅服务端使用，不进 API 响应。
+	TrafficLastRxBytes int64 `gorm:"not null;default:0" json:"-"`
+	TrafficLastTxBytes int64 `gorm:"not null;default:0" json:"-"`
 	// UpstreamPluginID 非空表示该服务由上游插件开通，值为插件 ID。
 	UpstreamPluginID string `gorm:"size:64;default:''" json:"upstream_plugin_id"`
 	// UpstreamHostID 是上游开通后返回的服务实例 ID，续费等操作用它定位上游资源。

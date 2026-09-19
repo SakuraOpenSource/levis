@@ -32,15 +32,18 @@ type AdminSiteSettingsRequest struct {
 	// TrafficPricePerGBCents 是流量包兜底单价（分/GB）。用指针区分"未携带"与
 	// "显式清零"：旧客户端不传这个字段时不应把已配好的价格清掉，0 表示清除定价。
 	TrafficPricePerGBCents *int64 `json:"traffic_price_per_gb_cents"`
+	// LifecycleTerminateEnabled 是生命周期删机开关。指针同理：未携带不改。
+	LifecycleTerminateEnabled *bool `json:"lifecycle_terminate_enabled"`
 }
 
 // AdminSiteSettings 返回安装后可编辑的站点设置（名称、简介与流量包兜底单价）。
 func (h *Handler) AdminSiteSettings(c *gin.Context) {
 	name, description := h.settings().Site()
 	OK(c, gin.H{
-		"site_name":                  name,
-		"site_description":           description,
-		"traffic_price_per_gb_cents": h.settings().TrafficPricePerGB(),
+		"site_name":                   name,
+		"site_description":            description,
+		"traffic_price_per_gb_cents":  h.settings().TrafficPricePerGB(),
+		"lifecycle_terminate_enabled": h.settings().LifecycleTerminateEnabled(),
 	})
 }
 
@@ -65,9 +68,18 @@ func (h *Handler) AdminUpdateSiteSettings(c *gin.Context) {
 		}
 		price = *req.TrafficPricePerGBCents
 	}
+	terminateEnabled := h.settings().LifecycleTerminateEnabled()
+	if req.LifecycleTerminateEnabled != nil {
+		if err := h.settings().SaveLifecycleTerminateEnabled(*req.LifecycleTerminateEnabled); err != nil {
+			respond(c, nil, err)
+			return
+		}
+		terminateEnabled = *req.LifecycleTerminateEnabled
+	}
 	OK(c, gin.H{
-		"site_name":                  name,
-		"site_description":           description,
-		"traffic_price_per_gb_cents": price,
+		"site_name":                   name,
+		"site_description":            description,
+		"traffic_price_per_gb_cents":  price,
+		"lifecycle_terminate_enabled": terminateEnabled,
 	})
 }

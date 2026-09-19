@@ -866,6 +866,12 @@ func (s *AdminService) SetServiceStatus(serviceID uint, status string) (*model.S
 		return nil, err
 	}
 	if item.Status == status {
+		// 重复请求也清一次自动停机原因：管理员对已自动停机的服务点「暂停」
+		// 是接管语义（不再让 lifecycle 继续管它）；不清的话宽限期照跑。
+		if err := s.db.Model(&item).Update("suspend_reason", "").Error; err != nil {
+			return nil, err
+		}
+		item.SuspendReason = ""
 		return &item, nil
 	}
 
@@ -880,10 +886,16 @@ func (s *AdminService) SetServiceStatus(serviceID uint, status string) (*model.S
 		}
 	}
 
-	if err := s.db.Model(&item).Update("status", status).Error; err != nil {
+	// 手动变更一律清空自动停机原因：手动暂停不是 lifecycle 的自动暂停，
+	// 残留的 expired/traffic 标记会让宽限期删机把手动停机误判为到期停机。
+	if err := s.db.Model(&item).Updates(map[string]any{
+		"status":         status,
+		"suspend_reason": "",
+	}).Error; err != nil {
 		return nil, err
 	}
 	item.Status = status
+	item.SuspendReason = ""
 	return &item, nil
 }
 
