@@ -130,16 +130,18 @@ func (h *Handler) RemoveCartItem(c *gin.Context) {
 	respond(c, view, err)
 }
 
-// CreateOrderRequest 是购物车下单的入参，agree 表示已同意购买协议。
+// CreateOrderRequest 是购物车下单的入参，agree 表示已同意购买协议，
+// coupon_code 非空时核销该优惠码。
 type CreateOrderRequest struct {
-	Agree bool `json:"agree"`
+	Agree      bool   `json:"agree"`
+	CouponCode string `json:"coupon_code"`
 }
 
 // CreateOrder 用当前购物车创建待支付订单。
 func (h *Handler) CreateOrder(c *gin.Context) {
 	var req CreateOrderRequest
 	_ = c.ShouldBindJSON(&req)
-	order, err := h.orders().CreateFromCart(httpx.CurrentUserID(c), req.Agree)
+	order, err := h.orders().CreateFromCartCoupon(httpx.CurrentUserID(c), req.CouponCode, req.Agree)
 	respond(c, order, err)
 }
 

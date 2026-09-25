@@ -289,6 +289,16 @@ func truncateProvisionError(s string) string {
 // agree 为 true 表示用户已同意商品绑定的购买协议。
 func (s *OrderService) CreateFromCart(userID uint, agree ...bool) (*model.Order, error) {
 	agreed := len(agree) > 0 && agree[0]
+	return s.createFromCart(userID, "", agreed)
+}
+
+// CreateFromCartCoupon 与 CreateFromCart 相同，但带优惠码核销。
+// 空码等价于不使用优惠码。
+func (s *OrderService) CreateFromCartCoupon(userID uint, couponCode string, agree bool) (*model.Order, error) {
+	return s.createFromCart(userID, couponCode, agree)
+}
+
+func (s *OrderService) createFromCart(userID uint, couponCode string, agreed bool) (*model.Order, error) {
 	var order model.Order
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var items []model.CartItem
@@ -307,7 +317,7 @@ func (s *OrderService) CreateFromCart(userID uint, agree ...bool) (*model.Order,
 				BillingCyc: item.BillingCyc,
 			})
 		}
-		if err := s.create(tx, userID, lines, agreed, &order); err != nil {
+		if err := s.create(tx, userID, lines, agreed, couponCode, &order); err != nil {
 			return err
 		}
 		return s.cart.Clear(tx, userID)
@@ -323,17 +333,26 @@ func (s *OrderService) CreateFromCart(userID uint, agree ...bool) (*model.Order,
 // 开放接口用它下单：机器调用与用户浏览器里的购物车是两回事，共用一个购物车
 // 会让 API 下单把用户正在挑的东西一并结掉。
 func (s *OrderService) CreateDirect(userID uint, lines []OrderLine, agree ...bool) (*model.Order, error) {
+	agreed := len(agree) > 0 && agree[0]
+	return s.createDirect(userID, lines, "", agreed)
+}
+
+// CreateDirectCoupon 与 CreateDirect 相同，但带优惠码核销。
+func (s *OrderService) CreateDirectCoupon(userID uint, lines []OrderLine, couponCode string, agree bool) (*model.Order, error) {
+	return s.createDirect(userID, lines, couponCode, agree)
+}
+
+func (s *OrderService) createDirect(userID uint, lines []OrderLine, couponCode string, agreed bool) (*model.Order, error) {
 	if len(lines) == 0 {
 		return nil, ErrBadRequest("请至少提供一条商品明细")
 	}
 	if len(lines) > MaxOrderLines {
 		return nil, ErrBadRequest("单笔订单最多 %d 条明细", MaxOrderLines)
 	}
-	agreed := len(agree) > 0 && agree[0]
 
 	var order model.Order
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		return s.create(tx, userID, lines, agreed, &order)
+		return s.create(tx, userID, lines, agreed, couponCode, &order)
 	})
 	if err != nil {
 		return nil, err
@@ -345,7 +364,8 @@ func (s *OrderService) CreateDirect(userID uint, lines []OrderLine, agree ...boo
 //
 // 账单在下单时即建（unpaid），支付时只标记已付：外部支付已收钱后本地必须有
 // 对应的待付账单可结算，否则会出现「钱已收、账对不上」的悬空。
-func (s *OrderService) create(tx *gorm.DB, userID uint, lines []OrderLine, agree bool, out *model.Order) error {
+// couponCode 非空时在订单落库后核销并回填减免快照，TotalCents 为减免后金额。
+func (s *OrderService) create(tx *gorm.DB, userID uint, lines []OrderLine, agree bool, couponCode string, out *model.Order) error {
 	if len(lines) == 0 {
 		return ErrBadRequest("请至少提供一条商品明细")
 	}
@@ -378,6 +398,25 @@ func (s *OrderService) create(tx *gorm.DB, userID uint, lines []OrderLine, agree
 	}
 	if err := tx.Create(&orderItems).Error; err != nil {
 		return err
+	}
+
+	// 优惠码核销放在订单落库之后（核销记录需要 order_id），同一事务内回填
+	// 减免快照与应付总额；校验失败（过期/超限/门槛不足）整个事务回滚。
+	if couponCode != "" {
+		discount, normalized, err := applyCoupon(tx, userID, couponCode, orderItems, order.ID, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if discount > 0 {
+			total -= discount
+			if err := tx.Model(&order).Updates(map[string]any{
+				"total_cents":           total,
+				"coupon_code":           normalized,
+				"coupon_discount_cents": discount,
+			}).Error; err != nil {
+				return err
+			}
+		}
 	}
 
 	// 下单即建待付账单，明细按商品快照逐份展开，此时不关联服务。
@@ -810,6 +849,7 @@ func (s *OrderService) provisionUpstream(tx *gorm.DB, userID uint, product *mode
 }
 
 // Cancel 取消待支付订单，并同步取消其未付账单。
+// 订单若核销过优惠码，同一事务内回滚次数（可再次使用）。
 func (s *OrderService) Cancel(userID, orderID uint) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.Order{}).
@@ -820,6 +860,9 @@ func (s *OrderService) Cancel(userID, orderID uint) error {
 		}
 		if result.RowsAffected == 0 {
 			return ErrConflict("订单不存在或状态不允许取消")
+		}
+		if err := releaseCoupon(tx, orderID); err != nil {
+			return err
 		}
 		if err := tx.Model(&model.Invoice{}).
 			Where("order_id = ? AND status = ?", orderID, model.InvoiceUnpaid).
