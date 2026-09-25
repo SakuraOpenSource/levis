@@ -165,6 +165,9 @@ func (h *Handler) pluginSvc() *service.PluginService {
 func (h *Handler) articles() *service.ArticleService {
 	return service.NewArticleService(h.db())
 }
+func (h *Handler) coupons() *service.CouponService {
+	return service.NewCouponService(h.db())
+}
 
 // respond 把 service 层错误映射为 HTTP 响应；err 为 nil 时返回 data。
 //

@@ -154,6 +154,8 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	cart.POST("/items", h.AddToCart)
 	cart.PATCH("/items/:id", h.UpdateCartItem)
 	cart.DELETE("/items/:id", h.RemoveCartItem)
+	// 优惠码试算：只读不核销，购物车页输入码后实时算减免。
+	cart.POST("/coupon/preview", h.CartCouponPreview)
 
 	orders := authed.Group("/orders")
 	orders.GET("", h.Orders)
@@ -272,6 +274,13 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	admin.GET("/articles/:id", h.AdminArticle)
 	admin.PATCH("/articles/:id", h.AdminUpdateArticle)
 	admin.DELETE("/articles/:id", h.AdminDeleteArticle)
+	// 优惠码管理：CRUD + 批量生成。
+	admin.GET("/coupons", h.AdminCoupons)
+	admin.POST("/coupons", h.AdminCreateCoupon)
+	admin.POST("/coupons/generate", h.AdminGenerateCoupons)
+	admin.GET("/coupons/:id", h.AdminCoupon)
+	admin.PATCH("/coupons/:id", h.AdminUpdateCoupon)
+	admin.DELETE("/coupons/:id", h.AdminDeleteCoupon)
 	admin.GET("/payment-plugins", h.AdminPaymentPlugins)
 	admin.GET("/payment-methods", h.AdminPaymentMethods)
 	admin.POST("/payment-methods", h.AdminCreatePaymentMethod)

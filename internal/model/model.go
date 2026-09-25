@@ -502,6 +502,64 @@ type CartItem struct {
 	Product    *Product `gorm:"foreignKey:ProductID" json:"product,omitempty"`
 }
 
+// 优惠码状态。
+const (
+	CouponActive   = "active"
+	CouponDisabled = "disabled"
+)
+
+// 优惠码折扣类型。
+const (
+	CouponTypePercent = "percent" // 打折（PercentOff 为减免百分比）
+	CouponTypeFixed   = "fixed"   // 立减（AmountCents 为减免金额）
+)
+
+// Coupon 是管理员创建的优惠码。
+//
+// 校验与核销的时序约定：购物车页只做「试算」（不占次数），真正核销发生在
+// 订单创建事务里 —— 用原子 UPDATE 守住 MaxUses，订单取消时回滚次数。
+type Coupon struct {
+	Base
+	// Code 统一以大写存储与比对；展示时原样输出。
+	Code string `gorm:"uniqueIndex;size:64;not null" json:"code"`
+	Name string `gorm:"size:128;not null;default:''" json:"name"`
+	// Type 是折扣类型：percent=按百分比减免、fixed=固定金额减免。
+	Type string `gorm:"size:16;not null;default:percent" json:"type"`
+	// PercentOff 是 percent 类型的减免百分比（1-99，20 表示减 20%）。
+	PercentOff int `gorm:"not null;default:0" json:"percent_off"`
+	// AmountCents 是 fixed 类型的减免金额（分）。
+	AmountCents int64 `gorm:"not null;default:0" json:"amount_cents"`
+	// MaxDiscountCents 是 percent 类型单笔封顶减免；0 = 不封顶。
+	MaxDiscountCents int64 `gorm:"not null;default:0" json:"max_discount_cents"`
+	// MinOrderCents 是参与商品小计的使用门槛；0 = 无门槛。
+	MinOrderCents int64      `gorm:"not null;default:0" json:"min_order_cents"`
+	Status        string     `gorm:"size:16;not null;default:active" json:"status"`
+	StartsAt      *time.Time `json:"starts_at"`
+	ExpiresAt     *time.Time `json:"expires_at"`
+	// MaxUses 是全部用户合计的核销次数上限；0 = 不限。
+	MaxUses int `gorm:"not null;default:0" json:"max_uses"`
+	// MaxUsesPerUser 是单个用户的核销次数上限；0 = 不限。
+	MaxUsesPerUser int `gorm:"not null;default:1" json:"max_uses_per_user"`
+	// NewUserOnly 仅限从未支付过订单的用户使用。
+	NewUserOnly bool `gorm:"not null;default:false" json:"new_user_only"`
+	// UsedCount 是已核销次数（下单 +1，订单取消 -1）。
+	UsedCount int64 `gorm:"not null;default:0" json:"used_count"`
+	// ProductIDs 限定参与的商品；空 = 全部商品参与。减免基数只统计参与商品。
+	ProductIDs JSONUintArray `gorm:"type:text" json:"product_ids"`
+}
+
+// CouponRedemption 记录优惠码的一次核销，用于每用户限次判定与取消回滚。
+// Code 是核销时的码快照，优惠码被删除后历史仍可追溯。
+type CouponRedemption struct {
+	Base
+	CouponID uint `gorm:"index:idx_coupon_redemption;not null" json:"coupon_id"`
+	UserID   uint `gorm:"index:idx_coupon_redemption;not null" json:"user_id"`
+	// OrderID 唯一：一笔订单至多核销一次。
+	OrderID       uint   `gorm:"uniqueIndex;not null" json:"order_id"`
+	DiscountCents int64  `gorm:"not null;default:0" json:"discount_cents"`
+	Code          string `gorm:"size:64;not null;default:''" json:"code"`
+}
+
 // 订单状态。
 const (
 	OrderPending   = "pending"
@@ -512,12 +570,16 @@ const (
 // Order 是一次下单。
 type Order struct {
 	Base
-	OrderNo    string      `gorm:"uniqueIndex;size:32;not null" json:"order_no"`
-	UserID     uint        `gorm:"index;not null" json:"user_id"`
-	Status     string      `gorm:"size:16;not null;default:pending" json:"status"`
-	TotalCents int64       `gorm:"not null;default:0" json:"total_cents"`
-	PaidAt     *time.Time  `json:"paid_at"`
-	Items      []OrderItem `gorm:"foreignKey:OrderID" json:"items,omitempty"`
+	OrderNo    string `gorm:"uniqueIndex;size:32;not null" json:"order_no"`
+	UserID     uint   `gorm:"index;not null" json:"user_id"`
+	Status     string `gorm:"size:16;not null;default:pending" json:"status"`
+	TotalCents int64  `gorm:"not null;default:0" json:"total_cents"`
+	// CouponCode / CouponDiscountCents 是下单时使用的优惠码快照与减免金额。
+	// 空码 = 未使用。TotalCents 已是减免后的应付金额。
+	CouponCode          string      `gorm:"size:64;not null;default:''" json:"coupon_code"`
+	CouponDiscountCents int64       `gorm:"not null;default:0" json:"coupon_discount_cents"`
+	PaidAt              *time.Time  `json:"paid_at"`
+	Items               []OrderItem `gorm:"foreignKey:OrderID" json:"items,omitempty"`
 }
 
 // OrderItem 是订单明细。ProductName 与 PriceCents 是刻意冗余的快照字段：
@@ -686,5 +748,7 @@ func AllModels() []any {
 		&RefundRequest{},
 		&PaymentMethod{},
 		&Article{},
+		&Coupon{},
+		&CouponRedemption{},
 	}
 }
