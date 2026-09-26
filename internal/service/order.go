@@ -342,6 +342,31 @@ func (s *OrderService) CreateDirectCoupon(userID uint, lines []OrderLine, coupon
 	return s.createDirect(userID, lines, couponCode, agree)
 }
 
+// BuyNowCouponView 是直购叠加优惠码后的视图：小计（含选配增量）、减免与应付。
+type BuyNowCouponView struct {
+	SubtotalCents int64          `json:"subtotal_cents"`
+	TotalCents    int64          `json:"total_cents"`
+	Coupon        *CouponPreview `json:"coupon,omitempty"`
+}
+
+// BuyNowCouponPreview 对单条直购明细试算优惠码：只读不核销。
+// 定价复用 buildOrderItems（含代理折扣与选配增量），保证试算与实付同口径；
+// 真正核销发生在 BuyNow 的下单事务里。
+func (s *OrderService) BuyNowCouponPreview(userID uint, line OrderLine, code string) (*BuyNowCouponView, error) {
+	orderItems, subtotal, err := buildOrderItems(s.db, userID, []OrderLine{line})
+	if err != nil {
+		return nil, err
+	}
+	view := &BuyNowCouponView{SubtotalCents: subtotal, TotalCents: subtotal}
+	preview, err := NewCouponService(s.db).Preview(userID, code, orderItems)
+	if err != nil {
+		return nil, err
+	}
+	view.Coupon = preview
+	view.TotalCents = subtotal - preview.DiscountCents
+	return view, nil
+}
+
 func (s *OrderService) createDirect(userID uint, lines []OrderLine, couponCode string, agreed bool) (*model.Order, error) {
 	if len(lines) == 0 {
 		return nil, ErrBadRequest("请至少提供一条商品明细")

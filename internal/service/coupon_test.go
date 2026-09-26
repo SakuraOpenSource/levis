@@ -345,3 +345,76 @@ func TestCouponInvalidInput(t *testing.T) {
 		t.Fatal("时间窗口倒挂应被拒绝")
 	}
 }
+
+// TestBuyNowCouponPreview 直购试算：单明细（含数量）按同款定价算减免，不占次数。
+func TestBuyNowCouponPreview(t *testing.T) {
+	fx := newCouponFixture(t)
+	if _, err := fx.coupons.Create(CouponInput{
+		Code: "DIRECT10", Type: model.CouponTypePercent, PercentOff: 10,
+	}); err != nil {
+		t.Fatalf("创建优惠码失败: %v", err)
+	}
+	// 单条直购明细：云服务器 100 元 × 3 = 300 元，9 折 → 减 30 元。
+	view, err := fx.orders.BuyNowCouponPreview(fx.user.ID, OrderLine{
+		ProductID: fx.product.ID, Quantity: 3, BillingCyc: model.CycleMonthly,
+	}, "direct10")
+	if err != nil {
+		t.Fatalf("试算失败: %v", err)
+	}
+	if view.SubtotalCents != 300_00 || view.Coupon.DiscountCents != 30_00 || view.TotalCents != 270_00 {
+		t.Fatalf("试算金额错误: subtotal=%d discount=%d total=%d",
+			view.SubtotalCents, view.Coupon.DiscountCents, view.TotalCents)
+	}
+	// 试算不占次数。
+	var fresh model.Coupon
+	if err := fx.db.First(&fresh, "code = ?", "DIRECT10").Error; err != nil {
+		t.Fatalf("读取优惠码失败: %v", err)
+	}
+	if fresh.UsedCount != 0 {
+		t.Fatalf("试算不应占用次数: %d", fresh.UsedCount)
+	}
+	// 无效码报错。
+	if _, err := fx.orders.BuyNowCouponPreview(fx.user.ID, OrderLine{
+		ProductID: fx.product.ID, Quantity: 1, BillingCyc: model.CycleMonthly,
+	}, "NOPE"); err == nil {
+		t.Fatal("无效码应报错")
+	}
+}
+
+// TestBuyNowWithCoupon 直购下单核销优惠码：订单快照记录减免，取消回滚次数。
+func TestBuyNowWithCoupon(t *testing.T) {
+	fx := newCouponFixture(t)
+	coupon, err := fx.coupons.Create(CouponInput{
+		Code: "BUYNOW", Type: model.CouponTypeFixed, AmountCents: 15_00, MaxUsesPerUser: 1,
+	})
+	if err != nil {
+		t.Fatalf("创建优惠码失败: %v", err)
+	}
+	order, err := fx.orders.CreateDirectCoupon(fx.user.ID, []OrderLine{{
+		ProductID: fx.product.ID, Quantity: 2, BillingCyc: model.CycleMonthly,
+	}}, "buynow", false)
+	if err != nil {
+		t.Fatalf("直购下单失败: %v", err)
+	}
+	if order.TotalCents != 185_00 || order.CouponCode != "BUYNOW" || order.CouponDiscountCents != 15_00 {
+		t.Fatalf("订单快照错误: total=%d code=%s discount=%d",
+			order.TotalCents, order.CouponCode, order.CouponDiscountCents)
+	}
+	// 已用过 → 二次直购被拒。
+	if _, err := fx.orders.CreateDirectCoupon(fx.user.ID, []OrderLine{{
+		ProductID: fx.product.ID, Quantity: 1, BillingCyc: model.CycleMonthly,
+	}}, "BUYNOW", false); err == nil {
+		t.Fatal("超限应被拒绝")
+	}
+	// 取消回滚。
+	if err := fx.orders.Cancel(fx.user.ID, order.ID); err != nil {
+		t.Fatalf("取消订单失败: %v", err)
+	}
+	var fresh model.Coupon
+	if err := fx.db.First(&fresh, coupon.ID).Error; err != nil {
+		t.Fatalf("读取优惠码失败: %v", err)
+	}
+	if fresh.UsedCount != 0 {
+		t.Fatalf("取消后应回滚次数: %d", fresh.UsedCount)
+	}
+}

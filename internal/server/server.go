@@ -161,6 +161,8 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	orders.GET("", h.Orders)
 	orders.POST("", h.CreateOrder)
 	orders.POST("/direct", h.BuyNow)
+	// 直购试算：购买页输入优惠码后实时算减免，只读不核销。
+	orders.POST("/direct/coupon/preview", h.BuyNowCouponPreview)
 	orders.GET("/:id", h.Order)
 	orders.POST("/:id/pay", h.PayOrder)
 	orders.POST("/:id/cancel", h.CancelOrder)

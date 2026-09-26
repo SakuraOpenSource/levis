@@ -54,10 +54,19 @@ func (h *Handler) ProductOS(c *gin.Context) {
 }
 
 // BuyNowRequest 是「立即购买」的入参：绕过购物车直接生成待支付订单。
-// 接口商品的选配（规格与系统）必须随单提交，agree 表示已同意购买协议。
+// 接口商品的选配（规格与系统）必须随单提交，agree 表示已同意购买协议，
+// coupon_code 非空时核销该优惠码（减免直接体现在订单总额上）。
 type BuyNowRequest struct {
 	service.OrderLine
-	Agree bool `json:"agree"`
+	Agree      bool   `json:"agree"`
+	CouponCode string `json:"coupon_code"`
+}
+
+// BuyNowPreviewRequest 是直购试算入参：购买页输入优惠码后实时算减免，
+// 只读不核销，与购物车试算同款校验口径。
+type BuyNowPreviewRequest struct {
+	service.OrderLine
+	Code string `json:"code"`
 }
 
 // BuyNow 为当前用户创建一笔单明细的直购订单，返回后前端跳转支付。
@@ -66,8 +75,18 @@ func (h *Handler) BuyNow(c *gin.Context) {
 	if !bindJSON(c, &req) {
 		return
 	}
-	order, err := h.orders().CreateDirect(httpx.CurrentUserID(c), []service.OrderLine{req.OrderLine}, req.Agree)
+	order, err := h.orders().CreateDirectCoupon(httpx.CurrentUserID(c), []service.OrderLine{req.OrderLine}, req.CouponCode, req.Agree)
 	respond(c, order, err)
+}
+
+// BuyNowCouponPreview 直购试算：对单条明细验证优惠码并返回减免后应付。
+func (h *Handler) BuyNowCouponPreview(c *gin.Context) {
+	var req BuyNowPreviewRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	view, err := h.orders().BuyNowCouponPreview(httpx.CurrentUserID(c), req.OrderLine, req.Code)
+	respond(c, view, err)
 }
 
 // Cart 返回当前用户购物车。
