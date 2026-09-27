@@ -1313,3 +1313,63 @@ func TestDeleteUserRemovesUploadedFiles(t *testing.T) {
 		}
 	}
 }
+
+// TestProvisionMaxNATMappingsSnapshot NAT 端口上限随订单明细快照：
+// 买家伪造的值被剥离，商品配置的值被写入 options 供开通透传。
+func TestProvisionMaxNATMappingsSnapshot(t *testing.T) {
+	db := newTestDB(t)
+	category := model.ProductCategory{Name: "NAT 测试", Slug: "nat-cat"}
+	if err := db.Create(&category).Error; err != nil {
+		t.Fatalf("创建分组失败: %v", err)
+	}
+	cfg := model.ProvisionSpec{
+		Driver: "qemu",
+		Mode:   model.ProvisionModeFixed,
+		CPU:    model.Fixed(1), MemoryMB: model.Fixed(512), DiskGB: model.Fixed(10),
+		BandwidthMbps: model.Fixed(10), TrafficGB: model.Fixed(0),
+		MaxNATMappings: 3,
+	}
+	product := &model.Product{
+		CategoryID: category.ID, Name: "NAT 小鸡", PriceCents: 500,
+		BillingCyc: model.CycleMonthly, Stock: -1, Status: model.ProductActive,
+		InterfaceID: 1, ProvisionConfig: cfg,
+	}
+	if err := db.Create(product).Error; err != nil {
+		t.Fatalf("创建商品失败: %v", err)
+	}
+	// 买家请求里伪造 999 条上限：必须被剥离并回填商品配置的 3。
+	options := map[string]string{
+		"cpu": "1", "memory_mb": "512", "disk_gb": "10", "bandwidth_mbps": "10", "traffic_gb": "0",
+		"image_id": "alpine", "max_nat_mappings": "999",
+	}
+	items, _, err := buildOrderItems(db, 0, []OrderLine{{ProductID: product.ID, Quantity: 1, Options: options}})
+	if err != nil {
+		t.Fatalf("下单失败: %v", err)
+	}
+	got := items[0].Options["max_nat_mappings"]
+	if got != "3" {
+		t.Fatalf("NAT 上限快照错误: %q（应剥离伪造值并回填商品配置 3）", got)
+	}
+	// 未配置上限（0）的商品：options 里不出现该键。
+	cfg2 := cfg
+	cfg2.MaxNATMappings = 0
+	product2 := &model.Product{
+		CategoryID: category.ID, Name: "普通实例", PriceCents: 500,
+		BillingCyc: model.CycleMonthly, Stock: -1, Status: model.ProductActive,
+		InterfaceID: 1, ProvisionConfig: cfg2,
+	}
+	if err := db.Create(product2).Error; err != nil {
+		t.Fatalf("创建商品2失败: %v", err)
+	}
+	options2 := map[string]string{
+		"cpu": "1", "memory_mb": "512", "disk_gb": "10", "bandwidth_mbps": "10", "traffic_gb": "0",
+		"image_id": "alpine", "max_nat_mappings": "5",
+	}
+	items2, _, err := buildOrderItems(db, 0, []OrderLine{{ProductID: product2.ID, Quantity: 1, Options: options2}})
+	if err != nil {
+		t.Fatalf("下单失败: %v", err)
+	}
+	if v, ok := items2[0].Options["max_nat_mappings"]; ok {
+		t.Fatalf("未配置上限的商品不应携带 max_nat_mappings: %q", v)
+	}
+}

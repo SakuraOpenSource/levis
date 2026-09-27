@@ -120,6 +120,12 @@ func buildOrderItems(tx *gorm.DB, userID uint, lines []OrderLine) ([]model.Order
 			if !product.ProvisionConfig.AllowBuyerAgent {
 				delete(line.Options, "agent_id")
 			}
+			// NAT 端口上限是管理员设定项，买家请求里出现的同名键一律剥离，
+			// 随后按商品配置回填（快照进订单明细，开通时原样透传插件）。
+			delete(line.Options, "max_nat_mappings")
+			if product.ProvisionConfig.MaxNATMappings > 0 {
+				line.Options["max_nat_mappings"] = strconv.Itoa(product.ProvisionConfig.MaxNATMappings)
+			}
 			unitPrice += provisionOptionPrice(product.ProvisionConfig, line.Options)
 		}
 		discountPermille := 0

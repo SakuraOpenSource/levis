@@ -398,6 +398,10 @@ type ProvisionSpec struct {
 	// AllowBuyerAgent 允许买家在购买页自选部署节点（覆盖商品固定节点）。
 	// 关闭时买家提交的 agent_id 会被后端剥离，杜绝绕过接口伪造。
 	AllowBuyerAgent bool `json:"allow_buyer_agent,omitempty"`
+	// MaxNATMappings 是 NAT 实例允许创建的端口转发条数上限（virtualis 接口
+	// 商品有效）。0 表示不限。随开通 options 下传 max_nat_mappings，由上游
+	// 在创建 NAT 映射时强制执行。
+	MaxNATMappings int `json:"max_nat_mappings,omitempty"`
 }
 
 // Fixed 把一项规格归一为固定值。

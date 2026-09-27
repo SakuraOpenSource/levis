@@ -829,6 +829,10 @@ func normalizeProvisionConfig(cfg *model.ProvisionSpec) error {
 	if cfg.TrafficPriceCents < 0 || cfg.TrafficPriceCents > TrafficPricePerGBMax {
 		return ErrBadRequest("流量包单价需在 0-%d 分之间", TrafficPricePerGBMax)
 	}
+	// NAT 端口转发条数上限：负数无意义，归一为 0（不限）。
+	if cfg.MaxNATMappings < 0 {
+		cfg.MaxNATMappings = 0
+	}
 	return nil
 }
 

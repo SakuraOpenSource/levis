@@ -98,6 +98,11 @@ func defaultProvisionOptions(cfg model.ProvisionSpec) map[string]string {
 	if cfg.AgentID > 0 {
 		options["agent_id"] = strconv.FormatUint(uint64(cfg.AgentID), 10)
 	}
+	// NAT 端口转发上限：>0 时随选配下传，上游创建 NAT 映射时强制执行；
+	// 0（不限）不下传，保持旧插件兼容。
+	if cfg.MaxNATMappings > 0 {
+		options["max_nat_mappings"] = strconv.Itoa(cfg.MaxNATMappings)
+	}
 	return options
 }
 
