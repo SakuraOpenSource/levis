@@ -443,6 +443,9 @@ func TestHookTimeout(t *testing.T) {
 
 // TestReloadRemovesDeleted 确认磁盘上删掉插件后实例被停止并移除。
 func TestReloadRemovesDeleted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot unlink a running executable or its working directory; live deletion is a POSIX-only workflow")
+	}
 	dataDir := install(t, "fake", nil)
 	m := newManager(t, dataDir)
 	if err := m.Reload(context.Background()); err != nil {

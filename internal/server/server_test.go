@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"testing"
 	"time"
 
@@ -166,7 +167,7 @@ func TestInstallThenRejectsSecondAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取配置文件信息失败: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
+	if perm := info.Mode().Perm(); goruntime.GOOS != "windows" && perm != 0o600 {
 		t.Errorf("config.json 权限应为 0600（含密码与密钥），实际 %#o", perm)
 	}
 

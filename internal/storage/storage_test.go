@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -63,7 +64,7 @@ func TestSaveUsesRestrictivePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat 失败: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != filePerm {
+	if perm := info.Mode().Perm(); runtime.GOOS != "windows" && perm != filePerm {
 		t.Errorf("文件权限 = %o，期望 %o", perm, filePerm)
 	}
 }

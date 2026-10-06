@@ -42,7 +42,7 @@ func makeArchive(t *testing.T, entries ...archiveEntry) io.Reader {
 func validArchive(t *testing.T, extra ...archiveEntry) io.Reader {
 	t.Helper()
 	entries := []archiveEntry{
-		{name: "demo/plugin", mode: 0o755, data: "binary"},
+		{name: "demo/" + execName(), mode: 0o755, data: "binary"},
 		{name: "demo/frontend/index.html", mode: 0o644, data: "<!doctype html>"},
 	}
 	return makeArchive(t, append(entries, extra...)...)
