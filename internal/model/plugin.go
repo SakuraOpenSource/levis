@@ -188,6 +188,7 @@ type RefundRequest struct {
 const (
 	RefundPending   = "pending"
 	RefundApproved  = "approved" // 审批通过，退款执行中/已入账
+	RefundProcessing = "processing" // exclusive external execution claim
 	RefundRejected  = "rejected"
 	RefundFailed    = "failed" // 渠道退款失败，待重试
 	RefundCanceled  = "canceled"

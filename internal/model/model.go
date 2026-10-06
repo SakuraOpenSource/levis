@@ -569,6 +569,8 @@ const (
 	OrderPending   = "pending"
 	OrderPaid      = "paid"
 	OrderCancelled = "cancelled"
+	// OrderRefunded 是退款完成后的终态：订单金额已原路退回，不可再次退款。
+	OrderRefunded = "refunded"
 )
 
 // Order 是一次下单。
@@ -580,10 +582,12 @@ type Order struct {
 	TotalCents int64  `gorm:"not null;default:0" json:"total_cents"`
 	// CouponCode / CouponDiscountCents 是下单时使用的优惠码快照与减免金额。
 	// 空码 = 未使用。TotalCents 已是减免后的应付金额。
-	CouponCode          string      `gorm:"size:64;not null;default:''" json:"coupon_code"`
-	CouponDiscountCents int64       `gorm:"not null;default:0" json:"coupon_discount_cents"`
-	PaidAt              *time.Time  `json:"paid_at"`
-	Items               []OrderItem `gorm:"foreignKey:OrderID" json:"items,omitempty"`
+	CouponCode          string     `gorm:"size:64;not null;default:''" json:"coupon_code"`
+	CouponDiscountCents int64      `gorm:"not null;default:0" json:"coupon_discount_cents"`
+	PaidAt              *time.Time `json:"paid_at"`
+	// RefundedAt 是订单全额退款完成时刻，状态同步落 OrderRefunded。
+	RefundedAt *time.Time  `json:"refunded_at"`
+	Items      []OrderItem `gorm:"foreignKey:OrderID" json:"items,omitempty"`
 }
 
 // OrderItem 是订单明细。ProductName 与 PriceCents 是刻意冗余的快照字段：
@@ -614,15 +618,18 @@ const (
 // Service 是用户已购买并开通的服务实例。
 type Service struct {
 	Base
-	UserID     uint       `gorm:"index;not null" json:"user_id"`
-	ProductID  uint       `gorm:"index;not null" json:"product_id"`
-	OrderID    uint       `gorm:"index;not null" json:"order_id"`
-	Name       string     `gorm:"size:128;not null" json:"name"`
-	Status     string     `gorm:"size:16;not null;default:pending" json:"status"`
-	BillingCyc string     `gorm:"column:billing_cycle;size:16;not null" json:"billing_cycle"`
-	PriceCents int64      `gorm:"not null;default:0" json:"price_cents"`
-	NextDueAt  *time.Time `json:"next_due_at"`
-	ExpiresAt  *time.Time `json:"expires_at"`
+	UserID           uint       `gorm:"index;not null" json:"user_id"`
+	ProductID        uint       `gorm:"index;not null" json:"product_id"`
+	OrderID          uint       `gorm:"index;not null" json:"order_id"`
+	Name             string     `gorm:"size:128;not null" json:"name"`
+	Status           string     `gorm:"size:16;not null;default:pending" json:"status"`
+	BillingCyc       string     `gorm:"column:billing_cycle;size:16;not null" json:"billing_cycle"`
+	PriceCents       int64      `gorm:"not null;default:0" json:"price_cents"`
+	AutoRenew        bool       `gorm:"not null;default:false" json:"auto_renew"`
+	ChangePendingID  *uint      `gorm:"index" json:"change_pending_id,omitempty"`
+	ProvisionOptions OptionMap  `gorm:"type:text" json:"provision_options,omitempty"`
+	NextDueAt        *time.Time `json:"next_due_at"`
+	ExpiresAt        *time.Time `json:"expires_at"`
 	// TrafficExtraGB 是售后加购累计的额外流量配额（GB，上游不计量时仅本地生效）。
 	// 下单时的 traffic_gb 选配只计入开通快照，不落本字段；结清流量包账单时累加。
 	TrafficExtraGB int64 `gorm:"not null;default:0" json:"traffic_extra_gb"`
@@ -754,5 +761,7 @@ func AllModels() []any {
 		&Article{},
 		&Coupon{},
 		&CouponRedemption{},
+		&RenewalEvent{}, &ServiceChange{},
+		&Affiliate{}, &AffiliateReferral{}, &AffiliateCommission{}, &AffiliateReversal{}, &AffiliateWithdrawal{},
 	}
 }

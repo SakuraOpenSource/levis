@@ -170,6 +170,10 @@ func (s *RefundService) Create(ctx context.Context, userID uint, in RefundCreate
 		if order.UserID != userID {
 			return nil, ErrNotFound("订单不存在")
 		}
+		// 只有已支付订单可以申请退款：pending/cancelled/完成退款后的订单都不可退。
+		if order.Status != model.OrderPaid {
+			return nil, ErrConflict("订单未支付或已完结，不可申请退款")
+		}
 	default:
 		return nil, ErrBadRequest("请选择要退款的产品")
 	}
@@ -192,7 +196,7 @@ func (s *RefundService) Create(ctx context.Context, userID uint, in RefundCreate
 	// 已有进行中的申请则拒绝重复提交。
 	var dup int64
 	query := s.db.Model(&model.RefundRequest{}).Where("user_id = ? AND status IN ?", userID,
-		[]string{model.RefundPending, model.RefundApproved})
+		[]string{model.RefundPending, model.RefundApproved, model.RefundProcessing})
 	if payment != nil {
 		query = query.Where("payment_id = ?", payment.ID)
 	} else {
@@ -453,7 +457,7 @@ func (s *RefundService) execute(ctx context.Context, item *model.RefundRequest) 
 	res := s.db.Model(&model.RefundRequest{}).
 		Where("id = ? AND status IN ?", item.ID,
 			[]string{model.RefundPending, model.RefundApproved, model.RefundFailed}).
-		Updates(map[string]any{"status": model.RefundApproved, "fail_reason": ""})
+		Updates(map[string]any{"status": model.RefundProcessing, "fail_reason": ""})
 	if res.Error != nil {
 		return res.Error
 	}
@@ -465,18 +469,40 @@ func (s *RefundService) execute(ctx context.Context, item *model.RefundRequest) 
 	if item.ChannelCents > 0 {
 		failed = s.refundChannel(ctx, item)
 	}
-	if failed == nil && item.BalanceCents > 0 {
-		failed = s.refundBalance(item)
+	if failed == nil {
+		failed = s.db.Transaction(func(tx *gorm.DB) error {
+			now := time.Now()
+			claimed := tx.Model(&model.RefundRequest{}).Where("id = ? AND status = ?", item.ID, model.RefundProcessing).Updates(map[string]any{"status": model.RefundCompleted, "refunded_at": now})
+			if claimed.Error != nil {
+				return claimed.Error
+			}
+			if claimed.RowsAffected != 1 {
+				return ErrConflict("退款已完成或状态已变化")
+			}
+			if item.BalanceCents > 0 {
+				if _, err := s.wallet.adjustBalance(tx, item.UserID, item.BalanceCents, model.TxRefund, "refund", item.ID, "退款 "+item.RefundNo); err != nil {
+					return err
+				}
+			}
+			// 订单退款完结后立即关闭再退入口：状态 CAS 只允许 paid → refunded，
+			// 并发下的第二次申请会在 Create 的订单状态校验处被拒绝。
+			if res := tx.Model(&model.Order{}).
+				Where("id = ? AND status = ?", item.OrderID, model.OrderPaid).
+				Updates(map[string]any{"status": model.OrderRefunded, "refunded_at": now}); res.Error != nil {
+				return res.Error
+			} else if res.RowsAffected != 1 && item.OrderID != 0 {
+				return ErrConflict("订单状态已变化，退款未入账")
+			}
+			return reverseAffiliateTx(tx, item)
+		})
 	}
 	if failed != nil {
-		s.db.Model(&model.RefundRequest{}).Where("id = ?", item.ID).
+		s.db.Model(&model.RefundRequest{}).Where("id = ? AND status = ?", item.ID, model.RefundProcessing).
 			Updates(map[string]any{"status": model.RefundFailed, "fail_reason": truncateRunes(failed.Error(), 500)})
 		return ErrConflict("退款执行失败: %v", failed)
 	}
 
-	now := time.Now()
-	return s.db.Model(&model.RefundRequest{}).Where("id = ?", item.ID).
-		Updates(map[string]any{"status": model.RefundCompleted, "refunded_at": now}).Error
+	return nil
 }
 
 // refundChannel 调用支付插件向渠道退款。

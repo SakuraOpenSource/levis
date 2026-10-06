@@ -715,6 +715,9 @@ func (s *OrderService) payInTx(tx *gorm.DB, userID, orderID uint, debit bool) (*
 		invoice.Items = existingItems
 	}
 
+	if err := accrueAffiliateTx(tx, &order); err != nil {
+		return nil, err
+	}
 	out = PayResult{Order: &order, Invoice: &invoice, Services: services}
 	return &out, nil
 }

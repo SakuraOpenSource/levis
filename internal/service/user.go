@@ -26,9 +26,10 @@ func NewUserService(db *gorm.DB) *UserService {
 // 注意这里没有 Role 与 BalanceCents 字段：请求体绝不能直接绑定到 model.User，
 // 否则客户端可以传 role=admin 自我提权。新用户角色一律由服务端写死。
 type RegisterRequest struct {
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Username     string `json:"username"`
+	Email        string `json:"email"`
+	Password     string `json:"password"`
+	ReferralCode string `json:"referral_code"`
 }
 
 // Register 创建普通用户。
@@ -68,7 +69,12 @@ func (s *UserService) Register(req RegisterRequest) (*model.User, error) {
 		Status:       model.UserActive,
 	}
 	user.TouchPassword()
-	if err := s.db.Create(&user).Error; err != nil {
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&user).Error; err != nil {
+			return err
+		}
+		return attachAffiliateReferralTx(tx, &user, req.ReferralCode)
+	}); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, ErrConflict("用户名或邮箱已被注册")
 		}
