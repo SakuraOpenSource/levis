@@ -121,7 +121,9 @@ func run(dataDir, listenOverride string, debug bool) error {
 				case <-time.After(5 * time.Second):
 				}
 			}
-			service.NewLifecycleService(rt.DB(), plugins).Start(lifecycleCtx)
+			notifier := pluginhost.NewNotifier(rt, plugins, log.Printf)
+            defer notifier.Close()
+            service.NewLifecycleService(rt.DB(), plugins).WithNotifier(notifier).Start(lifecycleCtx)
 		}()
 	}
 	defer stopLifecycle()

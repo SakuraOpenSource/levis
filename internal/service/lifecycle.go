@@ -44,6 +44,7 @@ type LifecycleService struct {
 	host hostManager
 	// terminateEnabled 每轮执法时读取一次开关；nil 视为关闭（干跑）。
 	terminateEnabled func() bool
+ renewNotify func(uint,bool,string,int64)
 }
 
 // NewLifecycleService 构造生命周期执法器。
@@ -95,12 +96,20 @@ func (s *LifecycleService) Start(ctx context.Context) {
 }
 
 // Run 执行一轮流量与到期执法。
+// dryRun is distinct from the legacy terminate-only switch.
+func (s *LifecycleService) dryRun() bool {
+ var row model.Setting
+ return s.db.Where(map[string]any{"key":model.SettingLifecycleDryRun}).First(&row).Error==nil && row.Value=="1"
+}
+
 func (s *LifecycleService) Run(ctx context.Context) {
+ if s.dryRun() { return }
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("生命周期巡检 panic（已恢复，下轮继续）: %v", r)
 		}
 	}()
+	s.autoRenew(ctx)
 	s.enforceTraffic(ctx)
 	s.enforceExpiry(ctx)
 	s.retryPendingResumes(ctx)
@@ -164,9 +173,10 @@ func (s *LifecycleService) sampleTraffic(ctx context.Context, svc *model.Service
 }
 
 func (s *LifecycleService) enforceExpiry(ctx context.Context) {
+	// Compare instants in Go: SQLite DATETIME text may mix legacy local and UTC rows.
 	now := time.Now()
 	var active []model.Service
-	if err := s.db.Where("status = ? AND expires_at IS NOT NULL AND expires_at < ?", model.ServiceActive, now).
+	if err := s.db.Where("status = ? AND expires_at IS NOT NULL", model.ServiceActive).
 		Find(&active).Error; err != nil {
 		log.Printf("到期执法读取服务列表失败: %v", err)
 		return
@@ -176,6 +186,7 @@ func (s *LifecycleService) enforceExpiry(ctx context.Context) {
 	suspendedThisRound := make(map[uint]bool, len(active))
 	for i := range active {
 		svc := &active[i]
+		if !svc.ExpiresAt.Before(now) { continue }
 		if svc.UpstreamPluginID != "" && svc.UpstreamHostID != "" {
 			if err := s.manageHost(ctx, svc, pb.HostAction_HOST_ACTION_SUSPEND); err != nil {
 				log.Printf("到期停机失败 service=%d host=%s（下轮重试）: %v", svc.ID, svc.UpstreamHostID, err)
@@ -200,13 +211,14 @@ func (s *LifecycleService) enforceExpiry(ctx context.Context) {
 	// 只记干跑日志：正式实例的删除必须先经管理员确认清单再开启。
 	deadline := now.Add(-expiryGrace)
 	var expired []model.Service
-	if err := s.db.Where("status = ? AND suspend_reason = ? AND suspended_at IS NOT NULL AND suspended_at < ?",
-		model.ServiceSuspended, "expired", deadline).Find(&expired).Error; err != nil {
+	if err := s.db.Where("status = ? AND suspend_reason = ? AND suspended_at IS NOT NULL",
+		model.ServiceSuspended, "expired").Find(&expired).Error; err != nil {
 		log.Printf("到期删机读取服务列表失败: %v", err)
 		return
 	}
 	for i := range expired {
 		svc := &expired[i]
+		if !svc.SuspendedAt.Before(deadline) { continue }
 		if suspendedThisRound[svc.ID] {
 			continue // 刚停机，本轮不删。
 		}

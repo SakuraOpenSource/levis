@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"gorm.io/gorm"
+ "gorm.io/gorm/clause"
 
 	"github.com/SakuraOpenSource/levis/internal/model"
 	"github.com/SakuraOpenSource/levis/internal/plugin"
@@ -177,7 +178,7 @@ func (s *BillingService) reconcileUpstreamRenewal(serviceID uint) {
 // 停机的服务。手动停机与 terminated 不允许通过续费悄悄恢复。
 func (s *BillingService) loadRenewableService(tx *gorm.DB, userID, serviceID uint) (*model.Service, error) {
 	var svc model.Service
-	if err := tx.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound("服务不存在")
 		}
@@ -219,9 +220,9 @@ func (s *BillingService) applyRenewalTx(tx *gorm.DB, svc *model.Service, userID 
 	// 回调并发时（本次改动把 suspended 也放行续费），双方都读到 suspended
 	// 会导致双重扣款+双倍时长；RowsAffected==0 的一方在此返回 409，支付侧
 	// 按「状态已变更」处理，不会重复落账。
-	res := tx.Model(&model.Service{}).
-		Where("id = ? AND status = ?", svc.ID, svc.Status).
-		Updates(updates)
+ query:=tx.Model(&model.Service{}).Where("id = ? AND status = ?",svc.ID,svc.Status)
+ if svc.ExpiresAt==nil { query=query.Where("expires_at IS NULL") } else { query=query.Where("expires_at = ?",*svc.ExpiresAt) }
+ res:=query.Updates(updates)
 	if res.Error != nil {
 		return time.Time{}, res.Error
 	}
@@ -824,7 +825,7 @@ func trafficUnitPrice(db *gorm.DB, product *model.Product) (unitPriceCents int64
 // 到期停机应走续费，不允许只买流量包绕过到期限制。
 func (s *BillingService) loadTrafficService(tx *gorm.DB, userID, serviceID uint) (*model.Service, error) {
 	var svc model.Service
-	if err := tx.First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&svc, "id = ? AND user_id = ?", serviceID, userID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound("服务不存在")
 		}

@@ -65,6 +65,13 @@ func (n *Notifier) OrderPaid(userID uint, orderNo string, totalCents int64) {
 	}, "\n"))
 }
 
+// AutoRenew reports a durable renewal ledger result; delivery remains best effort.
+func (n *Notifier) AutoRenew(userID uint, success bool, name string, cents int64) {
+ if n==nil {return}
+ result:="自动续费失败，请检查余额并手动续费";if success {result="自动续费成功"}
+ n.enqueue(userID,n.subject("%s：%s",name,result),fmt.Sprintf("服务：%s\n%s\n续费金额：%s",name,result,yuan(cents)))
+}
+
 // excerptLen 是正文摘录的字符数上限。
 //
 // 通知信只是「有新回复，去看看」，把整段正文塞进邮件既没必要，也把内容抄到了
