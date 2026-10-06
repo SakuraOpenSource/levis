@@ -91,7 +91,7 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	if err := engine.SetTrustedProxies([]string{"127.0.0.1", "::1"}); err != nil {
 		panic(fmt.Sprintf("设置可信代理失败: %v", err))
 	}
-	engine.Use(gin.Logger(), gin.Recovery(), limitBody(), securityHeaders())
+	engine.Use(gin.Logger(), recoveryPreservingAbort(), limitBody(), securityHeaders())
 	// 前端为 SPA，所有未命中的路径都交给它做客户端路由。
 	engine.RedirectTrailingSlash = false
 	engine.MaxMultipartMemory = maxMultipartMemory
@@ -145,6 +145,11 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	authed.POST("/refunds", h.CreateRefund)
 	authed.POST("/refunds/:id/cancel", h.CancelRefund)
 
+	authed.GET("/affiliate", h.Affiliate)
+	authed.POST("/affiliate/join", h.AffiliateJoin)
+	authed.GET("/affiliate/commissions", h.AffiliateCommissions)
+	authed.GET("/affiliate/withdrawals", h.AffiliateWithdrawals)
+	authed.POST("/affiliate/withdrawals", h.AffiliateWithdraw)
 	authed.GET("/me", h.Me)
 	authed.PATCH("/me/email", h.UpdateEmail)
 	authed.POST("/me/password", h.UpdatePassword)
@@ -170,6 +175,15 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	services := authed.Group("/services")
 	services.GET("", h.Services)
 	services.GET("/:id", h.Service)
+	services.PATCH("/:id/auto-renew", h.ServiceAutoRenew)
+ services.GET("/:id/change-options", h.ServiceChangeOptions)
+ services.POST("/:id/change-preview", h.ServiceChangePreview)
+ services.POST("/:id/change", h.ServiceChange)
+ services.POST("/:id/change/:changeID/retry", h.ServiceChangeRetry)
+ services.GET("/:id/changes", h.ServiceChanges)
+ services.GET("/:id/features/:action", h.ServiceHostOperation)
+ services.POST("/:id/features/:action", h.ServiceHostOperation)
+ services.GET("/:id/backups/:backupID/download", h.DownloadServiceBackup)
 	services.POST("/:id/renew", h.RenewService)
 	// 续费新流程：先创建待付续费账单，再走统一收银台支付。
 	services.POST("/:id/renew-invoice", h.RenewInvoice)
@@ -230,6 +244,10 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 
 	// 以下均需管理员权限。
 	admin := authed.Group("/admin", middleware.RequireAdmin())
+	admin.GET("/affiliate/withdrawals", h.AdminAffiliateWithdrawals)
+	admin.POST("/affiliate/withdrawals/:id/review", h.AdminAffiliateReview)
+	admin.GET("/settings/affiliate", h.AdminAffiliateSettings)
+	admin.PUT("/settings/affiliate", h.AdminUpdateAffiliateSettings)
 	admin.GET("/stats", h.AdminStats)
 	admin.GET("/users", h.AdminUsers)
 	admin.POST("/users", h.AdminCreateUser)
