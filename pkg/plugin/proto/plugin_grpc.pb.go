@@ -54,6 +54,8 @@ const (
 	Plugin_DeleteHostNATMapping_FullMethodName  = "/levis.plugin.v1.Plugin/DeleteHostNATMapping"
 	Plugin_StartKYC_FullMethodName              = "/levis.plugin.v1.Plugin/StartKYC"
 	Plugin_QueryKYC_FullMethodName              = "/levis.plugin.v1.Plugin/QueryKYC"
+	Plugin_HostOperation_FullMethodName         = "/levis.plugin.v1.Plugin/HostOperation"
+	Plugin_DownloadHostBackup_FullMethodName    = "/levis.plugin.v1.Plugin/DownloadHostBackup"
 )
 
 // PluginClient is the client API for Plugin service.
@@ -148,6 +150,10 @@ type PluginClient interface {
 	// QueryKYC 查询实名认证结果。
 	// 需声明 CAPABILITY_KYC。
 	QueryKYC(ctx context.Context, in *QueryKYCRequest, opts ...grpc.CallOption) (*QueryKYCReply, error)
+	// Optional, whitelisted provider operations. Unsupported plugins return UNIMPLEMENTED.
+	HostOperation(ctx context.Context, in *HostOperationRequest, opts ...grpc.CallOption) (*HostOperationReply, error)
+	// Optional authenticated backup transfer, bounded chunks (at most 64 KiB each).
+	DownloadHostBackup(ctx context.Context, in *HostBackupRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[HostBackupChunk], error)
 }
 
 type pluginClient struct {
@@ -418,6 +424,35 @@ func (c *pluginClient) QueryKYC(ctx context.Context, in *QueryKYCRequest, opts .
 	return out, nil
 }
 
+func (c *pluginClient) HostOperation(ctx context.Context, in *HostOperationRequest, opts ...grpc.CallOption) (*HostOperationReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HostOperationReply)
+	err := c.cc.Invoke(ctx, Plugin_HostOperation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pluginClient) DownloadHostBackup(ctx context.Context, in *HostBackupRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[HostBackupChunk], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Plugin_ServiceDesc.Streams[0], Plugin_DownloadHostBackup_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[HostBackupRequest, HostBackupChunk]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Plugin_DownloadHostBackupClient = grpc.ServerStreamingClient[HostBackupChunk]
+
 // PluginServer is the server API for Plugin service.
 // All implementations must embed UnimplementedPluginServer
 // for forward compatibility.
@@ -510,6 +545,10 @@ type PluginServer interface {
 	// QueryKYC 查询实名认证结果。
 	// 需声明 CAPABILITY_KYC。
 	QueryKYC(context.Context, *QueryKYCRequest) (*QueryKYCReply, error)
+	// Optional, whitelisted provider operations. Unsupported plugins return UNIMPLEMENTED.
+	HostOperation(context.Context, *HostOperationRequest) (*HostOperationReply, error)
+	// Optional authenticated backup transfer, bounded chunks (at most 64 KiB each).
+	DownloadHostBackup(*HostBackupRequest, grpc.ServerStreamingServer[HostBackupChunk]) error
 	mustEmbedUnimplementedPluginServer()
 }
 
@@ -597,6 +636,12 @@ func (UnimplementedPluginServer) StartKYC(context.Context, *StartKYCRequest) (*S
 }
 func (UnimplementedPluginServer) QueryKYC(context.Context, *QueryKYCRequest) (*QueryKYCReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method QueryKYC not implemented")
+}
+func (UnimplementedPluginServer) HostOperation(context.Context, *HostOperationRequest) (*HostOperationReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method HostOperation not implemented")
+}
+func (UnimplementedPluginServer) DownloadHostBackup(*HostBackupRequest, grpc.ServerStreamingServer[HostBackupChunk]) error {
+	return status.Error(codes.Unimplemented, "method DownloadHostBackup not implemented")
 }
 func (UnimplementedPluginServer) mustEmbedUnimplementedPluginServer() {}
 func (UnimplementedPluginServer) testEmbeddedByValue()                {}
@@ -1087,6 +1132,35 @@ func _Plugin_QueryKYC_Handler(srv interface{}, ctx context.Context, dec func(int
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Plugin_HostOperation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HostOperationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServer).HostOperation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Plugin_HostOperation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServer).HostOperation(ctx, req.(*HostOperationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Plugin_DownloadHostBackup_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(HostBackupRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(PluginServer).DownloadHostBackup(m, &grpc.GenericServerStream[HostBackupRequest, HostBackupChunk]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Plugin_DownloadHostBackupServer = grpc.ServerStreamingServer[HostBackupChunk]
+
 // Plugin_ServiceDesc is the grpc.ServiceDesc for Plugin service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1198,7 +1272,17 @@ var Plugin_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "QueryKYC",
 			Handler:    _Plugin_QueryKYC_Handler,
 		},
+		{
+			MethodName: "HostOperation",
+			Handler:    _Plugin_HostOperation_Handler,
+		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "DownloadHostBackup",
+			Handler:       _Plugin_DownloadHostBackup_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "plugin.proto",
 }

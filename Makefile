@@ -18,7 +18,8 @@ GO_ENV      := CGO_ENABLED=0
 BUF_VERSION      := v1.47.2
 PROTOC_GEN_GO    := v1.36.12
 PROTOC_GEN_GRPC  := v1.6.2
-PROTO_DIR        := internal/plugin/proto
+PROTO_DIR        := pkg/plugin/proto
+PROTO_TOOLS      ?= $(shell go env GOPATH)/bin/levis-proto-tools
 
 .PHONY: all build backend frontend clean test vet fmt dev-backend dev-frontend release proto
 
@@ -55,14 +56,12 @@ frontend:
 ## buf 是纯 Go 实现，连 C++ 的 protoc 都省了。
 proto:
 	@echo "生成插件契约代码"
-	@tmp=$$(mktemp -d) && \
-		GOBIN=$$tmp go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO) && \
-		GOBIN=$$tmp go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GRPC) && \
-		cd $(PROTO_DIR) && PATH="$$tmp:$$PATH" go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION) \
-			generate --template buf.gen.yaml . && \
-		rm -rf $$tmp
-	@gofmt -w $(PROTO_DIR)
-	@echo "已更新 $(PROTO_DIR)/*.pb.go，记得一并提交"
+	@mkdir -p "$(PROTO_TOOLS)"
+	GOBIN="$(PROTO_TOOLS)" go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO)
+	GOBIN="$(PROTO_TOOLS)" go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GRPC)
+	cd $(PROTO_DIR) && PATH="$(PROTO_TOOLS):$$PATH" go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION) generate --template buf.gen.yaml .
+	go run ./scripts/gen-proto-compat
+	@echo "已更新公开契约及 internal 兼容别名"
 
 ## test: 运行后端测试
 test:

@@ -125,6 +125,11 @@ service Plugin {
   // QueryKYC 查询实名认证结果。
   // 需声明 CAPABILITY_KYC。
   rpc QueryKYC(QueryKYCRequest) returns (QueryKYCReply);
+
+  // Optional, whitelisted provider operations. Unsupported plugins return UNIMPLEMENTED.
+  rpc HostOperation(HostOperationRequest) returns (HostOperationReply);
+  // Optional authenticated backup transfer, bounded chunks (at most 64 KiB each).
+  rpc DownloadHostBackup(HostBackupRequest) returns (stream HostBackupChunk);
 }
 
 // Capability 是插件声明的能力。
@@ -460,6 +465,8 @@ enum HostAction {
   HOST_ACTION_HARD_STOP = 10;
   // HOST_ACTION_HARD_RESTART 强制重启。
   HOST_ACTION_HARD_RESTART = 11;
+  // Complete intended resources; operation_id correlates durable retries.
+  HOST_ACTION_RESIZE = 12;
 }
 
 message ManageHostRequest {
@@ -471,6 +478,8 @@ message ManageHostRequest {
   string os = 4;
   // 接口配置，见 ListProductsRequest.interface_config。
   map<string, string> interface_config = 5;
+  HostResources resources = 6;
+  string operation_id = 7;
 }
 
 message ManageHostReply {
@@ -745,4 +754,27 @@ message DeleteHostNATRequest {
 
 message DeleteHostNATReply {
   string error = 1;
+}
+
+message HostOperationRequest {
+  string host_id = 1;
+  string action = 2;
+  string payload_json = 3;
+  map<string, string> interface_config = 4;
+}
+
+message HostOperationReply {
+  string data_json = 1;
+  string error = 2;
+}
+
+message HostBackupRequest {
+  string host_id = 1;
+  uint64 backup_id = 2;
+  map<string, string> interface_config = 3;
+}
+
+message HostBackupChunk {
+  bytes data = 1;
+  string filename = 2;
 }

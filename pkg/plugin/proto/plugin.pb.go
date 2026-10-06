@@ -229,6 +229,8 @@ const (
 	HostAction_HOST_ACTION_HARD_STOP HostAction = 10
 	// HOST_ACTION_HARD_RESTART 强制重启。
 	HostAction_HOST_ACTION_HARD_RESTART HostAction = 11
+	// Complete intended resources; operation_id correlates durable retries.
+	HostAction_HOST_ACTION_RESIZE HostAction = 12
 )
 
 // Enum value maps for HostAction.
@@ -246,6 +248,7 @@ var (
 		9:  "HOST_ACTION_HARD_BOOT",
 		10: "HOST_ACTION_HARD_STOP",
 		11: "HOST_ACTION_HARD_RESTART",
+		12: "HOST_ACTION_RESIZE",
 	}
 	HostAction_value = map[string]int32{
 		"HOST_ACTION_UNSPECIFIED":  0,
@@ -260,6 +263,7 @@ var (
 		"HOST_ACTION_HARD_BOOT":    9,
 		"HOST_ACTION_HARD_STOP":    10,
 		"HOST_ACTION_HARD_RESTART": 11,
+		"HOST_ACTION_RESIZE":       12,
 	}
 )
 
@@ -1956,9 +1960,7 @@ type CreateOrderRequest struct {
 	InterfaceConfig map[string]string `protobuf:"bytes,6,rep,name=interface_config,json=interfaceConfig,proto3" json:"interface_config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// options 是购买时用户提交的选配快照（弹性云的规格与系统镜像），
 	// 如 {"cpu":"2","memory_mb":"1024","disk_gb":"10",
-	//
-	//	"bandwidth_mbps":"10","traffic_gb":"100","image_id":"3"}。
-	//
+	//     "bandwidth_mbps":"10","traffic_gb":"100","image_id":"3"}。
 	// 固定规格商品主程序传空，插件应自行回退到商品配置。
 	Options       map[string]string `protobuf:"bytes,7,rep,name=options,proto3" json:"options,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
@@ -2272,6 +2274,8 @@ type ManageHostRequest struct {
 	Os string `protobuf:"bytes,4,opt,name=os,proto3" json:"os,omitempty"`
 	// 接口配置，见 ListProductsRequest.interface_config。
 	InterfaceConfig map[string]string `protobuf:"bytes,5,rep,name=interface_config,json=interfaceConfig,proto3" json:"interface_config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Resources       *HostResources    `protobuf:"bytes,6,opt,name=resources,proto3" json:"resources,omitempty"`
+	OperationId     string            `protobuf:"bytes,7,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -2339,6 +2343,20 @@ func (x *ManageHostRequest) GetInterfaceConfig() map[string]string {
 		return x.InterfaceConfig
 	}
 	return nil
+}
+
+func (x *ManageHostRequest) GetResources() *HostResources {
+	if x != nil {
+		return x.Resources
+	}
+	return nil
+}
+
+func (x *ManageHostRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
 }
 
 type ManageHostReply struct {
@@ -4593,6 +4611,238 @@ func (x *DeleteHostNATReply) GetError() string {
 	return ""
 }
 
+type HostOperationRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	HostId          string                 `protobuf:"bytes,1,opt,name=host_id,json=hostId,proto3" json:"host_id,omitempty"`
+	Action          string                 `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
+	PayloadJson     string                 `protobuf:"bytes,3,opt,name=payload_json,json=payloadJson,proto3" json:"payload_json,omitempty"`
+	InterfaceConfig map[string]string      `protobuf:"bytes,4,rep,name=interface_config,json=interfaceConfig,proto3" json:"interface_config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *HostOperationRequest) Reset() {
+	*x = HostOperationRequest{}
+	mi := &file_plugin_proto_msgTypes[64]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostOperationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostOperationRequest) ProtoMessage() {}
+
+func (x *HostOperationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[64]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostOperationRequest.ProtoReflect.Descriptor instead.
+func (*HostOperationRequest) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{64}
+}
+
+func (x *HostOperationRequest) GetHostId() string {
+	if x != nil {
+		return x.HostId
+	}
+	return ""
+}
+
+func (x *HostOperationRequest) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *HostOperationRequest) GetPayloadJson() string {
+	if x != nil {
+		return x.PayloadJson
+	}
+	return ""
+}
+
+func (x *HostOperationRequest) GetInterfaceConfig() map[string]string {
+	if x != nil {
+		return x.InterfaceConfig
+	}
+	return nil
+}
+
+type HostOperationReply struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DataJson      string                 `protobuf:"bytes,1,opt,name=data_json,json=dataJson,proto3" json:"data_json,omitempty"`
+	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HostOperationReply) Reset() {
+	*x = HostOperationReply{}
+	mi := &file_plugin_proto_msgTypes[65]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostOperationReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostOperationReply) ProtoMessage() {}
+
+func (x *HostOperationReply) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[65]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostOperationReply.ProtoReflect.Descriptor instead.
+func (*HostOperationReply) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{65}
+}
+
+func (x *HostOperationReply) GetDataJson() string {
+	if x != nil {
+		return x.DataJson
+	}
+	return ""
+}
+
+func (x *HostOperationReply) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+type HostBackupRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	HostId          string                 `protobuf:"bytes,1,opt,name=host_id,json=hostId,proto3" json:"host_id,omitempty"`
+	BackupId        uint64                 `protobuf:"varint,2,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
+	InterfaceConfig map[string]string      `protobuf:"bytes,3,rep,name=interface_config,json=interfaceConfig,proto3" json:"interface_config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *HostBackupRequest) Reset() {
+	*x = HostBackupRequest{}
+	mi := &file_plugin_proto_msgTypes[66]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostBackupRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostBackupRequest) ProtoMessage() {}
+
+func (x *HostBackupRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[66]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostBackupRequest.ProtoReflect.Descriptor instead.
+func (*HostBackupRequest) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{66}
+}
+
+func (x *HostBackupRequest) GetHostId() string {
+	if x != nil {
+		return x.HostId
+	}
+	return ""
+}
+
+func (x *HostBackupRequest) GetBackupId() uint64 {
+	if x != nil {
+		return x.BackupId
+	}
+	return 0
+}
+
+func (x *HostBackupRequest) GetInterfaceConfig() map[string]string {
+	if x != nil {
+		return x.InterfaceConfig
+	}
+	return nil
+}
+
+type HostBackupChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	Filename      string                 `protobuf:"bytes,2,opt,name=filename,proto3" json:"filename,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HostBackupChunk) Reset() {
+	*x = HostBackupChunk{}
+	mi := &file_plugin_proto_msgTypes[67]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostBackupChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostBackupChunk) ProtoMessage() {}
+
+func (x *HostBackupChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[67]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostBackupChunk.ProtoReflect.Descriptor instead.
+func (*HostBackupChunk) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{67}
+}
+
+func (x *HostBackupChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *HostBackupChunk) GetFilename() string {
+	if x != nil {
+		return x.Filename
+	}
+	return ""
+}
+
 var File_plugin_proto protoreflect.FileDescriptor
 
 const file_plugin_proto_rawDesc = "" +
@@ -4781,13 +5031,15 @@ const file_plugin_proto_rawDesc = "" +
 	"totalCents\x12\x16\n" +
 	"\x06status\x18\x04 \x01(\tR\x06status\x12\x17\n" +
 	"\ahost_id\x18\x05 \x01(\tR\x06hostId\x12\x14\n" +
-	"\x05error\x18\x06 \x01(\tR\x05error\"\xbe\x02\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\"\x9f\x03\n" +
 	"\x11ManageHostRequest\x12\x17\n" +
 	"\ahost_id\x18\x01 \x01(\tR\x06hostId\x123\n" +
 	"\x06action\x18\x02 \x01(\x0e2\x1b.levis.plugin.v1.HostActionR\x06action\x12#\n" +
 	"\rbilling_cycle\x18\x03 \x01(\tR\fbillingCycle\x12\x0e\n" +
 	"\x02os\x18\x04 \x01(\tR\x02os\x12b\n" +
-	"\x10interface_config\x18\x05 \x03(\v27.levis.plugin.v1.ManageHostRequest.InterfaceConfigEntryR\x0finterfaceConfig\x1aB\n" +
+	"\x10interface_config\x18\x05 \x03(\v27.levis.plugin.v1.ManageHostRequest.InterfaceConfigEntryR\x0finterfaceConfig\x12<\n" +
+	"\tresources\x18\x06 \x01(\v2\x1e.levis.plugin.v1.HostResourcesR\tresources\x12!\n" +
+	"\foperation_id\x18\a \x01(\tR\voperationId\x1aB\n" +
 	"\x14InterfaceConfigEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"`\n" +
@@ -5009,7 +5261,28 @@ const file_plugin_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"*\n" +
 	"\x12DeleteHostNATReply\x12\x14\n" +
-	"\x05error\x18\x01 \x01(\tR\x05error*\x97\x01\n" +
+	"\x05error\x18\x01 \x01(\tR\x05error\"\x95\x02\n" +
+	"\x14HostOperationRequest\x12\x17\n" +
+	"\ahost_id\x18\x01 \x01(\tR\x06hostId\x12\x16\n" +
+	"\x06action\x18\x02 \x01(\tR\x06action\x12!\n" +
+	"\fpayload_json\x18\x03 \x01(\tR\vpayloadJson\x12e\n" +
+	"\x10interface_config\x18\x04 \x03(\v2:.levis.plugin.v1.HostOperationRequest.InterfaceConfigEntryR\x0finterfaceConfig\x1aB\n" +
+	"\x14InterfaceConfigEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"G\n" +
+	"\x12HostOperationReply\x12\x1b\n" +
+	"\tdata_json\x18\x01 \x01(\tR\bdataJson\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"\xf1\x01\n" +
+	"\x11HostBackupRequest\x12\x17\n" +
+	"\ahost_id\x18\x01 \x01(\tR\x06hostId\x12\x1b\n" +
+	"\tbackup_id\x18\x02 \x01(\x04R\bbackupId\x12b\n" +
+	"\x10interface_config\x18\x03 \x03(\v27.levis.plugin.v1.HostBackupRequest.InterfaceConfigEntryR\x0finterfaceConfig\x1aB\n" +
+	"\x14InterfaceConfigEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"A\n" +
+	"\x0fHostBackupChunk\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\x12\x1a\n" +
+	"\bfilename\x18\x02 \x01(\tR\bfilename*\x97\x01\n" +
 	"\n" +
 	"Capability\x12\x1a\n" +
 	"\x16CAPABILITY_UNSPECIFIED\x10\x00\x12\x18\n" +
@@ -5029,7 +5302,7 @@ const file_plugin_proto_rawDesc = "" +
 	"\x15PAYMENT_STATE_PENDING\x10\x01\x12\x16\n" +
 	"\x12PAYMENT_STATE_PAID\x10\x02\x12\x18\n" +
 	"\x14PAYMENT_STATE_FAILED\x10\x03\x12\x1b\n" +
-	"\x17PAYMENT_STATE_CANCELLED\x10\x04*\xc6\x02\n" +
+	"\x17PAYMENT_STATE_CANCELLED\x10\x04*\xde\x02\n" +
 	"\n" +
 	"HostAction\x12\x1b\n" +
 	"\x17HOST_ACTION_UNSPECIFIED\x10\x00\x12\x15\n" +
@@ -5044,7 +5317,8 @@ const file_plugin_proto_rawDesc = "" +
 	"\x15HOST_ACTION_HARD_BOOT\x10\t\x12\x19\n" +
 	"\x15HOST_ACTION_HARD_STOP\x10\n" +
 	"\x12\x1c\n" +
-	"\x18HOST_ACTION_HARD_RESTART\x10\v2\xd7\x11\n" +
+	"\x18HOST_ACTION_HARD_RESTART\x10\v\x12\x16\n" +
+	"\x12HOST_ACTION_RESIZE\x10\f2\x92\x13\n" +
 	"\x06Plugin\x12G\n" +
 	"\bDescribe\x12 .levis.plugin.v1.DescribeRequest\x1a\x19.levis.plugin.v1.Manifest\x12O\n" +
 	"\tConfigure\x12!.levis.plugin.v1.ConfigureRequest\x1a\x1f.levis.plugin.v1.ConfigureReply\x12F\n" +
@@ -5076,7 +5350,9 @@ const file_plugin_proto_rawDesc = "" +
 	"\x14CreateHostNATMapping\x12%.levis.plugin.v1.CreateHostNATRequest\x1a#.levis.plugin.v1.CreateHostNATReply\x12b\n" +
 	"\x14DeleteHostNATMapping\x12%.levis.plugin.v1.DeleteHostNATRequest\x1a#.levis.plugin.v1.DeleteHostNATReply\x12L\n" +
 	"\bStartKYC\x12 .levis.plugin.v1.StartKYCRequest\x1a\x1e.levis.plugin.v1.StartKYCReply\x12L\n" +
-	"\bQueryKYC\x12 .levis.plugin.v1.QueryKYCRequest\x1a\x1e.levis.plugin.v1.QueryKYCReplyB:Z8github.com/SakuraOpenSource/levis/pkg/plugin/proto;protob\x06proto3"
+	"\bQueryKYC\x12 .levis.plugin.v1.QueryKYCRequest\x1a\x1e.levis.plugin.v1.QueryKYCReply\x12[\n" +
+	"\rHostOperation\x12%.levis.plugin.v1.HostOperationRequest\x1a#.levis.plugin.v1.HostOperationReply\x12\\\n" +
+	"\x12DownloadHostBackup\x12\".levis.plugin.v1.HostBackupRequest\x1a .levis.plugin.v1.HostBackupChunk0\x01B:Z8github.com/SakuraOpenSource/levis/pkg/plugin/proto;protob\x06proto3"
 
 var (
 	file_plugin_proto_rawDescOnce sync.Once
@@ -5091,7 +5367,7 @@ func file_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 91)
+var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 97)
 var file_plugin_proto_goTypes = []any{
 	(Capability)(0),                      // 0: levis.plugin.v1.Capability
 	(FieldType)(0),                       // 1: levis.plugin.v1.FieldType
@@ -5161,143 +5437,156 @@ var file_plugin_proto_goTypes = []any{
 	(*CreateHostNATReply)(nil),           // 65: levis.plugin.v1.CreateHostNATReply
 	(*DeleteHostNATRequest)(nil),         // 66: levis.plugin.v1.DeleteHostNATRequest
 	(*DeleteHostNATReply)(nil),           // 67: levis.plugin.v1.DeleteHostNATReply
-	nil,                                  // 68: levis.plugin.v1.ConfigureRequest.ValuesEntry
-	nil,                                  // 69: levis.plugin.v1.CreatePaymentRequest.ConfigEntry
-	nil,                                  // 70: levis.plugin.v1.QueryPaymentRequest.ConfigEntry
-	nil,                                  // 71: levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntry
-	nil,                                  // 72: levis.plugin.v1.VerifyPaymentCallbackRequest.ConfigEntry
-	nil,                                  // 73: levis.plugin.v1.RefundPaymentRequest.ConfigEntry
-	nil,                                  // 74: levis.plugin.v1.ListProductsRequest.InterfaceConfigEntry
-	nil,                                  // 75: levis.plugin.v1.UpstreamProduct.SpecsEntry
-	nil,                                  // 76: levis.plugin.v1.GetProductRequest.InterfaceConfigEntry
-	nil,                                  // 77: levis.plugin.v1.CreateOrderRequest.InterfaceConfigEntry
-	nil,                                  // 78: levis.plugin.v1.CreateOrderRequest.OptionsEntry
-	nil,                                  // 79: levis.plugin.v1.GetOrderRequest.InterfaceConfigEntry
-	nil,                                  // 80: levis.plugin.v1.ManageHostRequest.InterfaceConfigEntry
-	nil,                                  // 81: levis.plugin.v1.GetHostRequest.InterfaceConfigEntry
-	nil,                                  // 82: levis.plugin.v1.GetHostMetricsRequest.InterfaceConfigEntry
-	nil,                                  // 83: levis.plugin.v1.GetHostAccessRequest.InterfaceConfigEntry
-	nil,                                  // 84: levis.plugin.v1.GetHostVNCRequest.InterfaceConfigEntry
-	nil,                                  // 85: levis.plugin.v1.ListHostOSRequest.InterfaceConfigEntry
-	nil,                                  // 86: levis.plugin.v1.ListProductOSRequest.InterfaceConfigEntry
-	nil,                                  // 87: levis.plugin.v1.ListProductOSRequest.OptionsEntry
-	nil,                                  // 88: levis.plugin.v1.ListAgentsRequest.InterfaceConfigEntry
-	nil,                                  // 89: levis.plugin.v1.StartKYCRequest.InputEntry
-	nil,                                  // 90: levis.plugin.v1.StartKYCRequest.ConfigEntry
-	nil,                                  // 91: levis.plugin.v1.QueryKYCRequest.ConfigEntry
-	nil,                                  // 92: levis.plugin.v1.ListHostNATRequest.InterfaceConfigEntry
-	nil,                                  // 93: levis.plugin.v1.CreateHostNATRequest.InterfaceConfigEntry
-	nil,                                  // 94: levis.plugin.v1.DeleteHostNATRequest.InterfaceConfigEntry
+	(*HostOperationRequest)(nil),         // 68: levis.plugin.v1.HostOperationRequest
+	(*HostOperationReply)(nil),           // 69: levis.plugin.v1.HostOperationReply
+	(*HostBackupRequest)(nil),            // 70: levis.plugin.v1.HostBackupRequest
+	(*HostBackupChunk)(nil),              // 71: levis.plugin.v1.HostBackupChunk
+	nil,                                  // 72: levis.plugin.v1.ConfigureRequest.ValuesEntry
+	nil,                                  // 73: levis.plugin.v1.CreatePaymentRequest.ConfigEntry
+	nil,                                  // 74: levis.plugin.v1.QueryPaymentRequest.ConfigEntry
+	nil,                                  // 75: levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntry
+	nil,                                  // 76: levis.plugin.v1.VerifyPaymentCallbackRequest.ConfigEntry
+	nil,                                  // 77: levis.plugin.v1.RefundPaymentRequest.ConfigEntry
+	nil,                                  // 78: levis.plugin.v1.ListProductsRequest.InterfaceConfigEntry
+	nil,                                  // 79: levis.plugin.v1.UpstreamProduct.SpecsEntry
+	nil,                                  // 80: levis.plugin.v1.GetProductRequest.InterfaceConfigEntry
+	nil,                                  // 81: levis.plugin.v1.CreateOrderRequest.InterfaceConfigEntry
+	nil,                                  // 82: levis.plugin.v1.CreateOrderRequest.OptionsEntry
+	nil,                                  // 83: levis.plugin.v1.GetOrderRequest.InterfaceConfigEntry
+	nil,                                  // 84: levis.plugin.v1.ManageHostRequest.InterfaceConfigEntry
+	nil,                                  // 85: levis.plugin.v1.GetHostRequest.InterfaceConfigEntry
+	nil,                                  // 86: levis.plugin.v1.GetHostMetricsRequest.InterfaceConfigEntry
+	nil,                                  // 87: levis.plugin.v1.GetHostAccessRequest.InterfaceConfigEntry
+	nil,                                  // 88: levis.plugin.v1.GetHostVNCRequest.InterfaceConfigEntry
+	nil,                                  // 89: levis.plugin.v1.ListHostOSRequest.InterfaceConfigEntry
+	nil,                                  // 90: levis.plugin.v1.ListProductOSRequest.InterfaceConfigEntry
+	nil,                                  // 91: levis.plugin.v1.ListProductOSRequest.OptionsEntry
+	nil,                                  // 92: levis.plugin.v1.ListAgentsRequest.InterfaceConfigEntry
+	nil,                                  // 93: levis.plugin.v1.StartKYCRequest.InputEntry
+	nil,                                  // 94: levis.plugin.v1.StartKYCRequest.ConfigEntry
+	nil,                                  // 95: levis.plugin.v1.QueryKYCRequest.ConfigEntry
+	nil,                                  // 96: levis.plugin.v1.ListHostNATRequest.InterfaceConfigEntry
+	nil,                                  // 97: levis.plugin.v1.CreateHostNATRequest.InterfaceConfigEntry
+	nil,                                  // 98: levis.plugin.v1.DeleteHostNATRequest.InterfaceConfigEntry
+	nil,                                  // 99: levis.plugin.v1.HostOperationRequest.InterfaceConfigEntry
+	nil,                                  // 100: levis.plugin.v1.HostBackupRequest.InterfaceConfigEntry
 }
 var file_plugin_proto_depIdxs = []int32{
-	1,  // 0: levis.plugin.v1.ConfigField.type:type_name -> levis.plugin.v1.FieldType
-	5,  // 1: levis.plugin.v1.ConfigField.options:type_name -> levis.plugin.v1.SelectOption
-	0,  // 2: levis.plugin.v1.Manifest.capabilities:type_name -> levis.plugin.v1.Capability
-	4,  // 3: levis.plugin.v1.Manifest.config:type_name -> levis.plugin.v1.ConfigField
-	4,  // 4: levis.plugin.v1.Manifest.payment_config:type_name -> levis.plugin.v1.ConfigField
-	4,  // 5: levis.plugin.v1.Manifest.kyc_fields:type_name -> levis.plugin.v1.ConfigField
-	68, // 6: levis.plugin.v1.ConfigureRequest.values:type_name -> levis.plugin.v1.ConfigureRequest.ValuesEntry
-	14, // 7: levis.plugin.v1.SendMailRequest.to:type_name -> levis.plugin.v1.Mailbox
-	69, // 8: levis.plugin.v1.CreatePaymentRequest.config:type_name -> levis.plugin.v1.CreatePaymentRequest.ConfigEntry
-	70, // 9: levis.plugin.v1.QueryPaymentRequest.config:type_name -> levis.plugin.v1.QueryPaymentRequest.ConfigEntry
-	2,  // 10: levis.plugin.v1.QueryPaymentReply.state:type_name -> levis.plugin.v1.PaymentState
-	71, // 11: levis.plugin.v1.VerifyPaymentCallbackRequest.raw:type_name -> levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntry
-	72, // 12: levis.plugin.v1.VerifyPaymentCallbackRequest.config:type_name -> levis.plugin.v1.VerifyPaymentCallbackRequest.ConfigEntry
-	2,  // 13: levis.plugin.v1.VerifyPaymentCallbackReply.state:type_name -> levis.plugin.v1.PaymentState
-	73, // 14: levis.plugin.v1.RefundPaymentRequest.config:type_name -> levis.plugin.v1.RefundPaymentRequest.ConfigEntry
-	74, // 15: levis.plugin.v1.ListProductsRequest.interface_config:type_name -> levis.plugin.v1.ListProductsRequest.InterfaceConfigEntry
-	75, // 16: levis.plugin.v1.UpstreamProduct.specs:type_name -> levis.plugin.v1.UpstreamProduct.SpecsEntry
-	26, // 17: levis.plugin.v1.ListProductsReply.products:type_name -> levis.plugin.v1.UpstreamProduct
-	76, // 18: levis.plugin.v1.GetProductRequest.interface_config:type_name -> levis.plugin.v1.GetProductRequest.InterfaceConfigEntry
-	26, // 19: levis.plugin.v1.GetProductReply.product:type_name -> levis.plugin.v1.UpstreamProduct
-	77, // 20: levis.plugin.v1.CreateOrderRequest.interface_config:type_name -> levis.plugin.v1.CreateOrderRequest.InterfaceConfigEntry
-	78, // 21: levis.plugin.v1.CreateOrderRequest.options:type_name -> levis.plugin.v1.CreateOrderRequest.OptionsEntry
-	79, // 22: levis.plugin.v1.GetOrderRequest.interface_config:type_name -> levis.plugin.v1.GetOrderRequest.InterfaceConfigEntry
-	3,  // 23: levis.plugin.v1.ManageHostRequest.action:type_name -> levis.plugin.v1.HostAction
-	80, // 24: levis.plugin.v1.ManageHostRequest.interface_config:type_name -> levis.plugin.v1.ManageHostRequest.InterfaceConfigEntry
-	81, // 25: levis.plugin.v1.GetHostRequest.interface_config:type_name -> levis.plugin.v1.GetHostRequest.InterfaceConfigEntry
-	38, // 26: levis.plugin.v1.UpstreamHost.resources:type_name -> levis.plugin.v1.HostResources
-	39, // 27: levis.plugin.v1.UpstreamHost.network:type_name -> levis.plugin.v1.HostNetwork
-	40, // 28: levis.plugin.v1.UpstreamHost.ssh:type_name -> levis.plugin.v1.HostSSH
-	82, // 29: levis.plugin.v1.GetHostMetricsRequest.interface_config:type_name -> levis.plugin.v1.GetHostMetricsRequest.InterfaceConfigEntry
-	41, // 30: levis.plugin.v1.GetHostMetricsReply.metrics:type_name -> levis.plugin.v1.HostMetrics
-	83, // 31: levis.plugin.v1.GetHostAccessRequest.interface_config:type_name -> levis.plugin.v1.GetHostAccessRequest.InterfaceConfigEntry
-	39, // 32: levis.plugin.v1.GetHostAccessReply.network:type_name -> levis.plugin.v1.HostNetwork
-	40, // 33: levis.plugin.v1.GetHostAccessReply.ssh:type_name -> levis.plugin.v1.HostSSH
-	84, // 34: levis.plugin.v1.GetHostVNCRequest.interface_config:type_name -> levis.plugin.v1.GetHostVNCRequest.InterfaceConfigEntry
-	46, // 35: levis.plugin.v1.GetHostVNCReply.vnc:type_name -> levis.plugin.v1.HostVNC
-	37, // 36: levis.plugin.v1.GetHostReply.host:type_name -> levis.plugin.v1.UpstreamHost
-	85, // 37: levis.plugin.v1.ListHostOSRequest.interface_config:type_name -> levis.plugin.v1.ListHostOSRequest.InterfaceConfigEntry
-	50, // 38: levis.plugin.v1.ListHostOSReply.os:type_name -> levis.plugin.v1.OSImage
-	86, // 39: levis.plugin.v1.ListProductOSRequest.interface_config:type_name -> levis.plugin.v1.ListProductOSRequest.InterfaceConfigEntry
-	87, // 40: levis.plugin.v1.ListProductOSRequest.options:type_name -> levis.plugin.v1.ListProductOSRequest.OptionsEntry
-	88, // 41: levis.plugin.v1.ListAgentsRequest.interface_config:type_name -> levis.plugin.v1.ListAgentsRequest.InterfaceConfigEntry
-	54, // 42: levis.plugin.v1.ListAgentsReply.agents:type_name -> levis.plugin.v1.UpstreamAgent
-	89, // 43: levis.plugin.v1.StartKYCRequest.input:type_name -> levis.plugin.v1.StartKYCRequest.InputEntry
-	90, // 44: levis.plugin.v1.StartKYCRequest.config:type_name -> levis.plugin.v1.StartKYCRequest.ConfigEntry
-	91, // 45: levis.plugin.v1.QueryKYCRequest.config:type_name -> levis.plugin.v1.QueryKYCRequest.ConfigEntry
-	92, // 46: levis.plugin.v1.ListHostNATRequest.interface_config:type_name -> levis.plugin.v1.ListHostNATRequest.InterfaceConfigEntry
-	61, // 47: levis.plugin.v1.ListHostNATReply.mappings:type_name -> levis.plugin.v1.HostNATMapping
-	93, // 48: levis.plugin.v1.CreateHostNATRequest.interface_config:type_name -> levis.plugin.v1.CreateHostNATRequest.InterfaceConfigEntry
-	61, // 49: levis.plugin.v1.CreateHostNATReply.mapping:type_name -> levis.plugin.v1.HostNATMapping
-	94, // 50: levis.plugin.v1.DeleteHostNATRequest.interface_config:type_name -> levis.plugin.v1.DeleteHostNATRequest.InterfaceConfigEntry
-	6,  // 51: levis.plugin.v1.Plugin.Describe:input_type -> levis.plugin.v1.DescribeRequest
-	8,  // 52: levis.plugin.v1.Plugin.Configure:input_type -> levis.plugin.v1.ConfigureRequest
-	10, // 53: levis.plugin.v1.Plugin.Health:input_type -> levis.plugin.v1.HealthRequest
-	12, // 54: levis.plugin.v1.Plugin.Shutdown:input_type -> levis.plugin.v1.ShutdownRequest
-	15, // 55: levis.plugin.v1.Plugin.SendMail:input_type -> levis.plugin.v1.SendMailRequest
-	17, // 56: levis.plugin.v1.Plugin.CreatePayment:input_type -> levis.plugin.v1.CreatePaymentRequest
-	19, // 57: levis.plugin.v1.Plugin.QueryPayment:input_type -> levis.plugin.v1.QueryPaymentRequest
-	21, // 58: levis.plugin.v1.Plugin.VerifyPaymentCallback:input_type -> levis.plugin.v1.VerifyPaymentCallbackRequest
-	23, // 59: levis.plugin.v1.Plugin.RefundPayment:input_type -> levis.plugin.v1.RefundPaymentRequest
-	25, // 60: levis.plugin.v1.Plugin.ListProducts:input_type -> levis.plugin.v1.ListProductsRequest
-	28, // 61: levis.plugin.v1.Plugin.GetProduct:input_type -> levis.plugin.v1.GetProductRequest
-	30, // 62: levis.plugin.v1.Plugin.CreateOrder:input_type -> levis.plugin.v1.CreateOrderRequest
-	32, // 63: levis.plugin.v1.Plugin.GetOrder:input_type -> levis.plugin.v1.GetOrderRequest
-	34, // 64: levis.plugin.v1.Plugin.ManageHost:input_type -> levis.plugin.v1.ManageHostRequest
-	36, // 65: levis.plugin.v1.Plugin.GetHost:input_type -> levis.plugin.v1.GetHostRequest
-	51, // 66: levis.plugin.v1.Plugin.ListHostOS:input_type -> levis.plugin.v1.ListHostOSRequest
-	53, // 67: levis.plugin.v1.Plugin.ListProductOS:input_type -> levis.plugin.v1.ListProductOSRequest
-	55, // 68: levis.plugin.v1.Plugin.ListAgents:input_type -> levis.plugin.v1.ListAgentsRequest
-	42, // 69: levis.plugin.v1.Plugin.GetHostMetrics:input_type -> levis.plugin.v1.GetHostMetricsRequest
-	44, // 70: levis.plugin.v1.Plugin.GetHostAccess:input_type -> levis.plugin.v1.GetHostAccessRequest
-	47, // 71: levis.plugin.v1.Plugin.GetHostVNC:input_type -> levis.plugin.v1.GetHostVNCRequest
-	62, // 72: levis.plugin.v1.Plugin.ListHostNATMappings:input_type -> levis.plugin.v1.ListHostNATRequest
-	64, // 73: levis.plugin.v1.Plugin.CreateHostNATMapping:input_type -> levis.plugin.v1.CreateHostNATRequest
-	66, // 74: levis.plugin.v1.Plugin.DeleteHostNATMapping:input_type -> levis.plugin.v1.DeleteHostNATRequest
-	57, // 75: levis.plugin.v1.Plugin.StartKYC:input_type -> levis.plugin.v1.StartKYCRequest
-	59, // 76: levis.plugin.v1.Plugin.QueryKYC:input_type -> levis.plugin.v1.QueryKYCRequest
-	7,  // 77: levis.plugin.v1.Plugin.Describe:output_type -> levis.plugin.v1.Manifest
-	9,  // 78: levis.plugin.v1.Plugin.Configure:output_type -> levis.plugin.v1.ConfigureReply
-	11, // 79: levis.plugin.v1.Plugin.Health:output_type -> levis.plugin.v1.HealthReply
-	13, // 80: levis.plugin.v1.Plugin.Shutdown:output_type -> levis.plugin.v1.ShutdownReply
-	16, // 81: levis.plugin.v1.Plugin.SendMail:output_type -> levis.plugin.v1.SendMailReply
-	18, // 82: levis.plugin.v1.Plugin.CreatePayment:output_type -> levis.plugin.v1.CreatePaymentReply
-	20, // 83: levis.plugin.v1.Plugin.QueryPayment:output_type -> levis.plugin.v1.QueryPaymentReply
-	22, // 84: levis.plugin.v1.Plugin.VerifyPaymentCallback:output_type -> levis.plugin.v1.VerifyPaymentCallbackReply
-	24, // 85: levis.plugin.v1.Plugin.RefundPayment:output_type -> levis.plugin.v1.RefundPaymentReply
-	27, // 86: levis.plugin.v1.Plugin.ListProducts:output_type -> levis.plugin.v1.ListProductsReply
-	29, // 87: levis.plugin.v1.Plugin.GetProduct:output_type -> levis.plugin.v1.GetProductReply
-	31, // 88: levis.plugin.v1.Plugin.CreateOrder:output_type -> levis.plugin.v1.CreateOrderReply
-	33, // 89: levis.plugin.v1.Plugin.GetOrder:output_type -> levis.plugin.v1.GetOrderReply
-	35, // 90: levis.plugin.v1.Plugin.ManageHost:output_type -> levis.plugin.v1.ManageHostReply
-	49, // 91: levis.plugin.v1.Plugin.GetHost:output_type -> levis.plugin.v1.GetHostReply
-	52, // 92: levis.plugin.v1.Plugin.ListHostOS:output_type -> levis.plugin.v1.ListHostOSReply
-	52, // 93: levis.plugin.v1.Plugin.ListProductOS:output_type -> levis.plugin.v1.ListHostOSReply
-	56, // 94: levis.plugin.v1.Plugin.ListAgents:output_type -> levis.plugin.v1.ListAgentsReply
-	43, // 95: levis.plugin.v1.Plugin.GetHostMetrics:output_type -> levis.plugin.v1.GetHostMetricsReply
-	45, // 96: levis.plugin.v1.Plugin.GetHostAccess:output_type -> levis.plugin.v1.GetHostAccessReply
-	48, // 97: levis.plugin.v1.Plugin.GetHostVNC:output_type -> levis.plugin.v1.GetHostVNCReply
-	63, // 98: levis.plugin.v1.Plugin.ListHostNATMappings:output_type -> levis.plugin.v1.ListHostNATReply
-	65, // 99: levis.plugin.v1.Plugin.CreateHostNATMapping:output_type -> levis.plugin.v1.CreateHostNATReply
-	67, // 100: levis.plugin.v1.Plugin.DeleteHostNATMapping:output_type -> levis.plugin.v1.DeleteHostNATReply
-	58, // 101: levis.plugin.v1.Plugin.StartKYC:output_type -> levis.plugin.v1.StartKYCReply
-	60, // 102: levis.plugin.v1.Plugin.QueryKYC:output_type -> levis.plugin.v1.QueryKYCReply
-	77, // [77:103] is the sub-list for method output_type
-	51, // [51:77] is the sub-list for method input_type
-	51, // [51:51] is the sub-list for extension type_name
-	51, // [51:51] is the sub-list for extension extendee
-	0,  // [0:51] is the sub-list for field type_name
+	1,   // 0: levis.plugin.v1.ConfigField.type:type_name -> levis.plugin.v1.FieldType
+	5,   // 1: levis.plugin.v1.ConfigField.options:type_name -> levis.plugin.v1.SelectOption
+	0,   // 2: levis.plugin.v1.Manifest.capabilities:type_name -> levis.plugin.v1.Capability
+	4,   // 3: levis.plugin.v1.Manifest.config:type_name -> levis.plugin.v1.ConfigField
+	4,   // 4: levis.plugin.v1.Manifest.payment_config:type_name -> levis.plugin.v1.ConfigField
+	4,   // 5: levis.plugin.v1.Manifest.kyc_fields:type_name -> levis.plugin.v1.ConfigField
+	72,  // 6: levis.plugin.v1.ConfigureRequest.values:type_name -> levis.plugin.v1.ConfigureRequest.ValuesEntry
+	14,  // 7: levis.plugin.v1.SendMailRequest.to:type_name -> levis.plugin.v1.Mailbox
+	73,  // 8: levis.plugin.v1.CreatePaymentRequest.config:type_name -> levis.plugin.v1.CreatePaymentRequest.ConfigEntry
+	74,  // 9: levis.plugin.v1.QueryPaymentRequest.config:type_name -> levis.plugin.v1.QueryPaymentRequest.ConfigEntry
+	2,   // 10: levis.plugin.v1.QueryPaymentReply.state:type_name -> levis.plugin.v1.PaymentState
+	75,  // 11: levis.plugin.v1.VerifyPaymentCallbackRequest.raw:type_name -> levis.plugin.v1.VerifyPaymentCallbackRequest.RawEntry
+	76,  // 12: levis.plugin.v1.VerifyPaymentCallbackRequest.config:type_name -> levis.plugin.v1.VerifyPaymentCallbackRequest.ConfigEntry
+	2,   // 13: levis.plugin.v1.VerifyPaymentCallbackReply.state:type_name -> levis.plugin.v1.PaymentState
+	77,  // 14: levis.plugin.v1.RefundPaymentRequest.config:type_name -> levis.plugin.v1.RefundPaymentRequest.ConfigEntry
+	78,  // 15: levis.plugin.v1.ListProductsRequest.interface_config:type_name -> levis.plugin.v1.ListProductsRequest.InterfaceConfigEntry
+	79,  // 16: levis.plugin.v1.UpstreamProduct.specs:type_name -> levis.plugin.v1.UpstreamProduct.SpecsEntry
+	26,  // 17: levis.plugin.v1.ListProductsReply.products:type_name -> levis.plugin.v1.UpstreamProduct
+	80,  // 18: levis.plugin.v1.GetProductRequest.interface_config:type_name -> levis.plugin.v1.GetProductRequest.InterfaceConfigEntry
+	26,  // 19: levis.plugin.v1.GetProductReply.product:type_name -> levis.plugin.v1.UpstreamProduct
+	81,  // 20: levis.plugin.v1.CreateOrderRequest.interface_config:type_name -> levis.plugin.v1.CreateOrderRequest.InterfaceConfigEntry
+	82,  // 21: levis.plugin.v1.CreateOrderRequest.options:type_name -> levis.plugin.v1.CreateOrderRequest.OptionsEntry
+	83,  // 22: levis.plugin.v1.GetOrderRequest.interface_config:type_name -> levis.plugin.v1.GetOrderRequest.InterfaceConfigEntry
+	3,   // 23: levis.plugin.v1.ManageHostRequest.action:type_name -> levis.plugin.v1.HostAction
+	84,  // 24: levis.plugin.v1.ManageHostRequest.interface_config:type_name -> levis.plugin.v1.ManageHostRequest.InterfaceConfigEntry
+	38,  // 25: levis.plugin.v1.ManageHostRequest.resources:type_name -> levis.plugin.v1.HostResources
+	85,  // 26: levis.plugin.v1.GetHostRequest.interface_config:type_name -> levis.plugin.v1.GetHostRequest.InterfaceConfigEntry
+	38,  // 27: levis.plugin.v1.UpstreamHost.resources:type_name -> levis.plugin.v1.HostResources
+	39,  // 28: levis.plugin.v1.UpstreamHost.network:type_name -> levis.plugin.v1.HostNetwork
+	40,  // 29: levis.plugin.v1.UpstreamHost.ssh:type_name -> levis.plugin.v1.HostSSH
+	86,  // 30: levis.plugin.v1.GetHostMetricsRequest.interface_config:type_name -> levis.plugin.v1.GetHostMetricsRequest.InterfaceConfigEntry
+	41,  // 31: levis.plugin.v1.GetHostMetricsReply.metrics:type_name -> levis.plugin.v1.HostMetrics
+	87,  // 32: levis.plugin.v1.GetHostAccessRequest.interface_config:type_name -> levis.plugin.v1.GetHostAccessRequest.InterfaceConfigEntry
+	39,  // 33: levis.plugin.v1.GetHostAccessReply.network:type_name -> levis.plugin.v1.HostNetwork
+	40,  // 34: levis.plugin.v1.GetHostAccessReply.ssh:type_name -> levis.plugin.v1.HostSSH
+	88,  // 35: levis.plugin.v1.GetHostVNCRequest.interface_config:type_name -> levis.plugin.v1.GetHostVNCRequest.InterfaceConfigEntry
+	46,  // 36: levis.plugin.v1.GetHostVNCReply.vnc:type_name -> levis.plugin.v1.HostVNC
+	37,  // 37: levis.plugin.v1.GetHostReply.host:type_name -> levis.plugin.v1.UpstreamHost
+	89,  // 38: levis.plugin.v1.ListHostOSRequest.interface_config:type_name -> levis.plugin.v1.ListHostOSRequest.InterfaceConfigEntry
+	50,  // 39: levis.plugin.v1.ListHostOSReply.os:type_name -> levis.plugin.v1.OSImage
+	90,  // 40: levis.plugin.v1.ListProductOSRequest.interface_config:type_name -> levis.plugin.v1.ListProductOSRequest.InterfaceConfigEntry
+	91,  // 41: levis.plugin.v1.ListProductOSRequest.options:type_name -> levis.plugin.v1.ListProductOSRequest.OptionsEntry
+	92,  // 42: levis.plugin.v1.ListAgentsRequest.interface_config:type_name -> levis.plugin.v1.ListAgentsRequest.InterfaceConfigEntry
+	54,  // 43: levis.plugin.v1.ListAgentsReply.agents:type_name -> levis.plugin.v1.UpstreamAgent
+	93,  // 44: levis.plugin.v1.StartKYCRequest.input:type_name -> levis.plugin.v1.StartKYCRequest.InputEntry
+	94,  // 45: levis.plugin.v1.StartKYCRequest.config:type_name -> levis.plugin.v1.StartKYCRequest.ConfigEntry
+	95,  // 46: levis.plugin.v1.QueryKYCRequest.config:type_name -> levis.plugin.v1.QueryKYCRequest.ConfigEntry
+	96,  // 47: levis.plugin.v1.ListHostNATRequest.interface_config:type_name -> levis.plugin.v1.ListHostNATRequest.InterfaceConfigEntry
+	61,  // 48: levis.plugin.v1.ListHostNATReply.mappings:type_name -> levis.plugin.v1.HostNATMapping
+	97,  // 49: levis.plugin.v1.CreateHostNATRequest.interface_config:type_name -> levis.plugin.v1.CreateHostNATRequest.InterfaceConfigEntry
+	61,  // 50: levis.plugin.v1.CreateHostNATReply.mapping:type_name -> levis.plugin.v1.HostNATMapping
+	98,  // 51: levis.plugin.v1.DeleteHostNATRequest.interface_config:type_name -> levis.plugin.v1.DeleteHostNATRequest.InterfaceConfigEntry
+	99,  // 52: levis.plugin.v1.HostOperationRequest.interface_config:type_name -> levis.plugin.v1.HostOperationRequest.InterfaceConfigEntry
+	100, // 53: levis.plugin.v1.HostBackupRequest.interface_config:type_name -> levis.plugin.v1.HostBackupRequest.InterfaceConfigEntry
+	6,   // 54: levis.plugin.v1.Plugin.Describe:input_type -> levis.plugin.v1.DescribeRequest
+	8,   // 55: levis.plugin.v1.Plugin.Configure:input_type -> levis.plugin.v1.ConfigureRequest
+	10,  // 56: levis.plugin.v1.Plugin.Health:input_type -> levis.plugin.v1.HealthRequest
+	12,  // 57: levis.plugin.v1.Plugin.Shutdown:input_type -> levis.plugin.v1.ShutdownRequest
+	15,  // 58: levis.plugin.v1.Plugin.SendMail:input_type -> levis.plugin.v1.SendMailRequest
+	17,  // 59: levis.plugin.v1.Plugin.CreatePayment:input_type -> levis.plugin.v1.CreatePaymentRequest
+	19,  // 60: levis.plugin.v1.Plugin.QueryPayment:input_type -> levis.plugin.v1.QueryPaymentRequest
+	21,  // 61: levis.plugin.v1.Plugin.VerifyPaymentCallback:input_type -> levis.plugin.v1.VerifyPaymentCallbackRequest
+	23,  // 62: levis.plugin.v1.Plugin.RefundPayment:input_type -> levis.plugin.v1.RefundPaymentRequest
+	25,  // 63: levis.plugin.v1.Plugin.ListProducts:input_type -> levis.plugin.v1.ListProductsRequest
+	28,  // 64: levis.plugin.v1.Plugin.GetProduct:input_type -> levis.plugin.v1.GetProductRequest
+	30,  // 65: levis.plugin.v1.Plugin.CreateOrder:input_type -> levis.plugin.v1.CreateOrderRequest
+	32,  // 66: levis.plugin.v1.Plugin.GetOrder:input_type -> levis.plugin.v1.GetOrderRequest
+	34,  // 67: levis.plugin.v1.Plugin.ManageHost:input_type -> levis.plugin.v1.ManageHostRequest
+	36,  // 68: levis.plugin.v1.Plugin.GetHost:input_type -> levis.plugin.v1.GetHostRequest
+	51,  // 69: levis.plugin.v1.Plugin.ListHostOS:input_type -> levis.plugin.v1.ListHostOSRequest
+	53,  // 70: levis.plugin.v1.Plugin.ListProductOS:input_type -> levis.plugin.v1.ListProductOSRequest
+	55,  // 71: levis.plugin.v1.Plugin.ListAgents:input_type -> levis.plugin.v1.ListAgentsRequest
+	42,  // 72: levis.plugin.v1.Plugin.GetHostMetrics:input_type -> levis.plugin.v1.GetHostMetricsRequest
+	44,  // 73: levis.plugin.v1.Plugin.GetHostAccess:input_type -> levis.plugin.v1.GetHostAccessRequest
+	47,  // 74: levis.plugin.v1.Plugin.GetHostVNC:input_type -> levis.plugin.v1.GetHostVNCRequest
+	62,  // 75: levis.plugin.v1.Plugin.ListHostNATMappings:input_type -> levis.plugin.v1.ListHostNATRequest
+	64,  // 76: levis.plugin.v1.Plugin.CreateHostNATMapping:input_type -> levis.plugin.v1.CreateHostNATRequest
+	66,  // 77: levis.plugin.v1.Plugin.DeleteHostNATMapping:input_type -> levis.plugin.v1.DeleteHostNATRequest
+	57,  // 78: levis.plugin.v1.Plugin.StartKYC:input_type -> levis.plugin.v1.StartKYCRequest
+	59,  // 79: levis.plugin.v1.Plugin.QueryKYC:input_type -> levis.plugin.v1.QueryKYCRequest
+	68,  // 80: levis.plugin.v1.Plugin.HostOperation:input_type -> levis.plugin.v1.HostOperationRequest
+	70,  // 81: levis.plugin.v1.Plugin.DownloadHostBackup:input_type -> levis.plugin.v1.HostBackupRequest
+	7,   // 82: levis.plugin.v1.Plugin.Describe:output_type -> levis.plugin.v1.Manifest
+	9,   // 83: levis.plugin.v1.Plugin.Configure:output_type -> levis.plugin.v1.ConfigureReply
+	11,  // 84: levis.plugin.v1.Plugin.Health:output_type -> levis.plugin.v1.HealthReply
+	13,  // 85: levis.plugin.v1.Plugin.Shutdown:output_type -> levis.plugin.v1.ShutdownReply
+	16,  // 86: levis.plugin.v1.Plugin.SendMail:output_type -> levis.plugin.v1.SendMailReply
+	18,  // 87: levis.plugin.v1.Plugin.CreatePayment:output_type -> levis.plugin.v1.CreatePaymentReply
+	20,  // 88: levis.plugin.v1.Plugin.QueryPayment:output_type -> levis.plugin.v1.QueryPaymentReply
+	22,  // 89: levis.plugin.v1.Plugin.VerifyPaymentCallback:output_type -> levis.plugin.v1.VerifyPaymentCallbackReply
+	24,  // 90: levis.plugin.v1.Plugin.RefundPayment:output_type -> levis.plugin.v1.RefundPaymentReply
+	27,  // 91: levis.plugin.v1.Plugin.ListProducts:output_type -> levis.plugin.v1.ListProductsReply
+	29,  // 92: levis.plugin.v1.Plugin.GetProduct:output_type -> levis.plugin.v1.GetProductReply
+	31,  // 93: levis.plugin.v1.Plugin.CreateOrder:output_type -> levis.plugin.v1.CreateOrderReply
+	33,  // 94: levis.plugin.v1.Plugin.GetOrder:output_type -> levis.plugin.v1.GetOrderReply
+	35,  // 95: levis.plugin.v1.Plugin.ManageHost:output_type -> levis.plugin.v1.ManageHostReply
+	49,  // 96: levis.plugin.v1.Plugin.GetHost:output_type -> levis.plugin.v1.GetHostReply
+	52,  // 97: levis.plugin.v1.Plugin.ListHostOS:output_type -> levis.plugin.v1.ListHostOSReply
+	52,  // 98: levis.plugin.v1.Plugin.ListProductOS:output_type -> levis.plugin.v1.ListHostOSReply
+	56,  // 99: levis.plugin.v1.Plugin.ListAgents:output_type -> levis.plugin.v1.ListAgentsReply
+	43,  // 100: levis.plugin.v1.Plugin.GetHostMetrics:output_type -> levis.plugin.v1.GetHostMetricsReply
+	45,  // 101: levis.plugin.v1.Plugin.GetHostAccess:output_type -> levis.plugin.v1.GetHostAccessReply
+	48,  // 102: levis.plugin.v1.Plugin.GetHostVNC:output_type -> levis.plugin.v1.GetHostVNCReply
+	63,  // 103: levis.plugin.v1.Plugin.ListHostNATMappings:output_type -> levis.plugin.v1.ListHostNATReply
+	65,  // 104: levis.plugin.v1.Plugin.CreateHostNATMapping:output_type -> levis.plugin.v1.CreateHostNATReply
+	67,  // 105: levis.plugin.v1.Plugin.DeleteHostNATMapping:output_type -> levis.plugin.v1.DeleteHostNATReply
+	58,  // 106: levis.plugin.v1.Plugin.StartKYC:output_type -> levis.plugin.v1.StartKYCReply
+	60,  // 107: levis.plugin.v1.Plugin.QueryKYC:output_type -> levis.plugin.v1.QueryKYCReply
+	69,  // 108: levis.plugin.v1.Plugin.HostOperation:output_type -> levis.plugin.v1.HostOperationReply
+	71,  // 109: levis.plugin.v1.Plugin.DownloadHostBackup:output_type -> levis.plugin.v1.HostBackupChunk
+	82,  // [82:110] is the sub-list for method output_type
+	54,  // [54:82] is the sub-list for method input_type
+	54,  // [54:54] is the sub-list for extension type_name
+	54,  // [54:54] is the sub-list for extension extendee
+	0,   // [0:54] is the sub-list for field type_name
 }
 
 func init() { file_plugin_proto_init() }
@@ -5311,7 +5600,7 @@ func file_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_plugin_proto_rawDesc), len(file_plugin_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   91,
+			NumMessages:   97,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
