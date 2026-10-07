@@ -775,6 +775,9 @@ const stepEpsilon = 1e-9
 // CPU 支持小数核数（下限 0.1），其余维度仍按整数语义校验；
 // 区间与步长比较统一走浮点并留 1e-9 容差，避免二进制精度误判。
 func normalizeProvisionConfig(cfg *model.ProvisionSpec) error {
+	if err := normalizeProductNetwork(cfg); err != nil {
+		return err
+	}
 	cfg.Driver = strings.ToLower(strings.TrimSpace(cfg.Driver))
 	if cfg.Driver != "incus" && cfg.Driver != "qemu" {
 		return ErrBadRequest("驱动只支持 incus 或 qemu")

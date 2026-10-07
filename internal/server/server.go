@@ -273,6 +273,7 @@ func NewWithCaptchaStore(rt *runtime.Runtime, plugins *plugin.Manager, debug boo
 	admin.PATCH("/interfaces/:id", h.AdminUpdateInterface)
 	admin.POST("/interfaces/:id/test", h.AdminTestInterface)
 	admin.GET("/interfaces/:id/agents", h.AdminInterfaceAgents)
+	admin.GET("/interfaces/:id/security-groups", h.AdminInterfaceSecurityGroups)
 	admin.POST("/settings/site-icon", h.AdminUploadSiteIcon)
 	admin.DELETE("/settings/site-icon", h.AdminRemoveSiteIcon)
 	admin.DELETE("/interfaces/:id", h.AdminDeleteInterface)

@@ -402,6 +402,12 @@ type ProvisionSpec struct {
 	// 商品有效）。0 表示不限。随开通 options 下传 max_nat_mappings，由上游
 	// 在创建 NAT 映射时强制执行。
 	MaxNATMappings int `json:"max_nat_mappings,omitempty"`
+	// 商品固定网络：独立地址由上游每订单自动分配，不保存一次性池条目。
+	NetworkMode      string   `json:"network_mode,omitempty"`
+	DedicatedMode    string   `json:"dedicated_mode,omitempty"`
+	NetworkBridge    string   `json:"network_bridge,omitempty"`
+	NetworkDNS       []string `json:"network_dns,omitempty"`
+	SecurityGroupIDs []uint   `json:"security_group_ids,omitempty"`
 }
 
 // Fixed 把一项规格归一为固定值。
