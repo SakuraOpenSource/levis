@@ -115,17 +115,7 @@ func buildOrderItems(tx *gorm.DB, userID uint, lines []OrderLine) ([]model.Order
 			if err := validateProvisionOptions(product.ProvisionConfig, line.Options); err != nil {
 				return nil, 0, err
 			}
-			// 节点选择权限在商品上：未开启买家自选时剥离请求里的 agent_id，
-			// 商品级固定节点（若有）随后经 defaultProvisionOptions 生效。
-			if !product.ProvisionConfig.AllowBuyerAgent {
-				delete(line.Options, "agent_id")
-			}
-			// NAT 端口上限是管理员设定项，买家请求里出现的同名键一律剥离，
-			// 随后按商品配置回填（快照进订单明细，开通时原样透传插件）。
-			delete(line.Options, "max_nat_mappings")
-			if product.ProvisionConfig.MaxNATMappings > 0 {
-				line.Options["max_nat_mappings"] = strconv.Itoa(product.ProvisionConfig.MaxNATMappings)
-			}
+			line.Options = purchaserProvisionOptions(product.ProvisionConfig, line.Options)
 			unitPrice += provisionOptionPrice(product.ProvisionConfig, line.Options)
 		}
 		discountPermille := 0
@@ -139,6 +129,8 @@ func buildOrderItems(tx *gorm.DB, userID uint, lines []OrderLine) ([]model.Order
 		options := model.OptionMap(nil)
 		if product.InterfaceID != 0 {
 			options = model.OptionMap(line.Options)
+		} else if isUpstreamProduct(&product) && product.ProvisionConfig.Driver != "" {
+			options = model.OptionMap(defaultProvisionOptions(product.ProvisionConfig))
 		}
 		items = append(items, model.OrderItem{
 			// 冗余快照：商品日后改价或改名，历史订单仍显示成交时的值。

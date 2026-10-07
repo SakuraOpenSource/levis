@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -36,9 +37,36 @@ func resolvePluginForProduct(db *gorm.DB, product *model.Product) (string, map[s
 
 // createUpstreamOrder 是商品开通的唯一入口：向上游插件下单并等待开通，
 // 返回上游服务实例 ID 与到期时间。购物车/直购订单与管理员代开共用。
+type provisioningHost interface {
+	CreateOrder(context.Context, string, *pb.CreateOrderRequest) (*pb.CreateOrderReply, error)
+	GetHost(context.Context, string, *pb.GetHostRequest) (*pb.GetHostReply, error)
+}
+
 func createUpstreamOrder(plugins *plugin.Manager, db *gorm.DB, product *model.Product, cycle, orderNo, clientEmail string, options map[string]string) (string, *time.Time, error) {
 	if plugins == nil {
 		return "", nil, ErrBadRequest("上游插件不可用，无法开通该商品")
+	}
+	return createUpstreamOrderWithHost(plugins, db, product, cycle, orderNo, clientEmail, options)
+}
+
+func createUpstreamOrderWithHost(plugins provisioningHost, db *gorm.DB, product *model.Product, cycle, orderNo, clientEmail string, options map[string]string) (string, *time.Time, error) {
+	if product.ProvisionConfig.Driver != "" {
+		cfg := product.ProvisionConfig
+		if err := normalizeProductNetwork(&cfg); err != nil {
+			return "", nil, err
+		}
+		options = purchaserProvisionOptions(product.ProvisionConfig, options)
+		// 管理员代开允许由插件自动挑选镜像；校验仍使用同一资源范围规则。
+		validation := make(map[string]string, len(options))
+		for key, value := range options {
+			validation[key] = value
+		}
+		if validation["image_id"] == "" {
+			validation["image_id"] = "auto"
+		}
+		if err := validateProvisionOptions(cfg, validation); err != nil {
+			return "", nil, err
+		}
 	}
 	pluginID, ifaceConfig, err := resolvePluginForProduct(db, product)
 	if err != nil {
@@ -83,10 +111,12 @@ func createUpstreamOrder(plugins *plugin.Manager, db *gorm.DB, product *model.Pr
 // 小数核数则为 "0.4"；其余维度保持整数语义。
 func defaultProvisionOptions(cfg model.ProvisionSpec) map[string]string {
 	options := map[string]string{
-		"driver":    cfg.Driver,
-		"cpu":       formatSpecNumber(specValue(cfg.CPU)),
-		"memory_mb": strconv.Itoa(int(specValue(cfg.MemoryMB))),
-		"disk_gb":   strconv.Itoa(int(specValue(cfg.DiskGB))),
+		"driver":         cfg.Driver,
+		"cpu":            formatSpecNumber(specValue(cfg.CPU)),
+		"memory_mb":      strconv.Itoa(int(specValue(cfg.MemoryMB))),
+		"disk_gb":        strconv.Itoa(int(specValue(cfg.DiskGB))),
+		"bandwidth_mbps": strconv.Itoa(int(specValue(cfg.BandwidthMbps))),
+		"traffic_gb":     strconv.Itoa(int(specValue(cfg.TrafficGB))),
 	}
 	if v := specValue(cfg.BandwidthMbps); v > 0 {
 		options["bandwidth_mbps"] = strconv.Itoa(int(v))
@@ -102,6 +132,41 @@ func defaultProvisionOptions(cfg model.ProvisionSpec) map[string]string {
 	// 0（不限）不下传，保持旧插件兼容。
 	if cfg.MaxNATMappings > 0 {
 		options["max_nat_mappings"] = strconv.Itoa(cfg.MaxNATMappings)
+	}
+	mode := cfg.NetworkMode
+	if mode == "" {
+		mode = "nat"
+	}
+	options["network_mode"] = mode
+	if mode == "dedicated" {
+		options["dedicated_mode"] = cfg.DedicatedMode
+		if options["dedicated_mode"] == "" {
+			options["dedicated_mode"] = "auto"
+		}
+	}
+	options["network_bridge"] = cfg.NetworkBridge
+	options["network_dns"] = strings.Join(cfg.NetworkDNS, ",")
+	ids := make([]string, 0, len(cfg.SecurityGroupIDs))
+	for _, id := range cfg.SecurityGroupIDs {
+		ids = append(ids, strconv.FormatUint(uint64(id), 10))
+	}
+	options["security_group_ids"] = strings.Join(ids, ",")
+	return options
+}
+
+// purchaserProvisionOptions 只复制已声明的购买选项。固定部署信息只能来自商品；
+// 不修改调用方 map，避免直购/试算共享输入产生权限或价格漂移。
+func purchaserProvisionOptions(cfg model.ProvisionSpec, selected map[string]string) map[string]string {
+	options := defaultProvisionOptions(cfg)
+	for _, key := range []string{"cpu", "memory_mb", "disk_gb", "bandwidth_mbps", "traffic_gb", "image_id", "image_name"} {
+		if value, ok := selected[key]; ok {
+			options[key] = value
+		}
+	}
+	if cfg.AllowBuyerAgent && cfg.AgentID == 0 {
+		if value := selected["agent_id"]; value != "" {
+			options["agent_id"] = value
+		}
 	}
 	return options
 }

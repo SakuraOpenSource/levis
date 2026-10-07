@@ -72,7 +72,7 @@ func(s *ServiceChangeService) quote(svc *model.Service,target *model.Product,h *
  extra:=provisionOptionPrice(cfg,o);if extra<0 || target.PriceCents>math.MaxInt64-extra{return nil,ErrBadRequest("选配价格溢出")}
  price:=target.PriceCents+extra;total:=int64(svc.ExpiresAt.Sub(start)/time.Second);remaining:=int64(svc.ExpiresAt.Sub(now)/time.Second);if remaining>total {remaining=total};if total<=0{return nil,ErrBadRequest("周期无效")}
  diff:=price-svc.PriceCents;charge,credit:=int64(0),int64(0);if diff>=0{charge,e=mulDivCents(diff,remaining,total)}else{credit,e=mulDivCents(-diff,remaining,total)};if e!=nil{return nil,e}
- delete(o,"image_id");delete(o,"agent_id");delete(o,"max_nat_mappings")
+ for _,k:=range []string{"image_id","image_name","agent_id","max_nat_mappings","network_mode","dedicated_mode","network_bridge","network_dns","security_group_ids"} {delete(o,k)}
  return &ChangeQuote{ProductID:target.ID,ChargeCents:charge,CreditCents:credit,RemainingSeconds:remaining,TotalSeconds:total,PriceCents:price,Options:model.OptionMap(o)},nil
 }
 func(s *ServiceChangeService) Preview(ctx context.Context,userID,id uint,in ChangeInput)(*ChangeQuote,error){
