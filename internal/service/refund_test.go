@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
-	"errors"
+
 	"testing"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"gorm.io/gorm"
 
@@ -186,7 +189,8 @@ func TestRefundPluginUnavailableFails(t *testing.T) {
 	if _, err := fx.svc.SavePolicy(RefundPolicyInput{AutoApproveAll: true}); err != nil {
 		t.Fatalf("保存策略失败: %v", err)
 	}
-	fx.plugins.err = errors.New("rpc error: code = Unimplemented")
+	// Only a typed protocol rejection proves no handler executed; a matching error string can also mask a lost reply.
+	fx.plugins.err = status.Error(codes.Unimplemented, "refund RPC unavailable")
 
 	item, err := fx.svc.Create(context.Background(), fx.userID, RefundCreateInput{
 		PaymentID: fx.payID, Reason: "测试",

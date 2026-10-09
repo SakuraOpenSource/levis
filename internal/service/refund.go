@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -143,7 +145,8 @@ func (s *RefundService) Create(ctx context.Context, userID uint, in RefundCreate
 		}
 	}
 
-	// 锁定原支付意图（可选：余额支付订单没有意图）。
+	// Lock the original payment intent when one is supplied (pure balance
+	// payments for orders have no intent).
 	var payment *model.ExternalPayment
 	if in.PaymentID != 0 {
 		item, err := s.payablePayment(userID, in.PaymentID)
@@ -153,17 +156,35 @@ func (s *RefundService) Create(ctx context.Context, userID uint, in RefundCreate
 		payment = item
 	}
 
-	// 解析关联订单（用于时长策略与展示）。
+	// Resolve the order bound to this refund. Security intent: the refund must
+	// pay back exactly the payment that settled the selected order; letting a
+	// recharge (or renewal) receipt ride along an unrelated cheap order would
+	// return channel money while the wallet credit from that recharge stays
+	// spendable — a direct loss (audit MONEY-02).
 	var order model.Order
 	switch {
-	case payment != nil && payment.TargetID != 0 && payment.Purpose == model.ExternalPaymentPurposeOrder:
+	case payment != nil && payment.Purpose == model.ExternalPaymentPurposeOrder && payment.TargetID != 0:
 		if err := s.db.First(&order, payment.TargetID).Error; err != nil {
 			return nil, ErrNotFound("订单不存在")
 		}
 		if order.UserID != userID {
 			return nil, ErrNotFound("订单不存在")
 		}
+		// Only a paid order can be refunded; a refunded order is terminal.
+		// This closes the re-entry path for a second request on the same
+		// payment after the first refund completed (audit MONEY-03).
+		if order.Status != model.OrderPaid {
+			return nil, ErrConflict("订单未支付或已完结，不可申请退款")
+		}
+		if in.OrderID != 0 && in.OrderID != order.ID {
+			return nil, ErrBadRequest("支付记录与所选订单不一致，请重新选择")
+		}
 	case in.OrderID != 0:
+		// A payment of any other purpose (recharge/renewal/invoice) must not
+		// enter the order refund flow through the OrderID branch.
+		if payment != nil {
+			return nil, ErrBadRequest("该支付不是订单付款，不能用于订单退款；充值/续费支付请走对应入口")
+		}
 		if err := s.db.First(&order, in.OrderID).Error; err != nil {
 			return nil, ErrNotFound("订单不存在")
 		}
@@ -452,6 +473,8 @@ func (s *RefundService) RetryFailed(ctx context.Context, id uint) (*model.Refund
 //   - 渠道失败：状态落 failed + FailReason，余额不入账（用户可重试）；
 //   - 渠道无渠道侧退款能力（插件 UNIMPLEMENTED / 无支付方式配置）时：
 //     若金额全部走余额退还则继续，否则落 failed 提示管理员线下处理。
+var errRefundOutcomeUncertain = errors.New("渠道退款结果不确定，须先向渠道核对")
+
 func (s *RefundService) execute(ctx context.Context, item *model.RefundRequest) error {
 	// 认领：自动通过路径从 pending 进入，管理员审批/重试路径从 approved/failed 进入。
 	res := s.db.Model(&model.RefundRequest{}).
@@ -465,9 +488,43 @@ func (s *RefundService) execute(ctx context.Context, item *model.RefundRequest) 
 		return ErrConflict("退款申请状态已变化，请刷新后查看")
 	}
 
+	// Payout claim at the payment level (audit MONEY-03): the request-level
+	// claim alone does not stop a second refund request on the same payment
+	// from driving the channel again. Claim paid -> refunding BEFORE any
+	// money leaves the process; only the winner proceeds.
+	if item.PaymentID != 0 && item.ChannelCents > 0 {
+		claim := s.db.Model(&model.ExternalPayment{}).
+			Where("id = ? AND status = ?", item.PaymentID, model.ExternalPaymentPaid).
+			Update("status", model.ExternalPaymentRefunding)
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected != 1 {
+			return ErrConflict("该支付已在退款中或已退款，不能重复执行")
+		}
+	}
+
 	var failed error
 	if item.ChannelCents > 0 {
 		failed = s.refundChannel(ctx, item)
+	}
+	if errors.Is(failed, errRefundOutcomeUncertain) {
+		// A lost reply can follow a committed payout; retaining both claims prevents an unsafe replay.
+		if err := s.db.Model(&model.RefundRequest{}).
+			Where("id = ? AND status = ?", item.ID, model.RefundProcessing).
+			Update("fail_reason", truncateRunes(failed.Error(), 500)).Error; err != nil {
+			return errors.Join(failed, err)
+		}
+		return ErrConflict("退款结果不确定，请先向支付渠道核对，不能自动重试")
+	}
+	// Channel failure must release the payment claim so a manual retry can
+	// re-claim and re-drive; leaving it in refunding would wedge the payment.
+	if failed != nil && item.PaymentID != 0 && item.ChannelCents > 0 {
+		if rel := s.db.Model(&model.ExternalPayment{}).
+			Where("id = ? AND status = ?", item.PaymentID, model.ExternalPaymentRefunding).
+			Update("status", model.ExternalPaymentPaid); rel.Error != nil {
+			return errors.Join(failed, rel.Error)
+		}
 	}
 	if failed == nil {
 		failed = s.db.Transaction(func(tx *gorm.DB) error {
@@ -493,6 +550,35 @@ func (s *RefundService) execute(ctx context.Context, item *model.RefundRequest) 
 			} else if res.RowsAffected != 1 && item.OrderID != 0 {
 				return ErrConflict("订单状态已变化，退款未入账")
 			}
+			// Entitlement revocation (audit MONEY-04): a completed full refund
+			// must end every entitlement the order funded, in the same
+			// transaction as the ledger updates. We only flip local state and
+			// mark the upstream teardown as pending — the lifecycle patrol
+			// reconciles the upstream side, keeping this free of upstream RPC
+			// inside the money transaction.
+			if item.OrderID != 0 {
+				if err := tx.Model(&model.Service{}).
+					Where("order_id = ? AND status = ?", item.OrderID, model.ServiceActive).
+					Updates(map[string]any{
+						"status":                 model.ServiceSuspended,
+						"suspend_reason":         suspendReasonRefund,
+						"suspended_at":           now,
+						"auto_renew":             false,
+						"resume_pending":         false,
+						"refund_suspend_pending": true,
+					}).Error; err != nil {
+					return err
+				}
+			}
+			// The payment leaves the payable world for good once the refund
+			// completes: it can never fund another payout.
+			if item.PaymentID != 0 && item.ChannelCents > 0 {
+				if done := tx.Model(&model.ExternalPayment{}).
+					Where("id = ? AND status = ?", item.PaymentID, model.ExternalPaymentRefunding).
+					Update("status", model.ExternalPaymentRefunded); done.Error != nil {
+					return done.Error
+				}
+			}
 			return reverseAffiliateTx(tx, item)
 		})
 	}
@@ -514,8 +600,11 @@ func (s *RefundService) refundChannel(ctx context.Context, item *model.RefundReq
 	if err := s.db.First(&payment, item.PaymentID).Error; err != nil {
 		return fmt.Errorf("原支付记录不存在")
 	}
-	if payment.Status != model.ExternalPaymentPaid {
-		return fmt.Errorf("原支付未完成，渠道无法退款")
+	// refunding is the payout claim taken by execute(): only the holder of the
+	// claim may drive the channel. paid means the claim was never taken
+	// (or was released after a failure) and must not pay out.
+	if payment.Status != model.ExternalPaymentRefunding {
+		return fmt.Errorf("原支付未认领退款，渠道无法退款")
 	}
 	// 按支付方式取配置；旧数据回退到该插件的第一个启用方式。
 	cfg := map[string]string{}
@@ -538,7 +627,14 @@ func (s *RefundService) refundChannel(ctx context.Context, item *model.RefundReq
 		Config:      cfg,
 	})
 	if err != nil {
-		return fmt.Errorf("渠道退款调用失败: %v", err)
+		if status.Code(err) == codes.Unimplemented {
+			// An unsupported RPC cannot execute a payout, unlike transport failures after dispatch.
+			return fmt.Errorf("支付插件不支持渠道退款: %w", err)
+		}
+		return errors.Join(errRefundOutcomeUncertain, err)
+	}
+	if reply == nil {
+		return errRefundOutcomeUncertain
 	}
 	if !reply.GetOk() {
 		return fmt.Errorf("渠道拒绝退款: %s", reply.GetError())
