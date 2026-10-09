@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"sync"
@@ -194,7 +195,15 @@ func respond(c *gin.Context, data any, err error) {
 		return
 	}
 	if code := grpcStatusToHTTP(err); code != 0 {
-		Fail(c, code, grpcHTTPCode(code), grpcMessage(err))
+		// Only errors that ARE a gRPC status (our plugin protocol boundary) may
+		// surface their message; a plain DB/file error merely converts to
+		// codes.Unknown and its Error() text would leak SQL/DSN/path internals.
+		if isPluginStatus(err) {
+			Fail(c, code, grpcHTTPCode(code), grpcMessage(err))
+			return
+		}
+		log.Printf("handler internal error: %v", err)
+		Internal(c, "服务器内部错误")
 		return
 	}
 	log.Printf("handler internal error: %v", err)
@@ -262,4 +271,13 @@ func grpcMessage(err error) string {
 		return "上游操作失败"
 	}
 	return msg
+}
+
+// isPluginStatus reports whether err itself is a gRPC status error (created by
+// status.Error/FromError at the plugin boundary). status.Convert wraps ANY
+// error into codes.Unknown, so Convert alone cannot make this distinction and
+// raw internal text would leak through the message path.
+func isPluginStatus(err error) bool {
+	var concrete interface{ GRPCStatus() *status.Status }
+	return errors.As(err, &concrete)
 }
