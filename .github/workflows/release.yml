@@ -26,28 +26,32 @@ on:
         type: boolean
         default: false
       frontend_ref:
-        description: 'Branch or tag of the frontend repository'
+        description: 'Frontend ref; resolved commit SHA is recorded in manifest'
         required: false
         default: 'main'
   push:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Build and publish single-file artifacts
+  build:
+    name: Build verified release payload
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      name: ${{ steps.meta.outputs.name || steps.meta.outputs.tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
-      - name: Checkout backend
-        uses: actions/checkout@v6
+      - name: Checkout source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      # Trigger sources differ, so normalize first; later steps only read
-      # these outputs. Inputs travel through env instead of being spliced
-      # into the script, so quotes in an input cannot break the command.
       - name: Resolve release metadata
         id: meta
         env:
@@ -64,6 +68,7 @@ jobs:
           # case takes the first matching pattern and "*" eats suffixes like
           # case takes the first matching pattern and "*" eats suffixes like
           # "-rc.1", so the suffixed (pre-release) pattern must come first.
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "Invalid release tag" >&2; exit 1; }
           case "$tag" in
             v[0-9]*.[0-9]*.[0-9]*-*)
               prerelease=true ;;
@@ -79,6 +84,7 @@ jobs:
           fi
 
           name="${INPUT_NAME:-$tag}"
+          [[ "$name" != *$'\n'* && "$name" != *$'\r'* ]] || { echo "Invalid release name" >&2; exit 1; }
           {
             echo "tag=$tag"
             echo "name=$name"
@@ -86,98 +92,130 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Releasing $tag (name: $name, prerelease: $prerelease)"
 
-      # Categorize commits by Conventional Commits prefix via the shared
-      # script. Runs before the build: broken history should fail fast,
-      # not after ten minutes of compiling.
       - name: Generate release notes
         env:
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
           TAG: ${{ steps.meta.outputs.tag }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           # gh api needs a token to read the release list (prerelease flags).
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ steps.meta.outputs.prerelease }}" = "true" ]; then
+          if [ "$PRERELEASE" = "true" ]; then
             bash scripts/release_notes.sh "$TAG" any > release-notes.md
           else
             bash scripts/release_notes.sh "$TAG" stable > release-notes.md
           fi
-          cat release-notes.md
+          test -f release-notes.md
 
-      # The frontend lives in its own repository; its build output is
-      # injected into internal/web/dist before compiling, and go:embed
-      # packs it into the final single executable.
-      - name: Checkout frontend
-        uses: actions/checkout@v6
+      - name: Checkout frontend input
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: SakuraOpenSource/levis-frontend
           ref: ${{ inputs.frontend_ref || 'main' }}
           path: .frontend
+          persist-credentials: false
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11
+      - name: Record immutable frontend input
+        id: frontend
+        run: echo "sha=$(git -C .frontend rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
-          node-version: 24
+          version: 12.4.2
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.7.0
           cache: pnpm
           cache-dependency-path: .frontend/pnpm-lock.yaml
 
-      - name: Build frontend
+      - name: Frozen frontend checks
+        working-directory: .frontend
         run: |
-          pnpm --dir .frontend install --frozen-lockfile
-          pnpm --dir .frontend build
+          pnpm install --frozen-lockfile
+          pnpm exec vue-tsc -b
+          pnpm test
+          pnpm build
+          test -s dist/index.html
 
-      - name: Inject frontend build
+      - name: Inject required frontend
+        env:
+          FRONTEND_SHA: ${{ steps.frontend.outputs.sha }}
         run: |
+          test "$(git -C .frontend rev-parse HEAD)" = "$FRONTEND_SHA"
           rm -rf internal/web/dist
           mkdir -p internal/web/dist
           cp -R .frontend/dist/. internal/web/dist/
-          test -f internal/web/dist/index.html
+          test -s internal/web/dist/index.html
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version-file: go.mod
+          go-version: 1.27.2
           cache: true
 
-      - name: Cross-compile
+      - name: Build required binaries
         env:
-          # Pure-Go SQLite driver + CGO_ENABLED=0: no C toolchain needed
-          # for cross-compilation.
           CGO_ENABLED: '0'
           VERSION: ${{ steps.meta.outputs.tag }}
+          AGENT_SHA: ${{ steps.agent.outputs.sha }}
         run: |
           mkdir -p bin/release
-          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 linux/arm windows/amd64 windows/arm64; do
+          go mod verify
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
             os="${target%/*}"; arch="${target#*/}"
-            out="bin/release/levis-${os}-${arch}"
-            [ "$os" = "windows" ] && out="${out}.exe"
-            echo "Building ${os}/${arch}"
-            GOOS="$os" GOARCH="$arch" go build -trimpath \
-              -ldflags "-s -w -X main.version=${VERSION}" \
-              -o "$out" ./cmd/levis
+            suffix=""; [ "$os" != windows ] || suffix=.exe
+            GOOS="$os" GOARCH="$arch" go build -mod=readonly -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "bin/release/levis-$os-$arch$suffix" ./cmd/levis
+            test -s "bin/release/levis-$os-$arch$suffix"
           done
-          ls -lh bin/release
 
-      - name: Generate checksums
-        working-directory: bin/release
-        run: sha256sum levis-* > checksums.txt
+      - name: Record release inputs and checksums
+        env:
+          FRONTEND_REF: ${{ inputs.frontend_ref || 'main' }}
+          FRONTEND_SHA: ${{ steps.frontend.outputs.sha }}
+          AGENT_REF: ${{ inputs.agent_ref || 'main' }}
+          AGENT_SHA: ${{ steps.agent.outputs.sha }}
+        run: |
+          python3 .github/scripts/release_manifest.py bin/release/manifest.json
+          cd bin/release
+          sha256sum * > checksums.txt
+          cp checksums.txt SHA256SUMS
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v5
+      - name: Upload immutable build payload
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: levis-binaries
-          path: bin/release/*
+          name: release-payload
+          if-no-files-found: error
+          path: |
+            bin/release/*
+            release-notes.md
 
-      # When the tag does not exist yet, this step creates it on
-      # target_commitish, so manual runs do not need a pre-pushed tag.
-      # Notes come from the categorized release-notes.md above.
+  publish:
+    name: Publish without running source or dependency code
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build payload
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: release-payload
+          path: .release
+
+      - name: Check complete payload
+        run: |
+          test -s .release/bin/release/manifest.json
+          test -f .release/release-notes.md
+          cd .release/bin/release
+          sha256sum --strict -c checksums.txt
+
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: ${{ steps.meta.outputs.name }}
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: ${{ needs.build.outputs.name }}
           target_commitish: ${{ github.sha }}
-          prerelease: ${{ steps.meta.outputs.prerelease }}
-          body_path: release-notes.md
-          files: bin/release/*
+          prerelease: ${{ needs.build.outputs.prerelease }}
+          fail_on_unmatched_files: true
+          body_path: .release/release-notes.md
+          files: .release/bin/release/*

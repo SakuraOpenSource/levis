@@ -1,194 +1,166 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# Levis 一键安装脚本（Linux / macOS）
-#
-# 用法：
-#   sudo bash install-levis.sh                 # 交互式安装（默认主程序）
-#   sudo bash install-levis.sh --update        # 只升级二进制，保留 data/
-#   sudo bash install-levis.sh --version v0.2.0
-#
-# 可选环境变量：
-#   LEVIS_VERSION       版本（默认 latest，从 GitHub Releases 拉取）
-#   LEVIS_INSTALL_DIR   安装目录（默认 /opt/levis）
-#   LEVIS_DATA_DIR      数据目录（默认 /opt/levis/data）
-#
-# 目录约定：
-#   /opt/levis            二进制（levis）+ data/（config.json + SQLite）
-#   /etc/systemd/system/levis.service   Linux systemd 服务
-# ==============================================================================
+# Standalone installer: checksum failures stop before privileged writes.
 set -Eeuo pipefail
+umask 077
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
-REPO="SakuraOpenSource/levis"
-INSTALL_DIR="${LEVIS_INSTALL_DIR:-/opt/levis}"
-DATA_DIR="${LEVIS_DATA_DIR:-/opt/levis/data}"
-VERSION="${LEVIS_VERSION:-latest}"
-SERVICE="levis"
-UPDATE=0
-NO_START=0
-GH_PROXY=""
-
-log()  { echo -e "${GREEN}[levis]${NC} $*"; }
-warn() { echo -e "${YELLOW}[levis]${NC} $*"; }
-die()  { echo -e "${RED}[levis]${NC} $*" >&2; exit 1; }
-
-usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
-  exit 0
-}
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --update) UPDATE=1; shift;;
-    --version) VERSION="${2:-latest}"; shift 2;;
-    --gh-proxy) GH_PROXY="${2:-}"; shift 2;;
-    --no-start) NO_START=1; shift;;
-    -h|--help) usage;;
-    *) die "未知参数: $1（--help 查看用法）";;
-  esac
-done
-
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 run_root() { if [[ "$(id -u)" -eq 0 ]]; then "$@"; else sudo "$@"; fi; }
-
-detect_platform() {
-  local os arch
-  os="$(uname -s)"; arch="$(uname -m)"
-  case "$os" in
-    Linux)  PLATFORM="linux";;
-    Darwin) PLATFORM="darwin";;
-    *) die "不支持的操作系统: $os（Windows 请从 GitHub Releases 手动下载 levis-windows-amd64.exe）";;
-  esac
-  case "$arch" in
-    x86_64|amd64)  GOARCH="amd64";;
-    arm64|aarch64) GOARCH="arm64";;
-    *) die "不支持的 CPU 架构: $arch";;
-  esac
-  [[ "$PLATFORM$GOARCH" == "darwinarm64" || "$PLATFORM$GOARCH" == "darwinamd64" \
-    || "$PLATFORM$GOARCH" == "linuxamd64" || "$PLATFORM$GOARCH" == "linuxarm64" ]] \
-    || die "暂无 $PLATFORM/$GOARCH 的发布产物"
+check_url() {
+  [[ "$1" =~ ^https://[A-Za-z0-9.:/_?=\&+-]+$ ]] && return 0
+  if [[ "${ALLOW_INSECURE:-0}" == 1 && "$1" =~ ^http://[A-Za-z0-9.:/_?=\&+-]+$ ]]; then return 0; fi
+  fail 'HTTPS is required; HTTP requires explicit --allow-insecure (not a TLS verification bypass)'
 }
-
 download() {
-  local url="$1" out="$2"
-  if [[ -n "$GH_PROXY" && "$url" == *"github.com"* ]]; then
+  local url="$1" out="$2" protocols='=https'
+  if [[ -n "${GH_PROXY:-}" && "$url" == https://github.com/* ]]; then
+    [[ "$GH_PROXY" == https://* ]] || fail 'GitHub proxy must use HTTPS'
     url="${GH_PROXY%/}/$url"
   fi
-  log "下载 $url"
-  if command -v curl >/dev/null 2>&1; then
-    run_root curl -fSL --retry 3 -o "$out" "$url" || die "下载失败: $url"
-  elif command -v wget >/dev/null 2>&1; then
-    run_root wget -qO "$out" "$url" || die "下载失败: $url"
-  else
-    die "需要 curl 或 wget"
+  check_url "$url"
+  [[ "${ALLOW_INSECURE:-0}" != 1 ]] || protocols='=http,https'
+  command -v curl >/dev/null || fail 'curl is required'
+  curl --fail --silent --show-error --location --retry 3 --tlsv1.2 --proto "$protocols" --proto-redir "$protocols" -o "$out" "$url" || return 1
+  [[ -s "$out" ]]
+}
+resolve_release() {
+  local repo="$1" version="$2" resolved
+  if [[ "$version" == latest ]]; then
+    resolved="$(curl --fail --silent --show-error --location --head --tlsv1.2 --proto '=https' --proto-redir '=https' -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest")" || fail 'Cannot resolve release version'
+    [[ "$resolved" == "https://github.com/$repo/releases/tag/"* ]] || fail 'Unexpected release redirect'
+    version="${resolved##*/}"
   fi
-  [[ -s "$out" ]] || die "下载得到空文件: $url"
+  [[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$version" != latest ]] || fail 'Invalid release version'
+  printf '%s\n' "$version"
 }
-
-resolve_version() {
-  [[ "$VERSION" != "latest" ]] && return
-  log "获取最新 release 版本..."
-  VERSION="$(run_root curl -fsSLI -o /dev/null -w '%{url_effective}' \
-    "https://github.com/$REPO/releases/latest" | sed 's#.*/tag/##')" || true
-  [[ -n "$VERSION" ]] || die "无法解析最新版本，请用 --version 指定"
-  log "版本: $VERSION"
+checksum_for() {
+  local manifest="$1" asset="$2" digest name extra found='' count=0
+  [[ -f "$manifest" && ! -L "$manifest" ]] || fail 'Checksum manifest is missing or a symlink'
+  while read -r digest name extra || [[ -n "$digest" ]]; do
+    digest="${digest%$'\r'}"; name="${name%$'\r'}"; extra="${extra%$'\r'}"
+    [[ -n "$digest" ]] || continue
+    [[ "$digest" =~ ^[0-9a-fA-F]{64}$ && -n "$name" && -z "$extra" ]] || fail 'Malformed checksum manifest'
+    name="${name#\*}"
+    if [[ "$name" == "$asset" ]]; then found="$digest"; count=$((count + 1)); fi
+  done < "$manifest"
+  [[ "$count" == 1 ]] || fail 'Checksum entry is missing or duplicated'
+  printf '%s\n' "$(printf '%s' "$found" | tr 'ABCDEF' 'abcdef')"
 }
-
-install_binary() {
-  local asset="levis-$PLATFORM-$GOARCH"
-  local tmp; tmp="$(mktemp)"
-  download "https://github.com/$REPO/releases/download/$VERSION/$asset" "$tmp"
-
-  # 二进制魔数校验：Linux ELF / macOS Mach-O 64。
-  local magic; magic="$(od -An -tx1 -N4 "$tmp" 2>/dev/null | tr -d ' \n')"
-  case "$PLATFORM" in
-    linux)  [[ "$magic" == "7f454c46" ]] || die "下载内容不是有效的 Linux 二进制";;
-    darwin) [[ "$magic" == "cffaedfe" || "$magic" == "feedfacf" || "$magic" == "cafebabe" ]] || die "下载内容不是有效的 macOS 二进制";;
+verify_sha256() {
+  local file="$1" expected="$2" actual
+  [[ -f "$file" && ! -L "$file" && "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || fail 'A regular file and exact SHA-256 are required'
+  if command -v sha256sum >/dev/null; then actual="$(sha256sum "$file")"
+  elif command -v shasum >/dev/null; then actual="$(shasum -a 256 "$file")"
+  else fail 'sha256sum or shasum is required'; fi
+  actual="${actual%% *}"
+  [[ "$(printf '%s' "$actual" | tr 'ABCDEF' 'abcdef')" == "$(printf '%s' "$expected" | tr 'ABCDEF' 'abcdef')" ]] || fail 'SHA-256 mismatch; refusing installation'
+}
+verified_release_download() {
+  local repo="$1" version="$2" asset="$3" out="$4" expected="${5:-}" manifest_name="${6:-SHA256SUMS}" manifest
+  version="$(resolve_release "$repo" "$version")"
+  download "https://github.com/$repo/releases/download/$version/$asset" "$out" || return 1
+  if [[ -z "$expected" ]]; then
+    manifest="$WORK/checksums-$asset"
+    download "https://github.com/$repo/releases/download/$version/$manifest_name" "$manifest" || fail 'Release checksum download failed'
+    expected="$(checksum_for "$manifest" "$asset")"
+    printf '%s\n' 'NOTICE: TLS same-release checksums verify integrity, not an independent publisher signature.' >&2
+  fi
+  verify_sha256 "$out" "$expected"
+}
+verify_binary_magic() {
+  local file="$1" os="$2" magic
+  if [[ "$os" == windows ]]; then
+    magic="$(od -An -tx1 -N2 "$file" | tr -d ' \n')"
+    [[ "$magic" == 4d5a ]] || fail 'Not a Windows PE binary'
+  else
+    magic="$(od -An -tx1 -N4 "$file" | tr -d ' \n')"
+    case "$os" in
+      linux) [[ "$magic" == 7f454c46 ]] || fail 'Not a Linux ELF binary';;
+      darwin) [[ "$magic" == cffaedfe || "$magic" == feedfacf || "$magic" == cafebabe ]] || fail 'Not a Mach-O binary';;
+      *) fail 'Unsupported OS';;
+    esac
+  fi
+}
+detect_platform() {
+  case "$(uname -s)" in
+    Linux) PLATFORM=linux;; Darwin) PLATFORM=darwin;; MINGW*|MSYS*|CYGWIN*) PLATFORM=windows;; *) fail 'Unsupported OS';;
   esac
-
-  run_root install -m 755 "$tmp" "$INSTALL_DIR/levis"
-  run_root rm -f "$tmp"
+  case "$(uname -m)" in
+    x86_64|amd64) GOARCH=amd64;; aarch64|arm64) GOARCH=arm64;; *) fail 'Unsupported architecture';;
+  esac
+}
+validate_path() { [[ "$1" =~ ^/[A-Za-z0-9/_-]+$ && "$1" != / && "$1" != *'..'* ]] || fail 'Use a safe absolute installation path'; }
+new_workdir() {
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/virtualis-install.XXXXXXXX")"
+  trap 'rm -rf -- "$WORK"' EXIT
 }
 
-write_service_linux() {
-  command -v systemctl >/dev/null 2>&1 || return 1
-  run_root tee "/etc/systemd/system/$SERVICE.service" >/dev/null <<EOF
+levis_main() {
+  local INSTALL_DIR="${LEVIS_INSTALL_DIR:-/opt/levis}" DATA_DIR="${LEVIS_DATA_DIR:-/opt/levis/data}"
+  local VERSION="${LEVIS_VERSION:-latest}" EXPECTED_SHA256="${LEVIS_EXPECTED_SHA256:-}" NO_START=0
+  GH_PROXY=''; ALLOW_INSECURE=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --version) VERSION="${2:?version required}"; shift 2;;
+      --expected-sha256) EXPECTED_SHA256="${2:?SHA-256 required}"; shift 2;;
+      --gh-proxy) GH_PROXY="${2:?proxy URL required}"; shift 2;;
+      --update) shift;; --no-start) NO_START=1; shift;;
+      -h|--help) printf '%s\n' 'Usage: install-levis.sh [--version vX.Y.Z] [--expected-sha256 independent-digest] [--update] [--no-start]'; return;;
+      *) fail "Unknown option: $1";;
+    esac
+  done
+  [[ -z "$EXPECTED_SHA256" || "$EXPECTED_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || fail 'Invalid expected SHA-256'
+  detect_platform
+  [[ "$PLATFORM" != windows ]] || fail 'Use a verified Windows release download; no Windows service is installed by this script'
+  validate_path "$INSTALL_DIR"; validate_path "$DATA_DIR"
+  new_workdir
+  verified_release_download SakuraOpenSource/levis "$VERSION" "levis-$PLATFORM-$GOARCH" "$WORK/levis" "$EXPECTED_SHA256" checksums.txt || fail 'Binary download failed'
+  verify_binary_magic "$WORK/levis" "$PLATFORM"
+  if [[ "$PLATFORM" == linux ]]; then
+    command -v systemctl >/dev/null || fail 'systemd is required for the hardened service'
+    if ! getent passwd levis >/dev/null; then
+      run_root useradd --system --user-group --no-create-home --home-dir "$INSTALL_DIR" --shell /usr/sbin/nologin levis
+    fi
+    local account uid shell
+    account="$(getent passwd levis)"; IFS=: read -r _ _ uid _ _ _ shell <<< "$account"
+    [[ "$uid" != 0 && ( "$shell" == */nologin || "$shell" == */false ) ]] || fail 'levis must be a dedicated non-login non-root account'
+    run_root install -d -o root -g root -m 0755 "$INSTALL_DIR"
+    run_root install -d -o levis -g levis -m 0700 "$DATA_DIR"
+    # Migrate existing data ownership, not the executable or parent directory.
+    run_root chown -R levis:levis "$DATA_DIR"
+    if systemctl is-active --quiet levis; then run_root systemctl stop levis; fi
+    run_root install -o root -g root -m 0755 "$WORK/levis" "$INSTALL_DIR/levis"
+    run_root tee /etc/systemd/system/levis.service >/dev/null <<EOF
 [Unit]
 Description=Levis Billing System
 After=network-online.target
 Wants=network-online.target
-
 [Service]
 Type=simple
-User=root
+User=levis
+Group=levis
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$INSTALL_DIR/levis -data $DATA_DIR
-Restart=always
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+ReadWritePaths=$DATA_DIR
+Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
-
 [Install]
 WantedBy=multi-user.target
 EOF
-  run_root systemctl daemon-reload
-  run_root systemctl enable "$SERVICE" >/dev/null
-  return 0
+    run_root systemctl daemon-reload
+    run_root systemctl enable levis
+    if [[ "$NO_START" == 0 ]]; then run_root systemctl restart levis; run_root systemctl is-active --quiet levis || fail 'Service did not start'; fi
+  else
+    run_root install -d -m 0755 "$INSTALL_DIR"
+    run_root install -m 0755 "$WORK/levis" "$INSTALL_DIR/levis"
+    printf '%s\n' 'Binary verified. macOS service setup is unsupported; run manually as a dedicated unprivileged account.'
+  fi
+  printf '%s\n' "Verified installation: $INSTALL_DIR/levis"
 }
-
-detect_platform
-
-# 源码构建优先（仓库内执行时），否则拉 GitHub Releases。
-if [[ -f "go.mod" && -d "cmd/levis" && -d "internal" ]]; then
-  command -v go >/dev/null 2>&1 || die "源码构建需要 Go 1.26+（或删除 go.mod 使用 release 下载）"
-  log "检测到源码，本地构建..."
-  # 前端可选：存在 ../levis-frontend 时构建嵌入。
-  if [[ -d "../levis-frontend" ]]; then
-    log "构建前端..."
-    if (cd ../levis-frontend && (command -v pnpm >/dev/null 2>&1 || npm install -g pnpm) \
-        && pnpm install --frozen-lockfile && pnpm build); then
-      run_root rm -rf internal/web/dist
-      run_root mkdir -p internal/web/dist
-      run_root cp -R ../levis-frontend/dist/. internal/web/dist/
-      run_root touch internal/web/dist/.gitkeep
-    else
-      warn "前端构建失败，继续（后端无前端也可运行）"
-    fi
-  fi
-  run_root mkdir -p "$INSTALL_DIR" "$DATA_DIR"
-  log "编译 Levis..."
-  CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "/tmp/levis-build.$$" ./cmd/levis
-  run_root install -m 755 "/tmp/levis-build.$$" "$INSTALL_DIR/levis"
-  run_root rm -f "/tmp/levis-build.$$"
-else
-  run_root mkdir -p "$INSTALL_DIR" "$DATA_DIR"
-  resolve_version
-  install_binary
-fi
-
-log "安装目录: $INSTALL_DIR"
-log "数据目录: $DATA_DIR"
-
-if write_service_linux; then
-  if [[ "$NO_START" -eq 0 ]]; then
-    run_root systemctl restart "$SERVICE"
-    sleep 2
-    if systemctl -q is-active "$SERVICE"; then
-      log "服务已启动: systemctl status $SERVICE"
-    else
-      warn "服务未启动，查看日志: journalctl -u $SERVICE -n 50"
-    fi
-  else
-    log "已跳过启动（--no-start）"
-  fi
-else
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    warn "macOS 未注册 launchd 服务，请手动运行:"
-    echo "  $INSTALL_DIR/levis -data $DATA_DIR"
-  else
-    warn "未检测到 systemd，请手动运行:"
-    echo "  $INSTALL_DIR/levis -data $DATA_DIR"
-  fi
-fi
-
-PORT="$(grep -oE '"listen"[[:space:]]*:[[:space:]]*"[^"]+"' "$DATA_DIR/config.json" 2>/dev/null | grep -oE ':[0-9]+' | tr -d ':' || true)"
-PORT="${PORT:-8080}"
-log "完成。访问 http://<本机IP>:$PORT 完成安装/使用"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then levis_main "$@"; fi
