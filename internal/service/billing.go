@@ -12,7 +12,7 @@ import (
 	"unicode/utf8"
 
 	"gorm.io/gorm"
- "gorm.io/gorm/clause"
+	"gorm.io/gorm/clause"
 
 	"github.com/SakuraOpenSource/levis/internal/model"
 	"github.com/SakuraOpenSource/levis/internal/plugin"
@@ -116,7 +116,13 @@ func (s *BillingService) RenewExternal(userID, serviceID uint) (*RenewResult, er
 func (s *BillingService) renew(userID, serviceID uint, debit bool) (*RenewResult, error) {
 	var out *RenewResult
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		var err error
+		target, err := loadPaymentTarget(tx, userID, model.ExternalPaymentPurposeRenewal, serviceID, true)
+		if err != nil {
+			return err
+		}
+		if err := rejectPaymentIntentTx(tx, userID, target, 0); err != nil {
+			return err
+		}
 		out, err = s.renewInTx(tx, userID, serviceID, debit)
 		return err
 	})
@@ -188,6 +194,19 @@ func (s *BillingService) loadRenewableService(tx *gorm.DB, userID, serviceID uin
 		!(svc.Status == model.ServiceSuspended && (svc.SuspendReason == "traffic" || svc.SuspendReason == "expired")) {
 		return nil, ErrConflict("只有使用中的服务或自动停机的服务才能续费")
 	}
+	// Refund-revoked entitlements are closed: the money that funded the
+	// remaining period went back to the customer, so renewal must not buy the
+	// same resources back through this service (audit MONEY-04).
+	if svc.Status == model.ServiceSuspended && svc.SuspendReason == suspendReasonRefund {
+		return nil, ErrConflict("该服务的订单已全额退款，不能续费")
+	}
+	// Billing fence (audit MONEY-07): a pending product change owns the
+	// service's pricing window. Renewing now would extend the period at the
+	// OLD price while the resize (already paid for the remaining window)
+	// switches the spec — the two cannot coexist.
+	if svc.ChangePendingID != nil {
+		return nil, ErrConflict("该服务有进行中的规格更新，请等待其完成后再续费")
+	}
 	if svc.BillingCyc == model.CycleOneTime {
 		return nil, ErrBadRequest("一次性付费服务无需续费")
 	}
@@ -220,9 +239,14 @@ func (s *BillingService) applyRenewalTx(tx *gorm.DB, svc *model.Service, userID 
 	// 回调并发时（本次改动把 suspended 也放行续费），双方都读到 suspended
 	// 会导致双重扣款+双倍时长；RowsAffected==0 的一方在此返回 409，支付侧
 	// 按「状态已变更」处理，不会重复落账。
- query:=tx.Model(&model.Service{}).Where("id = ? AND status = ?",svc.ID,svc.Status)
- if svc.ExpiresAt==nil { query=query.Where("expires_at IS NULL") } else { query=query.Where("expires_at = ?",*svc.ExpiresAt) }
- res:=query.Updates(updates)
+	// The suspension claim and pricing fence may change after the read; losing either must roll back the debit.
+	query := tx.Model(&model.Service{}).Where("id = ? AND status = ? AND suspend_reason = ? AND change_pending_id IS NULL", svc.ID, svc.Status, svc.SuspendReason)
+	if svc.ExpiresAt == nil {
+		query = query.Where("expires_at IS NULL")
+	} else {
+		query = query.Where("expires_at = ?", *svc.ExpiresAt)
+	}
+	res := query.Updates(updates)
 	if res.Error != nil {
 		return time.Time{}, res.Error
 	}
@@ -295,47 +319,55 @@ func (s *BillingService) renewInTx(tx *gorm.DB, userID, serviceID uint, debit bo
 // 同一服务最多保留一张待付续费账单：重复创建直接 409，附带已有账单号，
 // 前端据此提示用户先去支付，避免刷出多张悬空账单。
 func (s *BillingService) CreateRenewalInvoice(userID, serviceID uint) (*model.Invoice, error) {
-	svc, err := s.loadRenewableService(s.db, userID, serviceID)
-	if err != nil {
-		return nil, err
-	}
-	// 同一服务的待付流量包账单不挡续费：两类账单都挂 ServiceID，但流量包
-	// 明细以流量包前缀开头，结算路径也完全不同，可并存。
-	var unpaid []model.Invoice
-	if err := s.db.Preload("Items").Where("service_id = ? AND status = ?", svc.ID, model.InvoiceUnpaid).Find(&unpaid).Error; err != nil {
-		return nil, err
-	}
-	for i := range unpaid {
-		if !isTrafficInvoice(&unpaid[i]) {
-			return nil, ErrConflict("该服务已有待支付的续费账单（%s），请先完成支付", unpaid[i].InvoiceNo)
+	var invoice model.Invoice
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// Whole-window lease + fence in ONE transaction: another money path
+		// (renewal intent, change reservation) cannot interleave between the
+		// prechecks and the invoice insert (audit MONEY-07).
+		svc, err := s.loadRenewableService(tx, userID, serviceID)
+		if err != nil {
+			return err
 		}
-	}
-	now := time.Now().UTC()
-	invoiceNo, err := serialNo("INV")
+		var unpaid []model.Invoice
+		if err := tx.Preload("Items").Where("service_id = ? AND status = ?", svc.ID, model.InvoiceUnpaid).Find(&unpaid).Error; err != nil {
+			return err
+		}
+		for i := range unpaid {
+			if !isTrafficInvoice(&unpaid[i]) {
+				return ErrConflict("该服务已有待支付的续费账单（%s），请先完成支付", unpaid[i].InvoiceNo)
+			}
+		}
+		now := time.Now().UTC()
+		invoiceNo, err := serialNo("INV")
+		if err != nil {
+			return err
+		}
+		invoice = model.Invoice{
+			InvoiceNo:  invoiceNo,
+			UserID:     userID,
+			ServiceID:  &svc.ID,
+			Status:     model.InvoiceUnpaid,
+			TotalCents: svc.PriceCents,
+			DueAt:      &now,
+		}
+		if err := tx.Create(&invoice).Error; err != nil {
+			return err
+		}
+		item := model.InvoiceItem{
+			InvoiceID:   invoice.ID,
+			ServiceID:   &svc.ID,
+			Description: fmt.Sprintf("续费 %s（%s）", svc.Name, svc.BillingCyc),
+			AmountCents: svc.PriceCents,
+		}
+		if err := tx.Create(&item).Error; err != nil {
+			return err
+		}
+		invoice.Items = []model.InvoiceItem{item}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	invoice := model.Invoice{
-		InvoiceNo:  invoiceNo,
-		UserID:     userID,
-		ServiceID:  &svc.ID,
-		Status:     model.InvoiceUnpaid,
-		TotalCents: svc.PriceCents,
-		DueAt:      &now,
-	}
-	if err := s.db.Create(&invoice).Error; err != nil {
-		return nil, err
-	}
-	item := model.InvoiceItem{
-		InvoiceID:   invoice.ID,
-		ServiceID:   &svc.ID,
-		Description: fmt.Sprintf("续费 %s（%s）", svc.Name, svc.BillingCyc),
-		AmountCents: svc.PriceCents,
-	}
-	if err := s.db.Create(&item).Error; err != nil {
-		return nil, err
-	}
-	invoice.Items = []model.InvoiceItem{item}
 	return &invoice, nil
 }
 

@@ -649,6 +649,8 @@ type Service struct {
 	// ResumePending 标记「钱已收、前置条件已满足，但上游开机失败待重试」：
 	// 生命周期巡检每轮按此重试（retryPendingResumes），成功后清空。
 	ResumePending bool `gorm:"not null;default:false" json:"-"`
+	// RefundSuspendPending is separate from recovery so revoked entitlements can never be reopened by a resume retry.
+	RefundSuspendPending bool `gorm:"not null;default:false" json:"-"`
 	// TrafficUsedBytes 是 Levis 侧差分累计的流量用量（rx+tx 字节）。上游插件
 	// 的 metrics 只给瞬时计数器（重启清零），这里在每次采样时做差分累加，
 	// 计数器回退（重启/重装）时把当前值视为新基线、已累计值保留。
@@ -769,5 +771,6 @@ func AllModels() []any {
 		&CouponRedemption{},
 		&RenewalEvent{}, &ServiceChange{},
 		&Affiliate{}, &AffiliateReferral{}, &AffiliateCommission{}, &AffiliateReversal{}, &AffiliateWithdrawal{},
+		&RevokedToken{},
 	}
 }

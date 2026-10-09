@@ -44,7 +44,7 @@ type LifecycleService struct {
 	host hostManager
 	// terminateEnabled 每轮执法时读取一次开关；nil 视为关闭（干跑）。
 	terminateEnabled func() bool
- renewNotify func(uint,bool,string,int64)
+	renewNotify      func(uint, bool, string, int64)
 }
 
 // NewLifecycleService 构造生命周期执法器。
@@ -98,18 +98,21 @@ func (s *LifecycleService) Start(ctx context.Context) {
 // Run 执行一轮流量与到期执法。
 // dryRun is distinct from the legacy terminate-only switch.
 func (s *LifecycleService) dryRun() bool {
- var row model.Setting
- return s.db.Where(map[string]any{"key":model.SettingLifecycleDryRun}).First(&row).Error==nil && row.Value=="1"
+	var row model.Setting
+	return s.db.Where(map[string]any{"key": model.SettingLifecycleDryRun}).First(&row).Error == nil && row.Value == "1"
 }
 
 func (s *LifecycleService) Run(ctx context.Context) {
- if s.dryRun() { return }
+	if s.dryRun() {
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("生命周期巡检 panic（已恢复，下轮继续）: %v", r)
 		}
 	}()
 	s.autoRenew(ctx)
+	s.retryRefundSuspensions(ctx)
 	s.enforceTraffic(ctx)
 	s.enforceExpiry(ctx)
 	s.retryPendingResumes(ctx)
@@ -186,10 +189,22 @@ func (s *LifecycleService) enforceExpiry(ctx context.Context) {
 	suspendedThisRound := make(map[uint]bool, len(active))
 	for i := range active {
 		svc := &active[i]
-		if !svc.ExpiresAt.Before(now) { continue }
+		if !svc.ExpiresAt.Before(now) {
+			continue
+		}
+		// Security intent (audit MONEY-10): destructive enforcement is gated
+		// on a claim of the EXACT expiry snapshot taken at list time. A
+		// renewal committing between the list read and this point moves
+		// expires_at; the claim then fails and no suspension happens — money
+		// already paid must never be enforced against a stale snapshot.
+		if !s.claimExpiredSnapshot(svc, now) {
+			log.Printf("跳过到期停机 service=%d：到期时间已并发变更（可能刚续费）", svc.ID)
+			continue
+		}
 		if svc.UpstreamPluginID != "" && svc.UpstreamHostID != "" {
 			if err := s.manageHost(ctx, svc, pb.HostAction_HOST_ACTION_SUSPEND); err != nil {
 				log.Printf("到期停机失败 service=%d host=%s（下轮重试）: %v", svc.ID, svc.UpstreamHostID, err)
+				s.releaseExpiredClaim(svc)
 				continue
 			}
 		}
@@ -218,7 +233,13 @@ func (s *LifecycleService) enforceExpiry(ctx context.Context) {
 	}
 	for i := range expired {
 		svc := &expired[i]
-		if !svc.SuspendedAt.Before(deadline) { continue }
+		if !svc.SuspendedAt.Before(deadline) {
+			continue
+		}
+		if svc.ExpiresAt == nil || !svc.ExpiresAt.Before(now) {
+			// A paid renewal can retain the old suspension timestamp until upstream reconciliation finishes.
+			continue
+		}
 		if suspendedThisRound[svc.ID] {
 			continue // 刚停机，本轮不删。
 		}
@@ -226,9 +247,27 @@ func (s *LifecycleService) enforceExpiry(ctx context.Context) {
 			log.Printf("服务 %d 宽限期已满（干跑：删除开关未开启，仅记录，未删机）", svc.ID)
 			continue
 		}
-		if svc.UpstreamPluginID != "" && svc.UpstreamHostID != "" {
+		// Security intent (audit MONEY-10): TERMINATE is irreversible (the
+		// plugin maps it to a permanent purge). It is gated on a claim of the
+		// exact suspended_at snapshot from the list read, so a renewal that
+		// committed in between — which clears suspended_at — blocks the purge
+		// before any RPC leaves the process.
+		if !s.claimTerminateSnapshot(svc) {
+			log.Printf("跳过到期删机 service=%d：停机状态已并发变更（可能刚续费）", svc.ID)
+			continue
+		}
+		terminatedUpstream := svc.UpstreamPluginID == "" || svc.UpstreamHostID == ""
+		if !terminatedUpstream {
 			if err := s.manageHost(ctx, svc, pb.HostAction_HOST_ACTION_TERMINATE); err != nil {
 				log.Printf("到期删机失败 service=%d host=%s（下轮重试）: %v", svc.ID, svc.UpstreamHostID, err)
+				s.releaseTerminateClaim(svc)
+				continue
+			}
+			// RPC 已发出：写终态前重估快照。续费可能在 RPC 期间落账；
+			// 按旧快照推进会把已付款服务标记成已删除。
+			if !s.recheckTerminateSnapshot(svc) {
+				log.Printf("删机 RPC 后重估失败 service=%d：状态已并发变更（可能刚续费），保留当前状态待人工核对", svc.ID)
+				s.releaseTerminateClaim(svc)
 				continue
 			}
 		}
@@ -242,8 +281,25 @@ func (s *LifecycleService) enforceExpiry(ctx context.Context) {
 // expires_at 顺延），无条件覆盖会把已付款的服务打回停机且没有任何自动恢复路径。
 // CAS 失败（RowsAffected==0）说明服务已不在 active，放弃本次写入。
 func (s *LifecycleService) markSuspended(svc *model.Service, reason string, now time.Time) bool {
-	res := s.db.Model(&model.Service{}).Where("id = ? AND status = ?", svc.ID, model.ServiceActive).
-		Updates(map[string]any{"status": model.ServiceSuspended, "suspend_reason": reason, "suspended_at": now})
+	// The expiry claim (audit MONEY-10) set suspend_reason=enforcing before
+	// the upstream RPC. The write must still be conditional on that claim:
+	// a renewal committing during the RPC clears the marker, RowsAffected
+	// becomes 0, and the paid service is left untouched (the caller then
+	// rolls the upstream suspend back).
+	query := s.db.Model(&model.Service{}).Where("id = ? AND status = ?", svc.ID, model.ServiceActive)
+	if reason == suspendReasonExpired {
+		// Also pin the expiry snapshot: an early renewal keeps status=active
+		// and only moves expires_at; without this pin such a paid renewal
+		// would still be suspended from the stale list snapshot.
+		query = query.Where("suspend_reason = ?", suspendReasonEnforcing)
+		if svc.ExpiresAt != nil {
+			query = query.Where("expires_at = ?", *svc.ExpiresAt)
+		}
+	} else {
+		// Traffic suspension has no expiry claim; keep the plain status CAS.
+		query = query.Where("suspend_reason = ''")
+	}
+	res := query.Updates(map[string]any{"status": model.ServiceSuspended, "suspend_reason": reason, "suspended_at": now})
 	if res.Error != nil {
 		log.Printf("写入自动停机状态失败 service=%d: %v", svc.ID, res.Error)
 		return false
@@ -256,11 +312,94 @@ func (s *LifecycleService) markSuspended(svc *model.Service, reason string, now 
 	return true
 }
 
+// claimExpiredSnapshot takes the expiry claim for suspension (audit
+// MONEY-10): pending-enforcement marker + the exact expires_at value read at
+// list time. RowsAffected==0 means a renewal moved the expiry (or another
+// patrol holds the claim) — the caller must not suspend this paid service.
+// The claim borrows suspend_reason as a transient marker and is released on
+// every non-terminal path so nothing wedges.
+func (s *LifecycleService) claimExpiredSnapshot(svc *model.Service, now time.Time) bool {
+	if svc.ExpiresAt == nil {
+		return false
+	}
+	res := s.db.Model(&model.Service{}).
+		Where("id = ? AND status = ? AND expires_at = ? AND suspend_reason = ''",
+			svc.ID, model.ServiceActive, *svc.ExpiresAt).
+		Updates(map[string]any{"suspend_reason": suspendReasonEnforcing})
+	if res.Error != nil {
+		log.Printf("到期认领失败 service=%d: %v", svc.ID, res.Error)
+		return false
+	}
+	if res.RowsAffected != 1 {
+		return false
+	}
+	return true
+}
+
+// releaseExpiredClaim undoes an expiry claim when suspension did not complete,
+// leaving the service exactly as it was so the next round re-evaluates fresh.
+func (s *LifecycleService) releaseExpiredClaim(svc *model.Service) {
+	_ = s.db.Model(&model.Service{}).
+		Where("id = ? AND suspend_reason = ?", svc.ID, suspendReasonEnforcing).
+		Update("suspend_reason", "").Error
+}
+
+// suspendReasonEnforcing is a transient in-DB claim marker used while the
+// patrol performs the suspend RPC. It must never persist past the round.
+const suspendReasonEnforcing = "enforcing"
+
+// claimTerminateSnapshot takes the termination claim (audit MONEY-10): the
+// exact suspended_at snapshot from the list read. A renewal in between clears
+// suspended_at/status, the claim fails, and the irreversible purge is never
+// sent for a paid service.
+func (s *LifecycleService) claimTerminateSnapshot(svc *model.Service) bool {
+	if svc.SuspendedAt == nil || svc.ExpiresAt == nil || !svc.ExpiresAt.Before(time.Now()) {
+		return false
+	}
+	res := s.db.Model(&model.Service{}).
+		Where("id = ? AND status = ? AND suspend_reason = ? AND suspended_at = ? AND expires_at = ? AND change_pending_id IS NULL",
+			svc.ID, model.ServiceSuspended, suspendReasonExpired, *svc.SuspendedAt, *svc.ExpiresAt).
+		Update("suspend_reason", suspendReasonTerminating)
+	if res.Error != nil {
+		log.Printf("删机认领失败 service=%d: %v", svc.ID, res.Error)
+		return false
+	}
+	if res.RowsAffected != 1 {
+		return false
+	}
+	return true
+}
+
+// suspendReasonTerminating is the transient claim marker held while the
+// irreversible TERMINATE RPC is in flight.
+const suspendReasonTerminating = "terminating"
+
+// recheckTerminateSnapshot re-reads the service after the TERMINATE RPC and
+// confirms the claim still holds before the terminal write. A renewal that
+// landed during the RPC fails this check and stops the local terminated write.
+func (s *LifecycleService) recheckTerminateSnapshot(svc *model.Service) bool {
+	res := s.db.Model(&model.Service{}).
+		Where("id = ? AND status = ? AND suspend_reason = ?",
+			svc.ID, model.ServiceSuspended, suspendReasonTerminating).
+		Update("suspend_reason", suspendReasonTerminating)
+	return res.Error == nil && res.RowsAffected == 1
+}
+
+// releaseTerminateClaim restores the pre-claim state when termination did not
+// complete this round.
+func (s *LifecycleService) releaseTerminateClaim(svc *model.Service) {
+	_ = s.db.Model(&model.Service{}).
+		Where("id = ? AND suspend_reason = ?", svc.ID, suspendReasonTerminating).
+		Update("suspend_reason", suspendReasonExpired).Error
+}
+
 // markTerminated 以 CAS 写入终止状态（仅 suspended+expired→terminated）。
 // 条件防止把并发恢复（续费/加购已写回 active/suspended 之外的态）误覆盖。
+// 删机路径的调用方已把 suspend_reason 置为 terminating（认领标记），
+// 这里同样接受该标记完成迁移。
 func (s *LifecycleService) markTerminated(svc *model.Service) {
-	res := s.db.Model(&model.Service{}).Where("id = ? AND status = ? AND suspend_reason = ?",
-		svc.ID, model.ServiceSuspended, suspendReasonExpired).
+	res := s.db.Model(&model.Service{}).Where("id = ? AND status = ? AND suspend_reason IN ?",
+		svc.ID, model.ServiceSuspended, []string{suspendReasonExpired, suspendReasonTerminating}).
 		Updates(map[string]any{"status": model.ServiceTerminated, "suspend_reason": "", "suspended_at": nil})
 	if res.Error != nil {
 		log.Printf("写入终止状态失败 service=%d: %v", svc.ID, res.Error)
@@ -275,9 +414,13 @@ func (s *LifecycleService) markTerminated(svc *model.Service) {
 
 // suspendReasonTraffic / suspendReasonExpired 是 suspend_reason 的合法取值，
 // 续费、流量包结清与恢复流程按它判断「这台机器为什么停着」。
+// suspendReasonRefund marks services suspended because a full refund
+// completed: the entitlement is revoked upstream by the lifecycle patrol and
+// must not be renewable — the money that funded the period came back.
 const (
 	suspendReasonTraffic = "traffic"
 	suspendReasonExpired = "expired"
+	suspendReasonRefund  = "refund"
 )
 
 // ResumeSuspendedService 在续费或流量包结清后恢复指定原因的自动停机服务。
