@@ -113,9 +113,31 @@ func (s *LifecycleService) Run(ctx context.Context) {
 	}()
 	s.autoRenew(ctx)
 	s.retryRefundSuspensions(ctx)
+	s.recoverStaleClaimMarkers(ctx)
 	s.enforceTraffic(ctx)
 	s.enforceExpiry(ctx)
 	s.retryPendingResumes(ctx)
+}
+
+// recoverStaleClaimMarkers resets transient claim markers left behind by a
+// crashed patrol round (audit review: a process death between claim and the
+// terminal write used to wedge the row forever — 'enforcing' blocked both the
+// expiry list and traffic suspension, 'terminating' removed the row from the
+// terminate list). No cross-process coordination is needed: claims are only
+// held for the duration of one in-process RPC and every patrol instance runs
+// this sweep before listing, so a marker visible here belongs to a dead round
+// (a live round's marker would be unreachable until its own round ends).
+func (s *LifecycleService) recoverStaleClaimMarkers(ctx context.Context) {
+	if err := s.db.Model(&model.Service{}).
+		Where("suspend_reason = ?", suspendReasonEnforcing).
+		Update("suspend_reason", "").Error; err != nil {
+		log.Printf("回收过期停机认领失败: %v", err)
+	}
+	if err := s.db.Model(&model.Service{}).
+		Where("suspend_reason = ?", suspendReasonTerminating).
+		Update("suspend_reason", suspendReasonExpired).Error; err != nil {
+		log.Printf("回收过期删机认领失败: %v", err)
+	}
 }
 
 func (s *LifecycleService) enforceTraffic(ctx context.Context) {
