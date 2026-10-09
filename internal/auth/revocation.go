@@ -8,6 +8,20 @@ import (
 // revocationSweepInterval 是吊销表的清扫周期。
 const revocationSweepInterval = 10 * time.Minute
 
+// SessionRevoker is the surface the HTTP layer needs from a revocation
+// store: record a logout and answer "is this jti revoked". Both the legacy
+// process-local RevocationList and the database-backed
+// PersistentRevocationList implement it, so wiring can pick the persistent
+// one whenever a database handle exists.
+type SessionRevoker interface {
+	Revoke(jti string, expiry time.Time) error
+	IsRevoked(jti string) bool
+	Close()
+}
+
+var _ SessionRevoker = (*RevocationList)(nil)
+var _ SessionRevoker = (*PersistentRevocationList)(nil)
+
 // RevocationList 是进程内的会话吊销表（登出失效）。
 //
 // JWT 本身无状态：登出只是让浏览器删掉 cookie，签出去的 token 在到期前
@@ -43,15 +57,16 @@ func (r *RevocationList) Close() {
 //
 // expiry 之后的条目没有意义（token 本身已失效），清扫时会移除；
 // 显式传入更早的到期时间不会解除吊销 —— 只会延长，绝不缩短。
-func (r *RevocationList) Revoke(jti string, expiry time.Time) {
+func (r *RevocationList) Revoke(jti string, expiry time.Time) error {
 	if jti == "" {
-		return
+		return nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if until, ok := r.revoked[jti]; !ok || expiry.After(until) {
 		r.revoked[jti] = expiry
 	}
+	return nil
 }
 
 // IsRevoked 报告该 jti 是否已被吊销。
@@ -63,6 +78,18 @@ func (r *RevocationList) IsRevoked(jti string) bool {
 	defer r.mu.Unlock()
 	_, ok := r.revoked[jti]
 	return ok
+}
+
+// Snapshot returns a copy of the live revocations. Used when upgrading to the
+// persistent store so the swap loses nothing.
+func (r *RevocationList) Snapshot() map[string]time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]time.Time, len(r.revoked))
+	for k, v := range r.revoked {
+		out[k] = v
+	}
+	return out
 }
 
 // sweepLoop 周期清掉已自然过期的条目，防止 map 无界增长。

@@ -236,7 +236,11 @@ func (h *Handler) allowLogin(c *gin.Context, scope, identifier, ip string) bool 
 func (h *Handler) Logout(c *gin.Context) {
 	if token, err := c.Cookie(auth.CookieToken); err == nil && token != "" {
 		if claims, err := auth.ParseToken(h.rt.JWTSecret(), token); err == nil && claims.ExpiresAt != nil {
-			h.revoker.Revoke(claims.ID, claims.ExpiresAt.Time)
+			if err := h.revoker.Revoke(claims.ID, claims.ExpiresAt.Time); err != nil {
+				// Clearing cookies would imply success while a copied token remains valid on other replicas.
+				Internal(c, "无法持久化退出状态，请稍后重试")
+				return
+			}
 		}
 	}
 	h.clearCookie(c, auth.CookieToken, true)
