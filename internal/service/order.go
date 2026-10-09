@@ -503,6 +503,12 @@ func (s *OrderService) PayExternal(userID, orderID uint) (*PayResult, error) {
 func (s *OrderService) pay(userID, orderID uint, debit bool) (*PayResult, error) {
 	var out *PayResult
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockOrderPaymentTx(tx, userID, orderID); err != nil {
+			return err
+		}
+		if err := rejectOrderPaymentIntentTx(tx, userID, orderID, 0); err != nil {
+			return err
+		}
 		var err error
 		out, err = s.payInTx(tx, userID, orderID, debit)
 		return err

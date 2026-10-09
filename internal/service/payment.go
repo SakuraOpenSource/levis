@@ -94,7 +94,11 @@ func (s *PaymentService) Create(ctx context.Context, userID uint, clientIP strin
 	}
 
 	// 先按用途算出应付总额与展示标题；余额抵扣只对订单与账单开放。
+	// The preflight read is advisory: the reservation transaction re-loads the
+	// canonical target with locks and revalidates price/expiry/fence (audit
+	// MONEY-07) before any channel order or wallet debit happens.
 	var total int64
+	var quoteExpiry time.Time
 	subject := "账户充值"
 	allowBalance := false
 	switch in.Purpose {
@@ -121,6 +125,9 @@ func (s *PaymentService) Create(ctx context.Context, userID uint, clientIP strin
 			return nil, ErrConflict("该服务当前不可续费")
 		}
 		total, subject = svc.PriceCents, "续费 "+svc.Name
+		if svc.ExpiresAt != nil {
+			quoteExpiry = *svc.ExpiresAt
+		}
 	case model.ExternalPaymentPurposeInvoice:
 		var invoice model.Invoice
 		if err := s.db.First(&invoice, "id = ? AND user_id = ?", in.TargetID, userID).Error; err != nil {
@@ -128,6 +135,14 @@ func (s *PaymentService) Create(ctx context.Context, userID uint, clientIP strin
 		}
 		if invoice.Status != model.InvoiceUnpaid {
 			return nil, ErrConflict("账单当前无需支付")
+		}
+		// Snapshot the service window behind a renewal invoice so the
+		// reservation can detect a concurrent expiry change (audit MONEY-07).
+		if invoice.ServiceID != nil && *invoice.ServiceID != 0 {
+			var svc model.Service
+			if err := s.db.First(&svc, "id = ? AND user_id = ?", *invoice.ServiceID, userID).Error; err == nil && svc.ExpiresAt != nil {
+				quoteExpiry = *svc.ExpiresAt
+			}
 		}
 		total, subject, allowBalance = invoice.TotalCents, "支付账单 "+invoice.InvoiceNo, true
 	default:
@@ -209,6 +224,25 @@ func (s *PaymentService) Create(ctx context.Context, userID uint, clientIP strin
 	// 余额抵扣与意图创建同生共死；全余额时顺手把目标结算了。
 	var pending *PayResult
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if in.Purpose != model.ExternalPaymentPurposeRecharge {
+			target, err := loadPaymentTarget(tx, userID, in.Purpose, in.TargetID, true)
+			if err != nil {
+				return err
+			}
+			target.quoteExpiry = quoteExpiry
+			target.invoiceQuoteExpiry = quoteExpiry
+			currentTotal, err := target.payableAmount(in.Purpose)
+			if err != nil {
+				return err
+			}
+			if currentTotal != total {
+				return ErrConflict("支付目标金额已变更，请刷新后重试")
+			}
+			if err := rejectPaymentIntentTx(tx, userID, target, 0); err != nil {
+				return err
+			}
+			intent.ActiveTargetKey = &target.Key
+		}
 		if balance > 0 {
 			refType := string(in.Purpose)
 			if _, err := s.wallet.adjustBalance(
@@ -232,8 +266,9 @@ func (s *PaymentService) Create(ctx context.Context, userID uint, clientIP strin
 			intent.Status = model.ExternalPaymentPaid
 			intent.PaidAt = &now
 			intent.PaidAmountCents = 0
+			intent.ActiveTargetKey = nil
 			if err := tx.Model(intent).Updates(map[string]any{
-				"status": model.ExternalPaymentPaid, "paid_at": now, "paid_amount_cents": 0,
+				"status": model.ExternalPaymentPaid, "paid_at": now, "paid_amount_cents": 0, "active_target_key": nil,
 			}).Error; err != nil {
 				return err
 			}
@@ -260,20 +295,15 @@ func (s *PaymentService) Create(ctx context.Context, userID uint, clientIP strin
 	}
 	reply, err := s.plugins.CreatePayment(ctx, method.PluginID, &pb.CreatePaymentRequest{ExternalId: externalID, AmountCents: external, Currency: "CNY", Subject: subject, UserId: uint64(userID), ClientIp: clientIP, Config: cfg, NotifyUrl: notifyURL})
 	if err != nil {
-		// 渠道建单失败：意图作废，已抵扣的余额原路退回。
-		_ = s.db.Transaction(func(tx *gorm.DB) error {
-			if balance > 0 {
-				if _, err := s.wallet.adjustBalance(
-					tx, userID, balance, model.TxRefund,
-					"external_payment", intent.ID, fmt.Sprintf("%s（建单失败退回抵扣）", subject),
-				); err != nil {
-					return err
-				}
-			}
-			return tx.Model(&model.ExternalPayment{}).Where("id = ?", intent.ID).Updates(map[string]any{
-				"status": model.ExternalPaymentFailed, "failure_reason": err.Error(),
-			}).Error
-		})
+		// Channel creation failed: void the intent and return the wallet
+		// deduction. The helper CAS-claims the intent first — without the
+		// claim a concurrent finalize/callback could turn the same deduction
+		// into a double refund (audit MONEY-01).
+		if compErr := s.compensateCreateFailure(intent, userID); compErr != nil {
+			// Surface the compensation failure: swallowing it would leave the
+			// deducted balance stranded with no reconciliation trail.
+			return nil, ErrUnavailable("创建支付失败且补偿失败，请联系客服核对: %s; 补偿错误: %v", err.Error(), compErr)
+		}
 		return nil, ErrUnavailable("创建支付失败: %s", err.Error())
 	}
 	intent.PayURL, intent.GatewayRef = reply.GetPayUrl(), reply.GetGatewayRef()
@@ -410,13 +440,17 @@ func (s *PaymentService) SettleInvoice(userID, invoiceID uint) (*model.Invoice, 
 	var pending *PayResult
 	now := time.Now().UTC()
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		var invoice model.Invoice
-		if err := tx.First(&invoice, "id = ? AND user_id = ?", invoiceID, userID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound("账单不存在")
-			}
+		if err := lockFinancialWriter(tx, userID); err != nil {
 			return err
 		}
+		target, err := loadPaymentTarget(tx, userID, model.ExternalPaymentPurposeInvoice, invoiceID, true)
+		if err != nil {
+			return err
+		}
+		if err := rejectPaymentIntentTx(tx, userID, target, 0); err != nil {
+			return err
+		}
+		invoice := *target.Invoice
 		if invoice.Status != model.InvoiceUnpaid {
 			return ErrConflict("账单当前无需支付")
 		}
@@ -468,7 +502,19 @@ func (s *PaymentService) Cancel(userID, id uint) (*model.ExternalPayment, error)
 			}
 			return err
 		}
-		if current.Status != model.ExternalPaymentPending {
+		// Security intent: claim pending -> failed BEFORE returning the wallet
+		// reserve. A plain read-then-refund lets two concurrent cancels (or a
+		// cancel racing a finalize) both see "pending" and refund the same
+		// deduction twice, or overwrite an already-paid intent (audit
+		// MONEY-01). RowsAffected==0 means somebody else moved the state
+		// first: no money moves at all.
+		claim := tx.Model(&model.ExternalPayment{}).
+			Where("id = ? AND status = ?", current.ID, model.ExternalPaymentPending).
+			Updates(map[string]any{"status": model.ExternalPaymentFailed, "failure_reason": "用户取消，已退回余额抵扣", "active_target_key": nil})
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected != 1 {
 			return ErrConflict("只有待支付的订单可以取消")
 		}
 		if current.BalanceCents > 0 {
@@ -479,18 +525,10 @@ func (s *PaymentService) Cancel(userID, id uint) (*model.ExternalPayment, error)
 				return err
 			}
 		}
-		reason := "用户取消"
-		if current.BalanceCents > 0 {
-			reason = "用户取消，已退回余额抵扣"
-		}
-		if err := tx.Model(&current).Updates(map[string]any{
-			"status": model.ExternalPaymentFailed, "failure_reason": reason,
-		}).Error; err != nil {
-			return err
-		}
 		out = current
 		out.Status = model.ExternalPaymentFailed
-		out.FailureReason = reason
+		out.ActiveTargetKey = nil
+		out.FailureReason = "用户取消，已退回余额抵扣"
 		return nil
 	})
 	if err != nil {
@@ -499,11 +537,63 @@ func (s *PaymentService) Cancel(userID, id uint) (*model.ExternalPayment, error)
 	return &out, nil
 }
 
+// compensateCreateFailure voids a pending intent after channel-order creation
+// failed and returns its wallet deduction. Same claim discipline as Cancel:
+// pending -> failed is a CAS, so a concurrent finalize that already claimed
+// the intent stops the refund instead of double-crediting (audit MONEY-01).
+// The returned error is deliberately NOT swallowed by callers: a failed
+// compensation means deducted balance may still be stranded and an operator
+// must see it.
+func (s *PaymentService) compensateCreateFailure(intent *model.ExternalPayment, userID uint) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		claim := tx.Model(&model.ExternalPayment{}).
+			Where("id = ? AND status = ?", intent.ID, model.ExternalPaymentPending).
+			Updates(map[string]any{"status": model.ExternalPaymentFailed, "failure_reason": "建单失败，已退回余额抵扣", "active_target_key": nil})
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected != 1 {
+			// The intent is no longer pending: a finalize/callback or a user
+			// cancel moved it. Refunding now would double-credit; keep hands
+			// off and let reconciliation look at the actual state.
+			return ErrConflict("支付意图状态已变化，跳过建单失败补偿")
+		}
+		if intent.BalanceCents > 0 {
+			if _, err := s.wallet.adjustBalance(
+				tx, userID, intent.BalanceCents, model.TxRefund,
+				"external_payment", intent.ID, fmt.Sprintf("%s（建单失败退回抵扣）", intent.Subject),
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func paymentTargetError(err error, name string) error {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return ErrNotFound("%s不存在", name)
 	}
 	return err
+}
+
+// rejectActiveIntent is the advisory preflight duplicate check. The binding
+// guard against concurrent channel creation is rejectPaymentIntentTx inside
+// the reservation transaction plus the unique active_target_key index (audit
+// MONEY-05); this preflight only gives the common case a fast, clear error.
+func (s *PaymentService) rejectActiveIntent(userID uint, purpose string, targetID uint) error {
+	var live int64
+	if err := s.db.Model(&model.ExternalPayment{}).
+		Where("user_id = ? AND purpose = ? AND target_id = ? AND status IN ?",
+			userID, purpose, targetID,
+			[]string{model.ExternalPaymentPending, model.ExternalPaymentProcessing}).
+		Count(&live).Error; err != nil {
+		return err
+	}
+	if live > 0 {
+		return ErrConflict("该订单已有进行中的支付，请先完成或取消后再发起新的支付")
+	}
+	return nil
 }
 
 func (s *PaymentService) Get(userID, id uint) (*model.ExternalPayment, error) {
@@ -565,6 +655,31 @@ func (s *PaymentService) FinalizeCallback(ctx context.Context, pluginID, externa
 		return err
 	}
 	if item.Status != model.ExternalPaymentPending {
+		// A verified paid receipt for a non-pending intent is an irreversible
+		// fact: money moved at the channel while our local row says failed
+		// (typically a user cancel followed by a late callback). Acknowledging
+		// success silently would hide the difference; erroring would make the
+		// gateway retry forever. Record it durably as "late" with the receipt
+		// so reconciliation can refund or credit it (audit MONEY-05).
+		if paidAmount > 0 && (item.Status == model.ExternalPaymentFailed || item.Status == model.ExternalPaymentLate) {
+			// First durable receipt wins: only a failed intent transitions to
+			// late. A repeated late callback must never rewrite amount or
+			// gateway identity — reconciliation decisions already made against
+			// the first receipt stay valid (audit MONEY-05).
+			updates := map[string]any{
+				"status":            model.ExternalPaymentLate,
+				"paid_amount_cents": paidAmount,
+				"failure_reason":    "渠道迟到回调：本地已取消，渠道已收款，待人工对账",
+			}
+			if gatewayRef != "" {
+				updates["gateway_ref"] = gatewayRef
+			}
+			if err := s.db.Model(&model.ExternalPayment{}).
+				Where("id = ? AND status = ?", item.ID, model.ExternalPaymentFailed).
+				Updates(updates).Error; err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	now := time.Now().UTC()
@@ -630,7 +745,7 @@ func (s *PaymentService) finalize(item *model.ExternalPayment, paidAmount int64,
 		default:
 			return ErrBadRequest("不支持的支付用途")
 		}
-		return tx.Model(&current).Updates(map[string]any{"status": model.ExternalPaymentPaid, "paid_amount_cents": paidAmount, "paid_at": now}).Error
+		return tx.Model(&current).Updates(map[string]any{"status": model.ExternalPaymentPaid, "paid_amount_cents": paidAmount, "paid_at": now, "active_target_key": nil}).Error
 	})
 	if err != nil {
 		return err

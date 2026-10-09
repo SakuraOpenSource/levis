@@ -102,7 +102,20 @@ const (
 	ExternalPaymentProcessing      = "processing"
 	ExternalPaymentPaid            = "paid"
 	ExternalPaymentFailed          = "failed"
-	PluginPaymentPaid              = ExternalPaymentPaid
+	// ExternalPaymentRefunding is the exclusive payout claim taken by a refund
+	// execution before it contacts the payment channel (paid -> refunding).
+	// Money leaves the process only under this claim, so a second refund
+	// attempt on the same payment cannot pass through "paid" twice.
+	ExternalPaymentRefunding = "refunding"
+	// ExternalPaymentRefunded is the terminal status after the channel payout
+	// completed; the payment can never fund another refund.
+	ExternalPaymentRefunded = "refunded"
+	// ExternalPaymentLate is a durable record for a gateway callback that
+	// arrives after the intent was cancelled or failed locally: the receipt is
+	// a fact that must stay visible for reconciliation instead of being
+	// dropped with a success reply to the gateway.
+	ExternalPaymentLate = "late"
+	PluginPaymentPaid   = ExternalPaymentPaid
 )
 
 // PaymentMethod 是财务板块的支付方式。
@@ -147,6 +160,9 @@ type ExternalPayment struct {
 	// BalanceCents 是创建意图时同步抵扣的余额（分）。外部渠道只收
 	// AmountCents，结算时不再另行扣余额；意图取消时按此金额原路退回余额。
 	BalanceCents int64 `gorm:"not null;default:0" json:"balance_cents"`
+	// ActiveTargetKey is NULL for terminal intents and independent recharges.
+	// A unique key closes the cross-process create race for canonical aliases.
+	ActiveTargetKey *string `gorm:"uniqueIndex:idx_external_payment_active_target;size:64" json:"-"`
 }
 
 // RefundRequest 是用户的退款申请。
@@ -186,13 +202,13 @@ type RefundRequest struct {
 
 // RefundRequest 状态常量。
 const (
-	RefundPending   = "pending"
-	RefundApproved  = "approved" // 审批通过，退款执行中/已入账
+	RefundPending    = "pending"
+	RefundApproved   = "approved"   // 审批通过，退款执行中/已入账
 	RefundProcessing = "processing" // exclusive external execution claim
-	RefundRejected  = "rejected"
-	RefundFailed    = "failed" // 渠道退款失败，待重试
-	RefundCanceled  = "canceled"
-	RefundCompleted = "refunded" // 渠道 + 余额全部退回完成
+	RefundRejected   = "rejected"
+	RefundFailed     = "failed" // 渠道退款失败，待重试
+	RefundCanceled   = "canceled"
+	RefundCompleted  = "refunded" // 渠道 + 余额全部退回完成
 )
 
 // RefundRequest 策略判定结果常量。
