@@ -42,6 +42,9 @@ type InterfaceInput struct {
 func (s *UpstreamService) Interfaces() ([]model.UpstreamInterface, error) {
 	var items []model.UpstreamInterface
 	err := s.db.Order("id ASC").Find(&items).Error
+	for i := range items {
+		items[i].Config = legacyUpstreamConfig(items[i].Config, items[i].ID)
+	}
 	return items, err
 }
 
@@ -54,6 +57,7 @@ func (s *UpstreamService) Interface(id uint) (*model.UpstreamInterface, error) {
 		}
 		return nil, err
 	}
+	item.Config = legacyUpstreamConfig(item.Config, item.ID)
 	return &item, nil
 }
 
@@ -290,6 +294,18 @@ func (s *UpstreamService) validate(in *InterfaceInput) error {
 	if in.PluginID == "" {
 		return ErrBadRequest("请选择接口使用的插件模块")
 	}
+	if err := upstreamHTTPAllowed(in.Config); err != nil {
+		return err
+	}
+	config := make(map[string]string, len(in.Config)+1)
+	for key, value := range in.Config {
+		config[key] = value
+	}
+	if config["allow_insecure"] == "" {
+		// New interfaces must never inherit the implicit plaintext exception reserved for legacy rows.
+		config["allow_insecure"] = "false"
+	}
+	in.Config = config
 	return nil
 }
 
