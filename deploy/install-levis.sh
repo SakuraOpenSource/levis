@@ -90,7 +90,7 @@ detect_platform() {
 }
 validate_path() { [[ "$1" =~ ^/[A-Za-z0-9/_-]+$ && "$1" != / && "$1" != *'..'* ]] || fail 'Use a safe absolute installation path'; }
 new_workdir() {
-  WORK="$(mktemp -d "${TMPDIR:-/tmp}/virtualis-install.XXXXXXXX")"
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/levis-install.XXXXXXXX")"
   trap 'rm -rf -- "$WORK"' EXIT
 }
 
@@ -103,6 +103,7 @@ levis_main() {
       --version) VERSION="${2:?version required}"; shift 2;;
       --expected-sha256) EXPECTED_SHA256="${2:?SHA-256 required}"; shift 2;;
       --gh-proxy) GH_PROXY="${2:?proxy URL required}"; shift 2;;
+      --allow-insecure) ALLOW_INSECURE=1; shift;;
       --update) shift;; --no-start) NO_START=1; shift;;
       -h|--help) printf '%s\n' 'Usage: install-levis.sh [--version vX.Y.Z] [--expected-sha256 independent-digest] [--update] [--no-start]'; return;;
       *) fail "Unknown option: $1";;

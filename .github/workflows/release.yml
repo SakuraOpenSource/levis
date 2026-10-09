@@ -153,6 +153,10 @@ jobs:
           go-version: 1.27.2
           cache: true
 
+      - name: Resolve agent ref
+        id: agent
+        run: echo "sha=$(git ls-remote https://github.com/SakuraOpenSource/virtualis-agent.git refs/heads/${{ inputs.agent_ref || 'main' }} | cut -f1)" >> "$GITHUB_OUTPUT"
+
       - name: Build required binaries
         env:
           CGO_ENABLED: '0'
