@@ -30,16 +30,22 @@ func RequireInstalled(rt *runtime.Runtime) gin.HandlerFunc {
 	}
 }
 
+// RevocationChecker is what RequireAuth needs from a revocation store: both
+// the legacy in-memory list and the persistent DB-backed list satisfy it.
+type RevocationChecker interface {
+	IsRevoked(jti string) bool
+}
+
 // RequireAuth 校验 token cookie 并把用户实体放入 context。
 //
 // 这里每次请求都查库，而不是只信 JWT 里的 role：用户被禁用或降权后应立即
 // 失效，不能等到 token 过期。两级失效判定：
-//  1. jti 在吊销表里（用户登出过，见 auth.RevocationList）；
+//  1. jti 在吊销表里（用户登出过，见 auth.RevocationList / auth.PersistentRevocationList）；
 //  2. token 签发时间早于该用户的最近改密时间 —— 改密即踢掉所有旧设备，
 //     这是「凭证可能已被偷」场景下用户唯一能自救的动作，必须立即生效。
 //
 // revoker 可为 nil（不启用登出吊销），密码比对不依赖它。
-func RequireAuth(rt *runtime.Runtime, revoker *auth.RevocationList) gin.HandlerFunc {
+func RequireAuth(rt *runtime.Runtime, revoker RevocationChecker) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token, err := c.Cookie(auth.CookieToken)
 		if err != nil || token == "" {

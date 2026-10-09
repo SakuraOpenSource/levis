@@ -17,7 +17,11 @@ func(m *Manager) HostOperation(ctx context.Context,id string,req *pb.HostOperati
 }
 // The caller owns the lifetime context. Do not wrap stream creation in c.call:
 // its deferred cancel would cancel the stream as soon as this method returns.
+// Instead inject the session token directly (PLG-F01): the plugin's stream
+// interceptor authenticates the first Recv, so a bare client call without the
+// token metadata is rejected as Unauthenticated by real plugins — the mock
+// test path used to hide exactly this break.
 func(m *Manager) DownloadHostBackup(ctx context.Context,id string,req *pb.HostBackupRequest)(BackupStream,error){
  inst,e:=m.get(id);if e!=nil{return nil,e};if !inst.Has(pb.Capability_CAPABILITY_PROVISION_PRODUCT){return nil,ErrUnavailable}
- client,_:=inst.client();if client==nil{return nil,ErrUnavailable};return client.DownloadHostBackup(ctx,req)
+ client,c:=inst.client();if client==nil{return nil,ErrUnavailable};return client.DownloadHostBackup(c.withToken(ctx),req)
 }

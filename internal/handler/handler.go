@@ -2,9 +2,12 @@ package handler
 
 import (
 	"log"
+	"net/http"
 	"sync"
 
 	"github.com/gin-gonic/gin"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 
 	"github.com/SakuraOpenSource/levis/internal/auth"
@@ -41,9 +44,10 @@ type Handler struct {
 	// loginTracker 统计登录失败并临时锁定，全进程共用一份（见 loginlimit
 	// 包的说明）。Close 时停掉它后台的清扫协程。
 	loginTracker *loginlimit.Tracker
-	// revoker 是登出吊销表，全进程共用一份（见 auth.RevocationList 的
-	// 说明）。Logout 写入，RequireAuth 查询；Close 时停掉后台清扫协程。
-	revoker *auth.RevocationList
+	// revoker 是登出吊销表，全进程共用一份。持久实现（数据库落地，见
+	// auth.PersistentRevocationList）是默认：吊销在重启/多副本下仍然有效
+	// （P-AUTH-4）；未安装（尚无数据库）时退回进程内实现兜底。
+	revoker auth.SessionRevoker
 	// emailSvc 持有邮箱验证码与限流状态，同样全进程共用一份。数据库在
 	// 安装完成后才存在，因此首次使用时（必然已安装）惰性构造。
 	emailMu   sync.Mutex
@@ -76,7 +80,11 @@ func newHandler(rt *runtime.Runtime, plugins *plugin.Manager, store service.Capt
 		storage:      storage.New(rt.DataDir()),
 		notify:       pluginhost.NewNotifier(rt, plugins, log.Printf),
 		loginTracker: loginlimit.New(),
-		revoker:      auth.NewRevocationList(),
+		// P-AUTH-4: prefer the durable revocation store once the database
+		// exists; before installation (no DB yet) the process-local list is
+		// the best we can do, and the runtime-backed revoker upgrades itself
+		// as soon as a DB handle appears.
+		revoker: newRuntimeRevoker(rt),
 	}
 }
 
@@ -89,7 +97,7 @@ func (h *Handler) Close() {
 
 // Revoker 暴露登出吊销表，供路由层装配 RequireAuth 中间件（同一进程必须
 // 共用 Handler 里的这一份，否则登出写不进中间件查的那张表）。
-func (h *Handler) Revoker() *auth.RevocationList { return h.revoker }
+func (h *Handler) Revoker() auth.SessionRevoker { return h.revoker }
 
 func (h *Handler) db() *gorm.DB                { return h.rt.DB() }
 func (h *Handler) users() *service.UserService { return service.NewUserService(h.db()) }
@@ -171,8 +179,11 @@ func (h *Handler) coupons() *service.CouponService {
 
 // respond 把 service 层错误映射为 HTTP 响应；err 为 nil 时返回 data。
 //
-// 可预期的业务错误携带状态码与错误码，直接透出；其余错误视为内部错误，
-// 只回一句通用提示，不外泄实现细节。
+// 可预期的业务错误携带状态码与错误码，直接透出；gRPC 状态错误按类别映射
+// （PLG-F06）：插件边界的 typed 失败必须以真实的语义状态到达客户端，
+// 统统 500 会把「旧插件不支持 / 参数错 / 资源没了 / 超时」全部伪装成
+// 服务器故障，浏览器与监控都无法区分；其余错误视为内部错误，只回一句
+// 通用提示，不外泄实现细节。
 func respond(c *gin.Context, data any, err error) {
 	if err == nil {
 		OK(c, data)
@@ -182,6 +193,73 @@ func respond(c *gin.Context, data any, err error) {
 		Fail(c, bizErr.Status, bizErr.Code, bizErr.Message)
 		return
 	}
+	if code := grpcStatusToHTTP(err); code != 0 {
+		Fail(c, code, grpcHTTPCode(code), grpcMessage(err))
+		return
+	}
 	log.Printf("handler internal error: %v", err)
 	Internal(c, "服务器内部错误")
+}
+
+// grpcStatusToHTTP maps a gRPC status carried by err to an HTTP status, 0 when
+// err carries no gRPC status. Kept in the handler layer: the service layer
+// speaks business errors, the wire translation belongs here.
+func grpcStatusToHTTP(err error) int {
+	code := status.Code(err)
+	switch code {
+	case codes.InvalidArgument:
+		return http.StatusBadRequest
+	case codes.NotFound:
+		return http.StatusNotFound
+	case codes.PermissionDenied:
+		return http.StatusForbidden
+	case codes.Unauthenticated:
+		return http.StatusUnauthorized
+	case codes.DeadlineExceeded:
+		return http.StatusGatewayTimeout
+	case codes.Unimplemented:
+		return http.StatusNotImplemented
+	case codes.Unavailable:
+		return http.StatusServiceUnavailable
+	default:
+		// codes.OK only appears for nil errors; anything else is an internal
+		// failure we do not want to fingerprint to clients.
+		if code == codes.OK {
+			return 0
+		}
+		return http.StatusInternalServerError
+	}
+}
+
+// grpcHTTPCode gives each mapped failure a distinct machine-readable code so
+// frontends can branch without parsing localized messages.
+func grpcHTTPCode(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "BAD_REQUEST"
+	case http.StatusNotFound:
+		return "NOT_FOUND"
+	case http.StatusForbidden:
+		return "FORBIDDEN"
+	case http.StatusUnauthorized:
+		return "UNAUTHORIZED"
+	case http.StatusGatewayTimeout:
+		return "UPSTREAM_TIMEOUT"
+	case http.StatusNotImplemented:
+		return "FEATURE_UNSUPPORTED"
+	case http.StatusServiceUnavailable:
+		return "UPSTREAM_UNAVAILABLE"
+	default:
+		return "INTERNAL"
+	}
+}
+
+// grpcMessage surfaces the gRPC error message for the mapped categories: these
+// originate from our own plugin protocol, not from arbitrary internals.
+func grpcMessage(err error) string {
+	msg := status.Convert(err).Message()
+	if msg == "" {
+		return "上游操作失败"
+	}
+	return msg
 }
