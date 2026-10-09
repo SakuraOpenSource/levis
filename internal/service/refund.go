@@ -500,6 +500,15 @@ func (s *RefundService) execute(ctx context.Context, item *model.RefundRequest) 
 			return claim.Error
 		}
 		if claim.RowsAffected != 1 {
+			// We already flipped this request to processing in the claim above;
+			// losing the payment-level payout race must not wedge it there
+			// forever (RetryFailed only accepts failed). Reset it so the loser
+			// is retryable/reportable instead of permanently stuck.
+			if rel := s.db.Model(&model.RefundRequest{}).
+				Where("id = ? AND status = ?", item.ID, model.RefundProcessing).
+				Updates(map[string]any{"status": model.RefundFailed, "fail_reason": "该支付已在退款中或已退款，本次执行未出款"}); rel.Error != nil {
+				return errors.Join(ErrConflict("该支付已在退款中或已退款，不能重复执行"), rel.Error)
+			}
 			return ErrConflict("该支付已在退款中或已退款，不能重复执行")
 		}
 	}
