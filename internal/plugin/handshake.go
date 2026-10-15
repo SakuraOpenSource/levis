@@ -196,11 +196,25 @@ func forward(r io.Reader, id string, logf func(string, ...any)) {
 	}
 }
 
-// withToken 把令牌塞进 outgoing metadata。
+// withToken 注入本次会话令牌。
 //
 // 每个调用都带，包括健康检查：插件那边是无状态校验，没有「已认证的连接」
 // 这个概念 —— 连接可以被同机的其它进程建立。
+//
+// 幂等：context 里已经有本连接的令牌时不再追加。调用方（如
+// UpstreamService.ProductAgents）先用 TokenContext 预注入、再经 call 包装
+// 注入时，metadata 键会出现两次；生产插件按「恰好一个值」校验，会拒绝
+// 这种重复 —— 商店购买页的节点列表就是这么 401 的。
 func (c *conn) withToken(ctx context.Context) context.Context {
+	if md, ok := metadata.FromOutgoingContext(ctx); ok {
+		if existing := md.Get(MetadataToken); len(existing) > 0 {
+			// Already carrying this conn's token (pre-injected via
+			// Instance.TokenContext); re-appending would duplicate the
+			// metadata key and the plugin's strict len==1 check would
+			// reject the call.
+			return ctx
+		}
+	}
 	return metadata.AppendToOutgoingContext(ctx, MetadataToken, c.token)
 }
 

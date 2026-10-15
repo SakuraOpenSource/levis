@@ -103,10 +103,12 @@ func authInterceptor(token string) grpc.UnaryServerInterceptor {
 			return nil, status.Error(codes.Unauthenticated, "缺少令牌")
 		}
 		values := md.Get(plugin.MetadataToken)
-		if len(values) == 0 {
-			return nil, status.Error(codes.Unauthenticated, "缺少令牌")
-		}
-		if subtle.ConstantTimeCompare([]byte(values[0]), []byte(token)) != 1 {
+		// len(values) != 1 mirrors the production plugin contract exactly:
+		// a request that carries the token metadata key more than once is
+		// treated as malformed and rejected. This catches callers that
+		// pre-inject the token into the outgoing context before the host's
+		// call wrapper appends it a second time.
+		if len(values) != 1 || token == "" || subtle.ConstantTimeCompare([]byte(values[0]), []byte(token)) != 1 {
 			return nil, status.Error(codes.Unauthenticated, "令牌不匹配")
 		}
 		return handler(ctx, req)
